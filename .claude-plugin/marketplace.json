@@ -1,0 +1,18 @@
+{
+  "name": "ai-engineering-skills",
+  "owner": {
+    "name": "Mykola Pavlov",
+    "email": "me@nikolaypavlov.com"
+  },
+  "plugins": [
+    {
+      "name": "nemo-builder",
+      "source": "./nemo-builder",
+      "description": "Comprehensive Claude Code skill for building AI solutions using NVIDIA NeMo 2.0 framework",
+      "version": "1.0.0",
+      "author": "Mykola Pavlov",
+      "keywords": ["nvidia", "nemo", "ai", "machine-learning", "llm", "training", "deployment"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills"
+    }
+  ]
+}
