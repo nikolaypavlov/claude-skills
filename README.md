@@ -51,11 +51,3 @@ claude-skills/
 │   └── examples/                 # Code examples
 └── README.md                     # This file
 ```
-
-## Contributing
-
-This marketplace is curated for high-quality AI/ML engineering skills. Contributions and suggestions are welcome.
-
-## License
-
-Individual skills may have their own licenses. See each skill's directory for details.
