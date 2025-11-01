@@ -10,9 +10,14 @@
       "source": "./nemo-builder",
       "description": "Comprehensive Claude Code skill for building AI solutions using NVIDIA NeMo 2.0 framework",
       "version": "1.0.0",
-      "author": "Mykola Pavlov",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
       "keywords": ["nvidia", "nemo", "ai", "machine-learning", "llm", "training", "deployment"],
-      "homepage": "https://github.com/nikolaypavlov/claude-skills"
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT"
     }
   ]
 }
