@@ -98,6 +98,7 @@ NeMo 2.0 represents a fundamental shift from YAML-based to Python-based configur
 - [🎓 Post-Training](./reference/nemo_post_training.md) - RLHF alignment (optional)
 - [🚀 Deployment Guide](./reference/nemo_deployment.md) - Production deployment
 - [🎤 Speech Tools](./reference/nemo_speech_tools.md) - Speech AI toolkit (if needed)
+- [📚 Tutorials](./reference/nemo_tutorials.md) - Interactive notebooks for hands-on learning
 
 #### 1.4 Define Project Requirements
 

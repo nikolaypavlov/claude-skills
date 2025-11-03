@@ -128,6 +128,7 @@ The `reference/` directory contains comprehensive guides for each phase:
 - [Post-Training Guide](./reference/nemo_post_training.md) - RLHF and alignment
 - [Deployment Guide](./reference/nemo_deployment.md) - Production deployment
 - [Speech AI Tools Guide](./reference/nemo_speech_tools.md) - Speech processing toolkit
+- [Tutorials](./reference/nemo_tutorials.md) - Interactive Jupyter notebooks for hands-on learning
 
 ## Examples
 
