@@ -22,6 +22,24 @@
       "skills": [
         "./nemo-builder"
       ]
+    },
+    {
+      "name": "jira-manager",
+      "source": "./",
+      "description": "Generate structured Jira tickets and integrate with Jira Server API. Supports templates for bugs, tasks, stories, and epics with per-directory configuration.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["jira", "project-management", "kanban", "agile", "tickets", "issues"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./jira-manager"
+      ]
     }
   ]
 }

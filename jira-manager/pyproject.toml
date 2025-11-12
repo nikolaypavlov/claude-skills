@@ -1,0 +1,24 @@
+[project]
+name = "jira-manager"
+version = "1.0.0"
+description = "Jira ticket generation and API integration tool"
+authors = [
+    {name = "Mykola Pavlov", email = "me@nikolaypavlov.com"}
+]
+requires-python = ">=3.10"
+dependencies = [
+    "jira>=3.10.0",
+    "tomli-w>=1.0.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+license = {text = "MIT"}
+readme = "README.md"
+keywords = ["jira", "project-management", "kanban", "agile"]
+
+[project.urls]
+Homepage = "https://github.com/nikolaypavlov/claude-skills"
+Repository = "https://github.com/nikolaypavlov/claude-skills.git"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
