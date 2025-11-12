@@ -55,16 +55,7 @@ For API integration features (creating/updating tickets directly in Jira), Pytho
 **Install dependencies**:
 
 ```bash
-# Navigate to jira-manager directory
-cd /path/to/jira-manager
-
-# Install with pip
-pip install jira tomli-w
-
-# For Python 3.10 only (Python 3.11+ has built-in tomllib)
-pip install tomli
-
-# Or install all dependencies from pyproject.toml
+# Or install all dependencies from pyproject.toml in the jira-manager directory
 pip install -e .
 ```
 
