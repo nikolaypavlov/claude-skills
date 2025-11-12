@@ -54,9 +54,58 @@ For API integration features (creating/updating tickets directly in Jira), Pytho
 
 **Install dependencies**:
 
+**Option 1: Using uv run (recommended - automatic dependency management)**:
+
+If `uv` is available, use `uv run` to automatically handle dependencies:
+
 ```bash
-# Or install all dependencies from pyproject.toml in the jira-manager directory
+cd /path/to/jira-manager
+
+# No installation needed! uv run handles everything
+uv run tools/create_ticket.py
+uv run tools/update_ticket.py
+uv run tools/setup_wizard.py
+```
+
+**Option 2: Using uv with explicit venv (for persistent environment)**:
+
+```bash
+cd /path/to/jira-manager
+
+# Create virtual environment and install dependencies
+uv venv && uv pip install -e .
+
+# Run scripts with venv Python
+.venv/bin/python3 tools/create_ticket.py
+.venv/bin/python3 tools/update_ticket.py
+```
+
+**Option 3: Using pip (standard method)**:
+
+```bash
+cd /path/to/jira-manager
+
+# Install dependencies with pip
 pip install -e .
+
+# Run scripts
+python tools/create_ticket.py
+```
+
+**Option 4: For externally-managed Python (macOS/Homebrew)**:
+
+If you get `externally-managed-environment` error:
+
+```bash
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -e .
+
+# Run scripts
+python tools/create_ticket.py
 ```
 
 **Required packages**:

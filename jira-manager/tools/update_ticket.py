@@ -177,14 +177,26 @@ Examples:
     config_manager = ConfigManager()
     profile = config_manager.get_profile_for_directory(directory)
 
-    # Run setup wizard if no configuration exists
+    # Check if configuration exists
     if not profile:
         print(f"No Jira configuration found for directory: {directory}")
+        print()
+
+        # For update_ticket, stdin is free so wizard can run
+        # But add check for consistency and better error handling
         print("Running setup wizard...")
         print()
 
-        if not run_setup_wizard(directory):
-            print("Setup failed. Cannot proceed.")
+        try:
+            if not run_setup_wizard(directory):
+                print("Setup failed. Cannot proceed.")
+                sys.exit(1)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            print("Setup interrupted.")
+            print()
+            print("You can run setup later with:")
+            print(f"  python3 tools/setup_wizard.py {directory}")
             sys.exit(1)
 
         # Reload profile after setup

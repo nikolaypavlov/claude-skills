@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import sys
+import os
 from pathlib import Path
 from config_manager import ConfigManager
 from jira_client import JiraManager
@@ -21,20 +22,42 @@ def create_ticket_from_json(ticket_data: dict, directory: str) -> bool:
     config_manager = ConfigManager()
     profile = config_manager.get_profile_for_directory(directory)
 
-    # Run setup wizard if no configuration exists
+    # Check if configuration exists
     if not profile:
         print(f"No Jira configuration found for directory: {directory}")
-        print("Running setup wizard...")
         print()
 
-        if not run_setup_wizard(directory):
-            print("Setup failed. Cannot create ticket.")
-            return False
+        # Check if stdin is a TTY (interactive) or pipe/redirect (non-interactive)
+        if sys.stdin.isatty():
+            # Interactive mode - can run setup wizard
+            print("Running setup wizard...")
+            print()
 
-        # Reload profile after setup
-        profile = config_manager.get_profile_for_directory(directory)
-        if not profile:
-            print("Error: Configuration was not saved properly")
+            if not run_setup_wizard(directory):
+                print("Setup failed. Cannot create ticket.")
+                return False
+
+            # Reload profile after setup
+            profile = config_manager.get_profile_for_directory(directory)
+            if not profile:
+                print("Error: Configuration was not saved properly")
+                return False
+        else:
+            # Non-interactive mode (stdin used for data) - cannot run wizard
+            print("ERROR: Jira configuration not found.")
+            print()
+            print("Please run the setup wizard first in a separate command:")
+            print()
+            print("  # Using uv:")
+            print(f"  uv run tools/setup_wizard.py {directory}")
+            print()
+            print("  # Or with venv Python:")
+            print(f"  .venv/bin/python3 tools/setup_wizard.py {directory}")
+            print()
+            print("  # Or with regular Python:")
+            print(f"  python3 tools/setup_wizard.py {directory}")
+            print()
+            print("After setup is complete, run this command again.")
             return False
 
     # Extract profile data
