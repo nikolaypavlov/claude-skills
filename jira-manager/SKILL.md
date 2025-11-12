@@ -198,7 +198,7 @@ export JIRA_API_KEY="your-personal-access-token"
 
 **Where to get project_key**:
 - Extract from user conversation context
-- User will mention the project name (e.g., "create ticket in ML project")
+- User will mention the project name (e.g., "create ticket in PROJ project")
 - Include `project_key` in the ticket JSON data
 
 ### Creating Tickets via Jira API
@@ -214,7 +214,7 @@ When user wants to create ticket directly in Jira Server (not just generate cont
 
    ticket_data = {
        "type": "bug",  # or "task", "story", "epic"
-       "project_key": "ML",  # from user context
+       "project_key": "PROJ",  # from user context
        "summary": "Component - Brief description",
        "description": "Full description in Jira Wiki Markup",
        "priority": "High",  # optional
@@ -240,7 +240,7 @@ When user wants to create ticket directly in Jira Server (not just generate cont
 ```json
 {
   "type": "bug",
-  "project_key": "ML",
+  "project_key": "PROJ",
   "summary": "Login page - Users cannot log in with valid credentials",
   "description": "h3. Bug Description\n\nUsers are unable to log in...",
   "priority": "Critical"
@@ -251,7 +251,7 @@ When user wants to create ticket directly in Jira Server (not just generate cont
 ```json
 {
   "type": "story",
-  "project_key": "ML",
+  "project_key": "PROJ",
   "summary": "Step-by-step questionnaire navigation",
   "description": "h3. User Story\n\nAs a user, I want...",
   "additional_fields": {
@@ -264,7 +264,7 @@ When user wants to create ticket directly in Jira Server (not just generate cont
 ```json
 {
   "type": "task",
-  "project_key": "ML",
+  "project_key": "PROJ",
   "summary": "Set up model training pipeline monitoring",
   "description": "h3. Task Description\n\nConfigure monitoring for ML pipeline...",
   "priority": "Medium"
@@ -275,7 +275,7 @@ When user wants to create ticket directly in Jira Server (not just generate cont
 ```json
 {
   "type": "epic",
-  "project_key": "ML",
+  "project_key": "PROJ",
   "summary": "ICP Builder - Ideal Customer Profile Creation",
   "description": "h3. Epic Goal\n\nCreate a comprehensive ICP builder..."
 }

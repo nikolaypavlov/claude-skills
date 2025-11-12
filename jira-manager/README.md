@@ -1,14 +1,14 @@
 # Jira Manager
 
-Claude Code skill for generating structured Jira tickets and integrating with Jira Server API. Supports templates for bugs, tasks, stories, and epics with per-directory configuration.
+Claude Code skill for generating structured Jira tickets and integrating with Jira Server API. Supports templates for bugs, tasks, stories, and epics with simple environment variable configuration.
 
 ## Features
 
 - **Template-Based Ticket Generation**: Structured templates for Bug, Task, Story, and Epic
 - **Jira Wiki Markup**: Properly formatted content ready to copy-paste
 - **Jira Server API Integration**: Direct ticket creation via Personal Access Tokens (PAT)
-- **Per-Directory Configuration**: Different Jira servers/projects for different directories
-- **Interactive Setup**: Auto-configures on first use with setup wizard
+- **Simple Configuration**: Two environment variables, no config files
+- **Context-Aware**: Project key extracted from conversation context
 - **Multi-Language Support**: Generate tickets in any language
 
 ## Requirements
@@ -52,42 +52,29 @@ Claude will:
 Ask Claude to create a ticket directly in Jira:
 
 ```
-Create this bug ticket directly in Jira
+Create this bug ticket directly in the PROJ project
 ```
 
-On first use:
-- Setup wizard runs automatically
-- Prompts for Jira Server URL
-- Prompts for Personal Access Token
-- Prompts for Project Key
-- Tests connection
-- Saves configuration to `~/.config/jira/config.toml`
-
-On subsequent uses:
-- Loads saved configuration for current directory
-- Creates ticket via Jira API
-- Returns issue key and URL
+Claude will:
+- Use environment variables for authentication
+- Extract project key (ML) from your message
+- Create ticket via Jira API
+- Return issue key and URL
 
 ## Configuration
 
-### Per-Directory Profiles
+### Environment Variables
 
-Configuration is stored in `~/.config/jira/config.toml`:
+Add these to your shell profile (`~/.bash_profile` or `~/.zshenv`):
 
-```toml
-[directory_mappings]
-"/Users/name/project1" = "proj1_profile"
-"/Users/name/project2" = "proj2_profile"
+```bash
+export JIRA_SERVER_URL="https://jira.example.com"
+export JIRA_API_KEY="your_personal_access_token"
+```
 
-[profiles.proj1_profile]
-server_url = "https://jira.company1.com"
-pat = "your_token_here"
-project_key = "PROJ1"
-
-[profiles.proj2_profile]
-server_url = "https://jira.company2.com"
-pat = "another_token"
-project_key = "PROJ2"
+Then reload your shell or run:
+```bash
+source ~/.bash_profile  # or ~/.zshenv
 ```
 
 ### Creating Personal Access Token
@@ -100,6 +87,14 @@ project_key = "PROJ2"
 6. Copy the generated token
 
 See `reference/jira_server_setup.md` for detailed instructions.
+
+### Project Key
+
+The project key is extracted from your conversation with Claude:
+- "Create ticket in PROJ project" → project_key: ML
+- "Add bug to PROJ project" → project_key: PROJ
+
+No configuration file needed!
 
 ## Usage Examples
 
@@ -224,6 +219,20 @@ python tools/update_ticket.py --issue PROJ-123 --transition "In Progress"
 
 ## Troubleshooting
 
+### Missing Environment Variables
+
+```
+ENVIRONMENT VARIABLES REQUIRED
+Missing variables:
+  - JIRA_SERVER_URL
+  - JIRA_API_KEY
+```
+
+Solutions:
+- Add environment variables to `~/.bash_profile` or `~/.zshenv`
+- Reload shell: `source ~/.bash_profile`
+- Verify with: `echo $JIRA_SERVER_URL`
+
 ### Connection Issues
 
 ```
@@ -231,8 +240,8 @@ Error: Failed to connect to Jira Server
 ```
 
 Solutions:
-- Verify Jira Server URL is correct (including https://)
-- Check Personal Access Token is valid and not expired
+- Verify `JIRA_SERVER_URL` is correct (including https://)
+- Check `JIRA_API_KEY` (Personal Access Token) is valid and not expired
 - Ensure network access to Jira Server
 - Verify Jira Server version is 9.12+
 

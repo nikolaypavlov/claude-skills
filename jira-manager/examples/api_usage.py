@@ -3,12 +3,17 @@
 Example of using Jira Manager API programmatically
 
 This script demonstrates how to:
-1. Configure Jira profiles
+1. Use environment variables for authentication
 2. Create different types of tickets
 3. Link issues to epics
 4. Retrieve project metadata
+
+Prerequisites:
+  export JIRA_SERVER_URL="https://jira.example.com"
+  export JIRA_API_KEY="your_personal_access_token"
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,31 +21,24 @@ from pathlib import Path
 tools_path = Path(__file__).parent.parent / "tools"
 sys.path.insert(0, str(tools_path))
 
-from config_manager import ConfigManager
 from jira_client import JiraManager
 
 
-def example_configuration():
-    """Example: Configure Jira profile for a directory"""
-    print("=== Configuration Example ===\n")
+def check_environment():
+    """Check if required environment variables are set"""
+    server_url = os.environ.get("JIRA_SERVER_URL")
+    api_key = os.environ.get("JIRA_API_KEY")
 
-    config = ConfigManager()
+    if not server_url or not api_key:
+        print("ERROR: Required environment variables not set")
+        print("\nPlease set:")
+        if not server_url:
+            print("  export JIRA_SERVER_URL='https://jira.example.com'")
+        if not api_key:
+            print("  export JIRA_API_KEY='your_personal_access_token'")
+        sys.exit(1)
 
-    # Add a profile for a project
-    config.add_profile(
-        profile_name="my_project",
-        server_url="https://jira.example.com",
-        pat="your_personal_access_token_here",
-        project_key="PROJ",
-        directory="/Users/name/projects/my-project"
-    )
-
-    print("Profile 'my_project' added successfully!")
-
-    # Retrieve profile
-    profile = config.get_profile_for_directory("/Users/name/projects/my-project")
-    print(f"Retrieved profile: {profile}")
-    print()
+    return server_url, api_key
 
 
 def example_create_bug(jira: JiraManager):
@@ -243,14 +241,15 @@ def main():
     print("=" * 60)
     print()
 
-    # Initialize Jira client
-    # NOTE: Replace these with your actual Jira credentials
-    SERVER_URL = "https://jira.example.com"
-    PAT = "your_personal_access_token"
-    PROJECT_KEY = "PROJ"
+    # Check environment variables
+    server_url, api_key = check_environment()
+
+    # Project key - in real usage, this comes from conversation context
+    # For this example, specify your project key here
+    PROJECT_KEY = "PROJ"  # Change to your project key
 
     try:
-        jira = JiraManager(SERVER_URL, PAT, PROJECT_KEY)
+        jira = JiraManager(server_url, api_key, PROJECT_KEY)
 
         # Test connection
         success, message = jira.test_connection()
@@ -261,7 +260,6 @@ def main():
         print(f"Connected: {message}\n")
 
         # Run examples
-        # example_configuration()  # Uncomment to test configuration
         example_get_metadata(jira)
 
         # Create an epic

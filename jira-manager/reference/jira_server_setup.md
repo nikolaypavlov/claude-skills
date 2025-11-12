@@ -45,77 +45,77 @@ The token will look like:
 MzYxNjc5ODE2NTEyOmFGZkVXZzN5R1hTZFVWd3RZbVpQN...
 ```
 
-## Step 3: Find Your Project Key
+## Step 3: Configure Environment Variables
 
-You need the project key to configure Jira Manager:
+Add your Jira Server URL and PAT to your shell profile:
 
-1. Navigate to your project in Jira
-2. Look at the URL, it will be something like:
+1. Open your shell profile:
+   ```bash
+   # For bash
+   nano ~/.bash_profile
+
+   # For zsh (macOS default)
+   nano ~/.zshenv
    ```
-   https://jira.example.com/projects/PROJ/board/123
+
+2. Add these lines (replace with your values):
+   ```bash
+   export JIRA_SERVER_URL="https://jira.example.com"
+   export JIRA_API_KEY="your_token_from_step_2"
    ```
-3. The project key is the part after `/projects/` (e.g., `PROJ`)
 
-Alternatively:
-1. Go to **Projects** → **View all projects**
-2. Find your project in the list
-3. The project key is shown in the "Key" column
+3. Save and reload:
+   ```bash
+   # For bash
+   source ~/.bash_profile
 
-## Step 4: Configure Jira Manager
+   # For zsh
+   source ~/.zshenv
+   ```
 
-### Automatic Setup (Recommended)
+4. Verify:
+   ```bash
+   echo $JIRA_SERVER_URL
+   echo $JIRA_API_KEY
+   ```
 
-When you first try to create a ticket via API, Jira Manager will automatically run the setup wizard:
+## Step 4: Verify Setup
 
-1. You'll be prompted for:
-   - Jira Server URL (e.g., `https://jira.example.com`)
-   - Personal Access Token (paste the token from Step 2)
-   - Project Key (from Step 3)
+Create a test ticket to verify API integration:
 
-2. The wizard will test the connection
+```bash
+export JIRA_SERVER_URL="https://jira.example.com"
+export JIRA_API_KEY="your_token"
 
-3. Configuration will be saved to `~/.config/jira/config.toml`
-
-### Manual Setup
-
-You can manually create the configuration file:
-
-1. Create directory: `~/.config/jira/`
-2. Create file: `~/.config/jira/config.toml`
-3. Add your configuration:
-
-```toml
-[directory_mappings]
-"/path/to/your/project" = "your_profile_name"
-
-[profiles.your_profile_name]
-server_url = "https://jira.example.com"
-pat = "your_token_here"
-project_key = "PROJ"
-```
-
-## Step 5: Verify Setup
-
-Test your configuration:
-
-```python
-python tools/setup_wizard.py /path/to/your/project
-```
-
-Or create a test ticket to verify:
-
-```python
 echo '{
   "type": "task",
+  "project_key": "PROJ",
   "summary": "Test ticket from Jira Manager",
   "description": "This is a test ticket to verify API integration"
-}' | python tools/create_ticket.py
+}' | uv run tools/create_ticket.py
 ```
 
 If successful, you'll see:
 ```
-Success: Created Task PROJ-123: https://jira.example.com/browse/PROJ-123
+Success: Created Task ML-123: https://jira.example.com/browse/ML-123
+Issue Key: ML-123
+URL: https://jira.example.com/browse/ML-123
 ```
+
+## Project Key
+
+The project key is passed in each ticket request based on conversation context. To find your project key:
+
+1. Navigate to your project in Jira
+2. Look at the URL:
+   ```
+   https://jira.example.com/projects/PROJ/board/123
+   ```
+3. The project key is after `/projects/` (e.g., `PROJ`)
+
+Or:
+1. Go to **Projects** → **View all projects**
+2. The "Key" column shows project keys
 
 ## Permissions Required
 
@@ -137,12 +137,13 @@ To check permissions:
 ### Token Management
 
 1. **Never commit tokens to version control**
-   - Add `~/.config/jira/config.toml` to your `.gitignore`
-   - Use environment variables for shared configurations
+   - Environment variables in `~/.bash_profile` or `~/.zshenv` are safe (not in repo)
+   - Never hardcode tokens in scripts
 
 2. **Rotate tokens regularly**
    - Set expiration dates (recommended: 90 days)
    - Revoke old tokens when creating new ones
+   - Update `JIRA_API_KEY` in shell profile
 
 3. **Use separate tokens per device/application**
    - Easier to track usage
@@ -152,12 +153,13 @@ To check permissions:
 4. **Revoke tokens immediately if compromised**
    - Go to Profile → Personal Access Tokens
    - Click **Revoke** next to the compromised token
+   - Update `JIRA_API_KEY` with new token
 
 ### Token Storage
 
-- **Do**: Store in password manager or encrypted storage
-- **Do**: Use OS keychain/credential manager when possible
-- **Don't**: Store in plain text files in the project
+- **Do**: Store in shell profile (`~/.bash_profile`, `~/.zshenv`)
+- **Do**: Use password manager for backup copy
+- **Don't**: Hardcode in scripts or applications
 - **Don't**: Share tokens via email or chat
 - **Don't**: Include in screenshots or documentation
 
@@ -198,30 +200,29 @@ To check permissions:
 Jira will send email notifications 5 days before token expiration. To renew:
 
 1. Create a new token following Step 2
-2. Update `~/.config/jira/config.toml` with new token
-3. Revoke the old token
+2. Update `JIRA_API_KEY` in your shell profile
+3. Reload shell: `source ~/.bash_profile`
+4. Revoke the old token
 
 ## Advanced Configuration
 
 ### Multiple Jira Servers
 
-You can configure different Jira servers for different projects:
+If you work with multiple Jira servers, you can:
 
-```toml
-[directory_mappings]
-"/path/to/work-project" = "work_jira"
-"/path/to/personal-project" = "personal_jira"
+1. **Use shell aliases** for different environments:
+   ```bash
+   # Add to ~/.bash_profile or ~/.zshenv
+   alias jira-work='export JIRA_SERVER_URL="https://jira.work.com" JIRA_API_KEY="work_token"'
+   alias jira-personal='export JIRA_SERVER_URL="https://jira.personal.com" JIRA_API_KEY="personal_token"'
+   ```
 
-[profiles.work_jira]
-server_url = "https://jira.company.com"
-pat = "work_token"
-project_key = "WORK"
-
-[profiles.personal_jira]
-server_url = "https://jira.mysite.com"
-pat = "personal_token"
-project_key = "PERS"
-```
+2. **Use per-session variables**:
+   ```bash
+   # Set for work session
+   export JIRA_SERVER_URL="https://jira.work.com"
+   export JIRA_API_KEY="work_token"
+   ```
 
 ### Token Expiration Configuration
 
@@ -243,8 +244,8 @@ Administrators can configure default expiration in Jira:
 
 ## Frequently Asked Questions
 
-**Q: Can I use the same token for multiple directories?**
-A: Yes, you can reuse the same PAT across multiple profiles. However, using separate tokens per project/device is recommended for better security and tracking.
+**Q: Can I use the same token for multiple projects?**
+A: Yes, a single PAT can access all projects where you have permissions. However, using separate tokens per project/device is recommended for better security and tracking.
 
 **Q: What happens if my token expires?**
 A: You'll receive error messages when trying to create tickets. Create a new token and update your configuration.

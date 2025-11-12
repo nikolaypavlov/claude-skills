@@ -8,8 +8,13 @@ This script demonstrates how to:
 3. Update issue fields
 4. Add comments
 5. Transition issues to different statuses
+
+Prerequisites:
+  export JIRA_SERVER_URL="https://jira.example.com"
+  export JIRA_API_KEY="your_personal_access_token"
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +23,23 @@ tools_path = Path(__file__).parent.parent / "tools"
 sys.path.insert(0, str(tools_path))
 
 from jira_client import JiraManager
+
+
+def check_environment():
+    """Check if required environment variables are set"""
+    server_url = os.environ.get("JIRA_SERVER_URL")
+    api_key = os.environ.get("JIRA_API_KEY")
+
+    if not server_url or not api_key:
+        print("ERROR: Required environment variables not set")
+        print("\nPlease set:")
+        if not server_url:
+            print("  export JIRA_SERVER_URL='https://jira.example.com'")
+        if not api_key:
+            print("  export JIRA_API_KEY='your_personal_access_token'")
+        sys.exit(1)
+
+    return server_url, api_key
 
 
 def example_search_issues(jira: JiraManager):
@@ -253,14 +275,15 @@ def main():
     print("=" * 80)
     print()
 
-    # Initialize Jira client
-    # NOTE: Replace these with your actual Jira credentials
-    SERVER_URL = "https://jira.example.com"
-    PAT = "your_personal_access_token"
-    PROJECT_KEY = "PROJ"
+    # Check environment variables
+    server_url, api_key = check_environment()
+
+    # Project key - in real usage, this comes from conversation context
+    # For this example, specify your project key here
+    PROJECT_KEY = "PROJ"  # Change to your project key
 
     try:
-        jira = JiraManager(SERVER_URL, PAT, PROJECT_KEY)
+        jira = JiraManager(server_url, api_key, PROJECT_KEY)
 
         # Test connection
         success, message = jira.test_connection()
