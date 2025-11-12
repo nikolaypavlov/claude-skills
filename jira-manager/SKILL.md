@@ -44,6 +44,43 @@ The skill supports direct integration with Jira Server v9.12+ using Personal Acc
 
 **Multiple Jira Servers**: You can configure different Jira servers and projects for different directories.
 
+## Requirements
+
+### Python Dependencies
+
+For API integration features (creating/updating tickets directly in Jira), Python tools require the following dependencies:
+
+**Python Version**: 3.10 or higher
+
+**Install dependencies**:
+
+```bash
+# Navigate to jira-manager directory
+cd /path/to/jira-manager
+
+# Install with pip
+pip install jira tomli-w
+
+# For Python 3.10 only (Python 3.11+ has built-in tomllib)
+pip install tomli
+
+# Or install all dependencies from pyproject.toml
+pip install -e .
+```
+
+**Required packages**:
+- `jira` (>=3.10.0) - Jira Server/Data Center API client
+- `tomli-w` (>=1.0.0) - TOML file writing
+- `tomli` (>=2.0.0) - TOML file reading (only for Python <3.11)
+
+**Verification**:
+```bash
+python -c "import jira; print('jira:', jira.__version__)"
+python -c "import tomli_w; print('tomli_w: installed')"
+```
+
+**Note**: Text generation mode (without API integration) requires no dependencies. Dependencies are only needed if you want to create/update tickets directly in Jira via API.
+
 ## Template Usage
 
 **Always read** `reference/ticket_templates.md` to ensure:
