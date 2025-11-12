@@ -3,70 +3,26 @@ import json
 import sys
 import os
 from pathlib import Path
-from config_manager import ConfigManager
 from jira_client import JiraManager
-from setup_wizard import run_setup_wizard
 
 
-def create_ticket_from_json(ticket_data: dict, directory: str) -> bool:
+def create_ticket_from_json(ticket_data: dict, server_url: str, pat: str) -> bool:
     """Create a Jira ticket from JSON data
 
     Args:
-        ticket_data: Dict with ticket information
-        directory: Current working directory
+        ticket_data: Dict with ticket information (must include 'project_key')
+        server_url: Jira Server URL
+        pat: Personal Access Token
 
     Returns:
         True if ticket was created successfully
     """
-    # Load configuration
-    config_manager = ConfigManager()
-    profile = config_manager.get_profile_for_directory(directory)
+    # Extract project key from ticket data
+    project_key = ticket_data.get("project_key")
 
-    # Check if configuration exists
-    if not profile:
-        print(f"No Jira configuration found for directory: {directory}")
-        print()
-
-        # Check if stdin is a TTY (interactive) or pipe/redirect (non-interactive)
-        if sys.stdin.isatty():
-            # Interactive mode - can run setup wizard
-            print("Running setup wizard...")
-            print()
-
-            if not run_setup_wizard(directory):
-                print("Setup failed. Cannot create ticket.")
-                return False
-
-            # Reload profile after setup
-            profile = config_manager.get_profile_for_directory(directory)
-            if not profile:
-                print("Error: Configuration was not saved properly")
-                return False
-        else:
-            # Non-interactive mode (stdin used for data) - cannot run wizard
-            print("ERROR: Jira configuration not found.")
-            print()
-            print("Please run the setup wizard first in a separate command:")
-            print()
-            print("  # Using uv:")
-            print(f"  uv run tools/setup_wizard.py {directory}")
-            print()
-            print("  # Or with venv Python:")
-            print(f"  .venv/bin/python3 tools/setup_wizard.py {directory}")
-            print()
-            print("  # Or with regular Python:")
-            print(f"  python3 tools/setup_wizard.py {directory}")
-            print()
-            print("After setup is complete, run this command again.")
-            return False
-
-    # Extract profile data
-    server_url = profile.get("server_url")
-    pat = profile.get("pat")
-    project_key = profile.get("project_key")
-
-    if not all([server_url, pat, project_key]):
-        print("Error: Invalid profile configuration")
+    if not project_key:
+        print("Error: 'project_key' is required in ticket data")
+        print("Example: {\"type\": \"task\", \"project_key\": \"ML\", \"summary\": \"...\", ...}")
         return False
 
     # Initialize Jira client
@@ -127,10 +83,41 @@ def create_ticket_from_json(ticket_data: dict, directory: str) -> bool:
 
 def main():
     """Main entry point for create_ticket CLI"""
-    # Get current directory
-    directory = Path.cwd().resolve().as_posix()
+    # Check for required environment variables
+    server_url = os.environ.get("JIRA_SERVER_URL")
+    pat = os.environ.get("JIRA_API_KEY")
 
-    # Read JSON from stdin or file
+    if not server_url or not pat:
+        error_msg = """
+ENVIRONMENT VARIABLES REQUIRED
+
+Jira Manager requires environment variables to be set:
+
+Missing variables:
+"""
+        if not server_url:
+            error_msg += "  - JIRA_SERVER_URL (e.g., https://jira.example.com)\n"
+        if not pat:
+            error_msg += "  - JIRA_API_KEY (Personal Access Token for authentication)\n"
+
+        error_msg += """
+ACTION FOR CLAUDE CODE:
+Set these environment variables before running this tool.
+
+Example:
+  export JIRA_SERVER_URL="https://jira.example.com"
+  export JIRA_API_KEY="your-personal-access-token"
+
+WHY:
+- JIRA_SERVER_URL: URL of your Jira Server instance
+- JIRA_API_KEY: Personal Access Token for authentication (Jira Server 9.12+)
+
+The project_key should be included in the ticket JSON data based on user context.
+"""
+        print(error_msg)
+        sys.exit(1)
+
+    # THEN: Read JSON from stdin or file
     if len(sys.argv) > 1 and sys.argv[1] == "--file":
         if len(sys.argv) < 3:
             print("Error: --file option requires a filename")
@@ -158,7 +145,7 @@ def main():
             sys.exit(1)
 
     # Create ticket
-    success = create_ticket_from_json(ticket_data, directory)
+    success = create_ticket_from_json(ticket_data, server_url, pat)
     sys.exit(0 if success else 1)
 
 

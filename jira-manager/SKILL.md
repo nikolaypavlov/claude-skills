@@ -110,16 +110,13 @@ python tools/create_ticket.py
 
 **Required packages**:
 - `jira` (>=3.10.0) - Jira Server/Data Center API client
-- `tomli-w` (>=1.0.0) - TOML file writing
-- `tomli` (>=2.0.0) - TOML file reading (only for Python <3.11)
 
 **Verification**:
 ```bash
 python -c "import jira; print('jira:', jira.__version__)"
-python -c "import tomli_w; print('tomli_w: installed')"
 ```
 
-**Note**: Text generation mode (without API integration) requires no dependencies. Dependencies are only needed if you want to create/update tickets directly in Jira via API.
+**Note**: Text generation mode (without API integration) requires no dependencies. The `jira` package is only needed if you want to create/update tickets directly in Jira via API.
 
 ## Template Usage
 
@@ -178,18 +175,46 @@ Templates are available in English, but the user may ask you to use other langua
 
 ## API Integration Usage
 
+### Configuration with Environment Variables
+
+The skill uses environment variables for Jira Server authentication.
+
+**Required environment variables**:
+- `JIRA_SERVER_URL` - URL of Jira Server instance (e.g., https://jira.example.com)
+- `JIRA_API_KEY` - Personal Access Token for authentication (Jira Server 9.12+)
+
+**How to set** (user should add to their shell profile):
+```bash
+# Add to ~/.bash_profile or ~/.zshenv
+export JIRA_SERVER_URL="https://jira.example.com"
+export JIRA_API_KEY="your-personal-access-token"
+```
+
+**What if variables are missing?**
+- The tools will exit with clear error message
+- Error message explains what variables to set
+- User should configure them in their shell profile
+- After setting variables, retry the command
+
+**Where to get project_key**:
+- Extract from user conversation context
+- User will mention the project name (e.g., "create ticket in ML project")
+- Include `project_key` in the ticket JSON data
+
 ### Creating Tickets via Jira API
 
 When user wants to create ticket directly in Jira Server (not just generate content):
 
-1. **Prepare ticket data** in JSON format with required fields
-2. **Call create_ticket.py** via Python:
+**Prerequisites**: Environment variables JIRA_SERVER_URL and JIRA_API_KEY must be set (see Configuration section above)
+
+1. **Prepare ticket data** in JSON format with required fields:
    ```python
    import json
    import subprocess
 
    ticket_data = {
        "type": "bug",  # or "task", "story", "epic"
+       "project_key": "ML",  # from user context
        "summary": "Component - Brief description",
        "description": "Full description in Jira Wiki Markup",
        "priority": "High",  # optional
@@ -197,7 +222,7 @@ When user wants to create ticket directly in Jira Server (not just generate cont
    }
 
    result = subprocess.run(
-       ["python", "tools/create_ticket.py"],
+       ["uv", "run", "tools/create_ticket.py"],
        input=json.dumps(ticket_data),
        text=True,
        capture_output=True,
@@ -205,35 +230,9 @@ When user wants to create ticket directly in Jira Server (not just generate cont
    )
    ```
 
-3. **Handle setup wizard** if running for first time:
-   - Script will automatically detect missing configuration
-   - Wizard prompts will appear in output
-   - User provides Jira credentials interactively
-   - Configuration saved for future use
-
-4. **Parse response**:
+2. **Parse response**:
    - Success: Output contains "Success:", issue key, and URL
    - Failure: Output contains "Failed:" and error message
-
-### Configuration Management
-
-**Check existing configuration**:
-```python
-from tools.config_manager import ConfigManager
-config_manager = ConfigManager()
-profile = config_manager.get_profile_for_directory("/path/to/project")
-```
-
-**Manually add profile** (alternative to wizard):
-```python
-config_manager.add_profile(
-    profile_name="my_project",
-    server_url="https://jira.example.com",
-    pat="your_pat_token",
-    project_key="PROJ",
-    directory="/path/to/project"
-)
-```
 
 ### Example Ticket Types
 
@@ -241,6 +240,7 @@ config_manager.add_profile(
 ```json
 {
   "type": "bug",
+  "project_key": "ML",
   "summary": "Login page - Users cannot log in with valid credentials",
   "description": "h3. Bug Description\n\nUsers are unable to log in...",
   "priority": "Critical"
@@ -251,11 +251,23 @@ config_manager.add_profile(
 ```json
 {
   "type": "story",
+  "project_key": "ML",
   "summary": "Step-by-step questionnaire navigation",
   "description": "h3. User Story\n\nAs a user, I want...",
   "additional_fields": {
-    "epic_key": "PROJ-123"
+    "epic_key": "ML-123"
   }
+}
+```
+
+**Task**:
+```json
+{
+  "type": "task",
+  "project_key": "ML",
+  "summary": "Set up model training pipeline monitoring",
+  "description": "h3. Task Description\n\nConfigure monitoring for ML pipeline...",
+  "priority": "Medium"
 }
 ```
 
@@ -263,6 +275,7 @@ config_manager.add_profile(
 ```json
 {
   "type": "epic",
+  "project_key": "ML",
   "summary": "ICP Builder - Ideal Customer Profile Creation",
   "description": "h3. Epic Goal\n\nCreate a comprehensive ICP builder..."
 }

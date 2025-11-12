@@ -8,8 +8,6 @@ authors = [
 requires-python = ">=3.10"
 dependencies = [
     "jira>=3.10.0",
-    "tomli-w>=1.0.0",
-    "tomli>=2.0.0; python_version < '3.11'",
 ]
 license = {text = "MIT"}
 readme = "README.md"

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 import json
 import sys
+import os
 import argparse
 from pathlib import Path
-from config_manager import ConfigManager
 from jira_client import JiraManager
-from setup_wizard import run_setup_wizard
 
 
 def search_issues_command(jira: JiraManager, jql_query: str, max_results: int) -> bool:
@@ -170,49 +169,41 @@ Examples:
         print("Error: --update, --comment, and --transition require --issue")
         sys.exit(1)
 
-    # Get current directory
-    directory = Path.cwd().resolve().as_posix()
+    # Check for required environment variables
+    server_url = os.environ.get("JIRA_SERVER_URL")
+    pat = os.environ.get("JIRA_API_KEY")
 
-    # Load configuration
-    config_manager = ConfigManager()
-    profile = config_manager.get_profile_for_directory(directory)
+    if not server_url or not pat:
+        error_msg = """
+ENVIRONMENT VARIABLES REQUIRED
 
-    # Check if configuration exists
-    if not profile:
-        print(f"No Jira configuration found for directory: {directory}")
-        print()
+Jira Manager requires environment variables to be set:
 
-        # For update_ticket, stdin is free so wizard can run
-        # But add check for consistency and better error handling
-        print("Running setup wizard...")
-        print()
+Missing variables:
+"""
+        if not server_url:
+            error_msg += "  - JIRA_SERVER_URL (e.g., https://jira.example.com)\n"
+        if not pat:
+            error_msg += "  - JIRA_API_KEY (Personal Access Token for authentication)\n"
 
-        try:
-            if not run_setup_wizard(directory):
-                print("Setup failed. Cannot proceed.")
-                sys.exit(1)
-        except (EOFError, KeyboardInterrupt):
-            print()
-            print("Setup interrupted.")
-            print()
-            print("You can run setup later with:")
-            print(f"  python3 tools/setup_wizard.py {directory}")
-            sys.exit(1)
+        error_msg += """
+ACTION FOR CLAUDE CODE:
+Set these environment variables before running this tool.
 
-        # Reload profile after setup
-        profile = config_manager.get_profile_for_directory(directory)
-        if not profile:
-            print("Error: Configuration was not saved properly")
-            sys.exit(1)
+Example:
+  export JIRA_SERVER_URL="https://jira.example.com"
+  export JIRA_API_KEY="your-personal-access-token"
 
-    # Extract profile data
-    server_url = profile.get("server_url")
-    pat = profile.get("pat")
-    project_key = profile.get("project_key")
-
-    if not all([server_url, pat, project_key]):
-        print("Error: Invalid profile configuration")
+WHY:
+- JIRA_SERVER_URL: URL of your Jira Server instance
+- JIRA_API_KEY: Personal Access Token for authentication (Jira Server 9.12+)
+"""
+        print(error_msg)
         sys.exit(1)
+
+    # For update operations, project_key is extracted from issue key (e.g., ML-123 -> ML)
+    # For search operations without specific issue, use a default or extract from JQL
+    project_key = "DEFAULT"  # Will be overridden when needed
 
     # Initialize Jira client
     try:
