@@ -256,16 +256,6 @@ Solutions:
 - Check project key is correct
 - Ensure user has access to the project
 
-### Configuration Issues
-
-To reset configuration:
-
-```bash
-rm ~/.config/jira/config.toml
-```
-
-Next API request will trigger setup wizard again.
-
 ## API Integration Details
 
 ### Manual Ticket Creation
@@ -273,16 +263,22 @@ Next API request will trigger setup wizard again.
 ```python
 import json
 import subprocess
+import os
+
+# Set environment variables
+os.environ["JIRA_SERVER_URL"] = "https://jira.example.com"
+os.environ["JIRA_API_KEY"] = "your_personal_access_token"
 
 ticket = {
     "type": "bug",
+    "project_key": "PROJ",
     "summary": "Login - Cannot authenticate with valid credentials",
     "description": "h3. Bug Description\n\nUsers are unable to log in...",
     "priority": "High"
 }
 
 result = subprocess.run(
-    ["python", "tools/create_ticket.py"],
+    ["uv", "run", "tools/create_ticket.py"],
     input=json.dumps(ticket),
     text=True,
     capture_output=True,
@@ -290,27 +286,6 @@ result = subprocess.run(
 )
 
 print(result.stdout)
-```
-
-### Configuration Management
-
-```python
-from tools.config_manager import ConfigManager
-
-config = ConfigManager()
-
-# Add new profile
-config.add_profile(
-    profile_name="my_project",
-    server_url="https://jira.example.com",
-    pat="your_pat_here",
-    project_key="PROJ",
-    directory="/path/to/project"
-)
-
-# Get profile for directory
-profile = config.get_profile_for_directory("/path/to/project")
-print(profile)  # {'server_url': '...', 'pat': '...', 'project_key': '...'}
 ```
 
 ## Files and Structure
@@ -322,20 +297,16 @@ jira-manager/
 ├── pyproject.toml                     # Python dependencies
 ├── reference/                         # Reference documentation
 │   ├── ticket_templates.md            # Template definitions
-│   ├── jira_server_setup.md           # PAT setup guide
-│   └── config_format.md               # Configuration reference
+│   └── jira_server_setup.md           # PAT setup guide
 ├── examples/                          # Example tickets and code
 │   ├── bug_example.md
 │   ├── story_example.md
 │   ├── task_example.md
 │   ├── epic_example.md
-│   ├── config_example.toml
 │   ├── api_usage.py                   # CREATE operations examples
 │   └── update_operations_example.py   # SEARCH/UPDATE examples
 └── tools/                             # Python API integration
-    ├── config_manager.py              # Configuration management
     ├── jira_client.py                 # Jira API client (CRUD operations)
-    ├── setup_wizard.py                # Interactive setup
     ├── create_ticket.py               # CLI for creating tickets
     └── update_ticket.py               # CLI for search/update/comment
 ```

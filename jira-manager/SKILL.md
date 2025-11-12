@@ -22,7 +22,7 @@ Skill for generating structured Jira ticket content for small development teams 
 6. **Create ticket in Jira** (optional):
    - If user wants to create ticket directly in Jira Server
    - Use `tools/create_ticket.py` to create via API
-   - If no configuration exists, setup wizard will run automatically
+   - If environment variables not set, tool will show error with setup instructions
    - Returns issue key and URL
 
 ## Configuration
@@ -31,18 +31,19 @@ Skill for generating structured Jira ticket content for small development teams 
 
 The skill supports direct integration with Jira Server v9.12+ using Personal Access Tokens (PAT).
 
-**Configuration File**: `~/.config/jira/config.toml`
+**Environment Variables**: Configuration is done via environment variables in the user's shell profile:
+- `JIRA_SERVER_URL` - URL of Jira Server instance (e.g., https://jira.example.com)
+- `JIRA_API_KEY` - Personal Access Token for authentication
 
-**Per-Directory Profiles**: Each project directory can have its own Jira configuration (server, project, credentials).
+**User Setup**: User should add these to their `~/.bash_profile` or `~/.zshenv`:
+```bash
+export JIRA_SERVER_URL="https://jira.example.com"
+export JIRA_API_KEY="user_personal_access_token"
+```
 
-**First-Time Setup**: When you first try to create a ticket via API, an interactive setup wizard will run:
-- Prompts for Jira Server URL
-- Prompts for Personal Access Token
-- Prompts for default Project Key
-- Tests connection
-- Saves configuration for current directory
+**Project Key**: Extracted from user conversation context (e.g., "create ticket in PROJ project" → project_key: PROJ)
 
-**Multiple Jira Servers**: You can configure different Jira servers and projects for different directories.
+**Multiple Jira Servers**: User can use shell aliases for different servers or set variables per terminal session.
 
 ## Requirements
 
@@ -64,7 +65,6 @@ cd /path/to/jira-manager
 # No installation needed! uv run handles everything
 uv run tools/create_ticket.py
 uv run tools/update_ticket.py
-uv run tools/setup_wizard.py
 ```
 
 **Option 2: Using uv with explicit venv (for persistent environment)**:
