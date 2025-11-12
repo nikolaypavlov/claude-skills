@@ -57,7 +57,7 @@ Create this bug ticket directly in the PROJ project
 
 Claude will:
 - Use environment variables for authentication
-- Extract project key (ML) from your message
+- Extract project key (PROJ) from your message
 - Create ticket via Jira API
 - Return issue key and URL
 
@@ -91,8 +91,8 @@ See `reference/jira_server_setup.md` for detailed instructions.
 ### Project Key
 
 The project key is extracted from your conversation with Claude:
-- "Create ticket in PROJ project" → project_key: ML
-- "Add bug to PROJ project" → project_key: PROJ
+- "Create ticket in PROJ project" → project_key: PROJ
+- "Add bug to WORK project" → project_key: WORK
 
 No configuration file needed!
 

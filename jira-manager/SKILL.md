@@ -255,7 +255,7 @@ When user wants to create ticket directly in Jira Server (not just generate cont
   "summary": "Step-by-step questionnaire navigation",
   "description": "h3. User Story\n\nAs a user, I want...",
   "additional_fields": {
-    "epic_key": "ML-123"
+    "epic_key": "PROJ-123"
   }
 }
 ```

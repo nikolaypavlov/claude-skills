@@ -97,9 +97,9 @@ echo '{
 
 If successful, you'll see:
 ```
-Success: Created Task ML-123: https://jira.example.com/browse/ML-123
-Issue Key: ML-123
-URL: https://jira.example.com/browse/ML-123
+Success: Created Task PROJ-123: https://jira.example.com/browse/PROJ-123
+Issue Key: PROJ-123
+URL: https://jira.example.com/browse/PROJ-123
 ```
 
 ## Project Key
