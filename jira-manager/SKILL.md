@@ -1,6 +1,7 @@
 ---
 name: jira-manager
 description: Generate Jira ticket content for small development teams using Kanban workflow. Use when creating bugs, tasks, stories or epics with proper templates and structure.
+allowed-tools: Read, Grep, Glob
 ---
 
 # Jira Manager
