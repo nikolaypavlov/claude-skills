@@ -51,9 +51,6 @@ Generate structured Jira tickets and integrate with Jira Server API for seamless
 
 # Install Jira Manager
 /plugin install jira-manager@ai-engineering-skills
-
-# Install all skills
-/plugin install ai-engineering-skills
 ```
 
 ## Usage
