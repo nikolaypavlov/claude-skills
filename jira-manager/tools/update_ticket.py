@@ -172,6 +172,7 @@ Examples:
     # Check for required environment variables
     server_url = os.environ.get("JIRA_SERVER_URL")
     pat = os.environ.get("JIRA_API_KEY")
+    user_email = os.environ.get("JIRA_USER_EMAIL")  # Required for Jira Cloud
 
     if not server_url or not pat:
         error_msg = """
@@ -193,10 +194,12 @@ Set these environment variables before running this tool.
 Example:
   export JIRA_SERVER_URL="https://jira.example.com"
   export JIRA_API_KEY="your-personal-access-token"
+  export JIRA_USER_EMAIL="user@example.com"  # Required for Jira Cloud
 
 WHY:
 - JIRA_SERVER_URL: URL of your Jira Server instance
-- JIRA_API_KEY: Personal Access Token for authentication (Jira Server 9.12+)
+- JIRA_API_KEY: Personal Access Token for authentication (Jira Server 9.12+) or API Token (Jira Cloud)
+- JIRA_USER_EMAIL: Email for Jira Cloud basic auth (only required for Jira Cloud)
 """
         print(error_msg)
         sys.exit(1)
@@ -207,7 +210,7 @@ WHY:
 
     # Initialize Jira client
     try:
-        jira = JiraManager(server_url, pat, project_key)
+        jira = JiraManager(server_url, pat, project_key, user_email)
     except Exception as e:
         print(f"Error initializing Jira client: {str(e)}")
         sys.exit(1)
