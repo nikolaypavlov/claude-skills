@@ -6,19 +6,31 @@ from jira.exceptions import JIRAError
 class JiraManager:
     """Manages Jira Server API interactions using Personal Access Tokens"""
 
-    def __init__(self, server_url: str, pat: str, project_key: str):
+    def __init__(self, server_url: str, pat: str, project_key: str, user_email: Optional[str] = None):
         """Initialize Jira client with PAT authentication
 
         Args:
             server_url: Jira server URL (e.g., https://jira.example.com)
-            pat: Personal Access Token for authentication
+            pat: Personal Access Token for authentication (Server) or API token (Cloud)
             project_key: Default project key (e.g., PROJ)
+            user_email: User email for Jira Cloud basic auth (required for Cloud)
         """
         self.server_url = server_url.rstrip("/")
         self.project_key = project_key
 
-        # Initialize JIRA client with token authentication
-        self.client = JIRA(server=self.server_url, token_auth=pat)
+        # Determine if Jira Cloud or Server
+        is_cloud = "atlassian.net" in server_url.lower()
+
+        # Initialize JIRA client with appropriate authentication
+        if is_cloud and user_email:
+            # Jira Cloud uses Basic Auth (email, API token)
+            self.client = JIRA(server=self.server_url, basic_auth=(user_email, pat))
+        else:
+            # Jira Server uses PAT token authentication (original logic)
+            self.client = JIRA(server=self.server_url, token_auth=pat)
+
+        # OLD LOGIC (kept for reference - can revert if needed):
+        # self.client = JIRA(server=self.server_url, token_auth=pat)
 
     def test_connection(self) -> tuple[bool, str]:
         """Test connection to Jira server

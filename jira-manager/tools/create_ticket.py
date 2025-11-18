@@ -6,13 +6,14 @@ from pathlib import Path
 from jira_client import JiraManager
 
 
-def create_ticket_from_json(ticket_data: dict, server_url: str, pat: str) -> bool:
+def create_ticket_from_json(ticket_data: dict, server_url: str, pat: str, user_email: str = None) -> bool:
     """Create a Jira ticket from JSON data
 
     Args:
         ticket_data: Dict with ticket information (must include 'project_key')
         server_url: Jira Server URL
-        pat: Personal Access Token
+        pat: Personal Access Token (Server) or API token (Cloud)
+        user_email: User email for Jira Cloud (optional, required for Cloud)
 
     Returns:
         True if ticket was created successfully
@@ -27,7 +28,7 @@ def create_ticket_from_json(ticket_data: dict, server_url: str, pat: str) -> boo
 
     # Initialize Jira client
     try:
-        jira_manager = JiraManager(server_url, pat, project_key)
+        jira_manager = JiraManager(server_url, pat, project_key, user_email)
     except Exception as e:
         print(f"Error initializing Jira client: {str(e)}")
         return False
@@ -86,6 +87,7 @@ def main():
     # Check for required environment variables
     server_url = os.environ.get("JIRA_SERVER_URL")
     pat = os.environ.get("JIRA_API_KEY")
+    user_email = os.environ.get("JIRA_USER_EMAIL")  # Required for Jira Cloud
 
     if not server_url or not pat:
         error_msg = """
@@ -107,10 +109,12 @@ Set these environment variables before running this tool.
 Example:
   export JIRA_SERVER_URL="https://jira.example.com"
   export JIRA_API_KEY="your-personal-access-token"
+  export JIRA_USER_EMAIL="user@example.com"  # Required for Jira Cloud
 
 WHY:
 - JIRA_SERVER_URL: URL of your Jira Server instance
-- JIRA_API_KEY: Personal Access Token for authentication (Jira Server 9.12+)
+- JIRA_API_KEY: Personal Access Token for authentication (Jira Server 9.12+) or API Token (Jira Cloud)
+- JIRA_USER_EMAIL: Email for Jira Cloud basic auth (only required for Jira Cloud)
 
 The project_key should be included in the ticket JSON data based on user context.
 """
@@ -145,7 +149,7 @@ The project_key should be included in the ticket JSON data based on user context
             sys.exit(1)
 
     # Create ticket
-    success = create_ticket_from_json(ticket_data, server_url, pat)
+    success = create_ticket_from_json(ticket_data, server_url, pat, user_email)
     sys.exit(0 if success else 1)
 
 
