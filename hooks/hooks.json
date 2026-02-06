@@ -1,0 +1,17 @@
+{
+  "description": "Python development hooks: ruff linting, formatting, and import sorting via uvx",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/ruff-lint.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -53,6 +53,11 @@ Generate structured Jira tickets and integrate with Jira Server API for seamless
 /plugin install jira-manager@ai-engineering-skills
 ```
 
+```bash
+# Install Python Dev (ruff linting, formatting, import sorting)
+/plugin install python-dev@ai-engineering-skills
+```
+
 ## Usage
 
 Once installed, skills are automatically available in Claude Code.
@@ -61,12 +66,29 @@ Once installed, skills are automatically available in Claude Code.
 
 **Jira Manager**: Ask to create, search, or update Jira tickets. The skill provides both text generation and direct API integration modes.
 
+## Hooks
+
+### Ruff Linter
+
+Automatically runs [ruff](https://docs.astral.sh/ruff/) on Python files after every Write or Edit operation via `uvx`.
+
+**What it does:**
+- Fixes auto-fixable lint issues
+- Sorts imports (isort-compatible)
+- Formats code
+- Reports remaining issues back to Claude
+
+**Requirements:** `uv` installed and a Python project marker (`pyproject.toml`, `setup.py`, or `setup.cfg`) in the project root. Skips silently if either is missing.
+
 ## Structure
 
 ```
 claude-skills/
 ├── .claude-plugin/
 │   └── marketplace.json          # Marketplace configuration
+├── hooks/                        # Plugin hooks
+│   ├── hooks.json                # Hook configuration
+│   └── ruff-lint.sh              # Ruff linting, formatting, import sorting
 ├── nemo-builder/                 # NeMo 2.0 Builder skill
 │   ├── SKILL.md                  # Main skill file
 │   ├── README.md                 # Documentation
