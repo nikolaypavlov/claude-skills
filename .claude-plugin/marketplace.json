@@ -44,13 +44,13 @@
     {
       "name": "python-dev",
       "source": "./",
-      "description": "PostToolUse hook that runs ruff linting, formatting, and import sorting on Python files after Write/Edit operations via uvx.",
+      "description": "PostToolUse hooks for code quality: ruff (Python linting, formatting, import sorting) and yamllint (YAML validation) via uvx.",
       "version": "1.0.0",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"
       },
-      "keywords": ["python", "ruff", "linting", "formatting", "hooks"],
+      "keywords": ["python", "ruff", "yaml", "yamllint", "linting", "formatting", "hooks"],
       "homepage": "https://github.com/nikolaypavlov/claude-skills",
       "repository": "https://github.com/nikolaypavlov/claude-skills.git",
       "license": "MIT",
