@@ -40,7 +40,7 @@ uvx ruff check --fix --extend-select I --quiet "$file_path" 2>/dev/null || true
 uvx ruff format --quiet "$file_path" 2>/dev/null || true
 
 # Final check: report remaining issues to Claude
-issues=$(uvx ruff check --extend-select I "$file_path" 2>/dev/null) || true
+issues=$(uvx ruff check --extend-select I --quiet "$file_path" 2>/dev/null) || true
 
 if [[ -n "$issues" ]]; then
   echo "ruff: issues in $(basename "$file_path"):" >&2
