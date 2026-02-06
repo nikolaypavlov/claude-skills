@@ -1,8 +1,8 @@
 # AI Engineering Skills for Claude Code
 
-A curated marketplace of Claude Code skills for AI/ML engineering workflows.
+A curated marketplace of Claude Code plugins for AI/ML engineering workflows.
 
-## Available Skills
+## Available Plugins
 
 ### NeMo Builder
 
@@ -35,6 +35,18 @@ Generate structured Jira tickets and integrate with Jira Server API for seamless
 
 [View Documentation](./jira-manager/README.md)
 
+### Python Dev
+
+Automatically runs [ruff](https://docs.astral.sh/ruff/) on Python files after every Write or Edit operation via `uvx`.
+
+**What it does:**
+- Fixes auto-fixable lint issues
+- Sorts imports (isort-compatible)
+- Formats code
+- Reports remaining issues back to Claude
+
+**Requirements:** `uv` installed and a Python project marker (`pyproject.toml`, `setup.py`, or `setup.cfg`) in the project root. Skips silently if either is missing.
+
 ## Installation
 
 ### Add Marketplace
@@ -43,7 +55,7 @@ Generate structured Jira tickets and integrate with Jira Server API for seamless
 /plugin marketplace add nikolaypavlov/claude-skills
 ```
 
-### Install Skills
+### Install Plugins
 
 ```bash
 # Install NeMo Builder
@@ -51,15 +63,20 @@ Generate structured Jira tickets and integrate with Jira Server API for seamless
 
 # Install Jira Manager
 /plugin install jira-manager@ai-engineering-skills
+
+# Install Python Dev (ruff linting, formatting, import sorting)
+/plugin install python-dev@ai-engineering-skills
 ```
 
 ## Usage
 
-Once installed, skills are automatically available in Claude Code.
+Once installed, plugins are automatically available in Claude Code.
 
 **NeMo Builder**: Start conversations about NeMo-related tasks (training, fine-tuning, deployment) and the skill will activate automatically.
 
 **Jira Manager**: Ask to create, search, or update Jira tickets. The skill provides both text generation and direct API integration modes.
+
+**Python Dev**: Runs automatically after every Write/Edit on `.py` files. No manual activation needed.
 
 ## Structure
 
@@ -67,12 +84,15 @@ Once installed, skills are automatically available in Claude Code.
 claude-skills/
 ├── .claude-plugin/
 │   └── marketplace.json          # Marketplace configuration
-├── nemo-builder/                 # NeMo 2.0 Builder skill
+├── hooks/                        # Python Dev plugin
+│   ├── hooks.json                # Hook configuration (PostToolUse)
+│   └── ruff-lint.sh              # Ruff linting, formatting, import sorting
+├── nemo-builder/                 # NeMo Builder plugin
 │   ├── SKILL.md                  # Main skill file
 │   ├── README.md                 # Documentation
 │   ├── reference/                # Detailed guides
 │   └── examples/                 # Code examples
-├── jira-manager/                 # Jira Manager skill
+├── jira-manager/                 # Jira Manager plugin
 │   ├── SKILL.md                  # Main skill file
 │   ├── README.md                 # Documentation
 │   ├── pyproject.toml            # Python dependencies

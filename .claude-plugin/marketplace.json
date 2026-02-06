@@ -40,6 +40,21 @@
       "skills": [
         "./jira-manager"
       ]
+    },
+    {
+      "name": "python-dev",
+      "source": "./",
+      "description": "PostToolUse hook that runs ruff linting, formatting, and import sorting on Python files after Write/Edit operations via uvx.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["python", "ruff", "linting", "formatting", "hooks"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false
     }
   ]
 }
