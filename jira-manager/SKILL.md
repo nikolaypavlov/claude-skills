@@ -163,10 +163,18 @@ Templates are available in English, but the user may ask you to use other langua
 - Needs fixing urgently based on severity
 
 ### Linking Best Practices
-- Stories should link to Epics: `additional_fields: {"parent": {"key": "KEY-N"}}`
+- Stories should link to Epics via epic link field: `additional_fields: {"epic_key": "KEY-N"}` (not parent)
 - Tasks can link to Stories if relevant
 - Use issue keys (KEY-N) in commit messages
 - Reference related issues in comments
+
+### Text Formatting Rules
+- Use real newlines in all text fields (summary, description, comments), never literal `\n`
+- Jira Wiki Markup requires actual line breaks to render correctly
+
+### Post-Creation Verification
+- After creating a ticket, read it back via `--get` and verify all sections are present
+- Show the ticket URL to the user for confirmation
 
 ### Writing Quality Standards
 - **Be Specific**: "Users can upload PDF, DOCX, or TXT files" vs "Users can upload files"
