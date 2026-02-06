@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A curated marketplace of Claude Code skills for AI/ML engineering workflows. Contains two independent skills:
+A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Contains:
 
 - **NeMo Builder** (`nemo-builder/`) -- NVIDIA NeMo 2.0 framework skill for AI development lifecycle (data prep, training, deployment). Documentation-only skill with reference guides and Python examples.
 - **Jira Manager** (`jira-manager/`) -- Jira ticket generation and Server API integration. Hybrid skill with both text generation templates and Python API tools.
+- **Python Dev** (`hooks/`) -- PostToolUse hook for ruff linting, formatting, and import sorting via uvx.
 
 ## Skill Architecture
 
@@ -41,6 +42,11 @@ uv run jira-manager/tools/update_ticket.py
 - `tools/update_ticket.py` -- CLI entry point for search/update operations
 
 **Configuration:** Environment variables `JIRA_SERVER_URL` and `JIRA_API_KEY` (Personal Access Token).
+
+## Hooks
+
+Hooks live in `hooks/` with config in `hooks/hooks.json`. Command hooks use bash scripts and receive JSON via stdin.
+Each plugin with hooks must be registered separately in `marketplace.json` -- do not bundle unrelated hooks with skill-only plugins.
 
 ## Plugin Development
 
