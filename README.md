@@ -37,15 +37,16 @@ Generate structured Jira tickets and integrate with Jira Server API for seamless
 
 ### Python Dev
 
-Automatically runs [ruff](https://docs.astral.sh/ruff/) on Python files after every Write or Edit operation via `uvx`.
+PostToolUse hooks that automatically lint and format code after every Write or Edit operation via `uvx`.
 
-**What it does:**
-- Fixes auto-fixable lint issues
-- Sorts imports (isort-compatible)
-- Formats code
-- Reports remaining issues back to Claude
+**Ruff** (Python files):
+- Fixes auto-fixable lint issues, sorts imports, formats code
+- Requires a Python project marker (`pyproject.toml`, `setup.py`, or `setup.cfg`)
 
-**Requirements:** `uv` installed and a Python project marker (`pyproject.toml`, `setup.py`, or `setup.cfg`) in the project root. Skips silently if either is missing.
+**yamllint** (YAML files):
+- Validates YAML syntax and style
+
+**Requirements:** `uv` installed. Each hook skips silently if prerequisites are not met.
 
 ## Installation
 
@@ -76,7 +77,7 @@ Once installed, plugins are automatically available in Claude Code.
 
 **Jira Manager**: Ask to create, search, or update Jira tickets. The skill provides both text generation and direct API integration modes.
 
-**Python Dev**: Runs automatically after every Write/Edit on `.py` files. No manual activation needed.
+**Python Dev**: Runs automatically after every Write/Edit on `.py` and `.yaml`/`.yml` files. No manual activation needed.
 
 ## Structure
 
@@ -86,7 +87,8 @@ claude-skills/
 │   └── marketplace.json          # Marketplace configuration
 ├── hooks/                        # Python Dev plugin
 │   ├── hooks.json                # Hook configuration (PostToolUse)
-│   └── ruff-lint.sh              # Ruff linting, formatting, import sorting
+│   ├── ruff-lint.sh              # Ruff linting, formatting, import sorting
+│   └── yamllint.sh               # YAML validation
 ├── nemo-builder/                 # NeMo Builder plugin
 │   ├── SKILL.md                  # Main skill file
 │   ├── README.md                 # Documentation
