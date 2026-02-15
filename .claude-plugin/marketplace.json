@@ -55,6 +55,24 @@
       "repository": "https://github.com/nikolaypavlov/claude-skills.git",
       "license": "MIT",
       "strict": false
+    },
+    {
+      "name": "acli-manager",
+      "source": "./",
+      "description": "Atlassian CLI (acli) skill for managing Jira Cloud and Confluence Cloud from the command line. Covers work items, projects, boards, sprints, spaces, bulk operations, and automation workflows.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["atlassian", "jira", "confluence", "acli", "cli", "cloud", "automation", "bulk-operations"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./acli-manager"
+      ]
     }
   ]
 }

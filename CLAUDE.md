@@ -8,6 +8,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 
 - **NeMo Builder** (`nemo-builder/`) -- NVIDIA NeMo 2.0 framework skill for AI development lifecycle (data prep, training, deployment). Documentation-only skill with reference guides and Python examples.
 - **Jira Manager** (`jira-manager/`) -- Jira ticket generation and Server API integration. Hybrid skill with both text generation templates and Python API tools.
+- **ACLI Manager** (`acli-manager/`) -- Atlassian CLI (acli) skill for managing Jira Cloud and Confluence Cloud from the command line. Documentation-only skill with command reference and workflow guides.
 - **Python Dev** (`hooks/`) -- PostToolUse hook for ruff linting, formatting, and import sorting via uvx.
 
 ## Skill Architecture
