@@ -1,7 +1,7 @@
 ---
 name: acli-manager
 description: This skill should be used when the user needs to manage Jira Cloud or Confluence Cloud resources using the Atlassian CLI (acli). Covers creating, searching, editing, and transitioning Jira issues, bulk operations, sprint management, board configuration, Confluence space management, and scripting workflows. Triggers include "create a Jira issue", "search Jira tickets", "manage Confluence spaces", "bulk create issues", "use acli", "run acli command", or any mention of Atlassian CLI operations.
-version: 0.1.0
+version: 0.2.0
 ---
 
 # Atlassian CLI (acli) Manager
@@ -25,14 +25,24 @@ Verify: `acli --version`
 
 ### Authentication
 
-Authenticate globally with OAuth (opens browser):
+Auth commands are product-scoped: `acli jira auth ...` (not `acli auth ...`).
 
+**OAuth (opens browser):**
 ```bash
-acli auth login
+acli jira auth login
 ```
 
-Check status: `acli auth status`
-Switch accounts: `acli auth switch`
+**API token (headless / CI / sandboxed environments):**
+```bash
+echo "YOUR_API_TOKEN" | acli jira auth login --site yoursite.atlassian.net --email user@example.com --token
+```
+
+The `--token` flag is a boolean that reads the token from stdin (not a value flag).
+
+Generate API tokens at: https://id.atlassian.com/manage-profile/security/api-tokens
+
+Check status: `acli jira auth status`
+Switch accounts: `acli jira auth switch`
 
 ## Command Structure
 
@@ -134,10 +144,24 @@ acli jira project list --recent --json
 acli jira project view --key "PROJ"
 acli jira project create --from-project "TEMPLATE" --key "NEW" --name "New Project"
 acli jira project create --from-json project.json
+acli jira project create --generate-json  # generate template
 acli jira project update --key "PROJ" --description "Updated"
 acli jira project archive --key "PROJ"
 acli jira project delete --key "PROJ"
+acli jira project restore --key "PROJ"  # restore from trash
 ```
+
+**Project types and issue types:**
+
+| Project type | Default issue types | Notes |
+|---|---|---|
+| `software` (team-managed) | Task, Sub-task | Epic, Story, Bug require enabling in Project Settings > Features |
+| `software` (company-managed) | Epic, Story, Task, Bug, Sub-task | Full set available by default |
+| `service_desk` | Email request, Submit a request | No Epic/Story/Task -- not suitable for dev work |
+
+When creating a project via `--from-json`, set `"projectTypeKey": "software"` for development projects.
+
+Deleted projects go to trash and reserve their key. Use `acli jira project restore --key "PROJ"` to recover, or permanently delete via Jira UI (Site Administration > Deleted projects).
 
 ### Boards and Sprints
 
@@ -198,10 +222,71 @@ Most commands support: `--json` for JSON output, `--csv` for CSV (search), `--we
 
 ### Quick Reference: Description Input
 
-For work item descriptions, use Atlassian Document Format (ADF) or plain text:
-- `--description "plain text"` - inline
-- `--description-file desc.txt` - from file (plain text or ADF)
+**Plain text (no formatting):**
+- `--description "plain text"` - inline, renders as unformatted text
+- `--description-file desc.txt` - from file, renders as unformatted text
 - `--editor` - open text editor
+
+**Formatted descriptions (headings, bullet lists, bold):**
+
+The `--description` and `--description-file` flags always produce plain text -- markdown, wiki markup, and ADF JSON passed through these flags will NOT render as formatted content.
+
+For formatted descriptions, use `--from-json` with Atlassian Document Format (ADF). See `references/adf-format.md` for the full ADF reference.
+
+Quick example -- create a work item with formatted description:
+
+```bash
+acli jira workitem create --from-json workitem.json
+```
+
+```json
+{
+  "summary": "My Task",
+  "projectKey": "PROJ",
+  "issueType": "Story",
+  "description": {
+    "type": "doc",
+    "version": 1,
+    "content": [
+      {
+        "type": "heading",
+        "attrs": {"level": 3},
+        "content": [{"type": "text", "text": "User Story"}]
+      },
+      {
+        "type": "paragraph",
+        "content": [{"type": "text", "text": "As a user, I want..."}]
+      },
+      {
+        "type": "bulletList",
+        "content": [
+          {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Acceptance criterion 1"}]}]},
+          {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Acceptance criterion 2"}]}]}
+        ]
+      }
+    ]
+  }
+}
+```
+
+To update an existing work item's description with ADF:
+
+```bash
+acli jira workitem edit --from-json edit.json --yes
+```
+
+```json
+{
+  "issues": ["KEY-1"],
+  "description": {
+    "type": "doc",
+    "version": 1,
+    "content": [...]
+  }
+}
+```
+
+Generate templates with: `acli jira workitem create --generate-json` or `acli jira workitem edit --generate-json`
 
 ### Quick Reference: JQL Patterns
 
@@ -225,3 +310,4 @@ Common JQL patterns for use with `--jql` flag:
 ### Reference Files
 
 - **`references/workflows.md`** - Automation workflows, bulk operation patterns, migration recipes, and scripting examples
+- **`references/adf-format.md`** - Atlassian Document Format (ADF) node reference for formatted descriptions
