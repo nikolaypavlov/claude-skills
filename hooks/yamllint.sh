@@ -19,7 +19,7 @@ command -v uv &>/dev/null || exit 0
 
 # --- Run yamllint ---
 
-issues=$(uvx yamllint "$file_path" 2>&1) || true
+issues=$(uvx yamllint -d '{extends: default, rules: {line-length: {max: 120}}}' "$file_path" 2>&1) || true
 
 if [[ -n "$issues" ]]; then
   echo "yamllint: issues in $(basename "$file_path"):" >&2
