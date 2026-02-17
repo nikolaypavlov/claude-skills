@@ -45,7 +45,7 @@
       "name": "python-dev",
       "source": "./",
       "description": "PostToolUse hooks for code quality: ruff (Python linting, formatting, import sorting) and yamllint (YAML validation) via uvx.",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"
