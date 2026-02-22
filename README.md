@@ -37,16 +37,17 @@ Generate structured Jira tickets and integrate with Jira Server API for seamless
 
 ### Python Dev
 
-PostToolUse hooks that automatically lint and format code after every Write or Edit operation via `uvx`.
+PreToolUse pre-commit hook that lints all staged files before `git commit` via `uvx`.
 
-**Ruff** (Python files):
-- Fixes auto-fixable lint issues, sorts imports, formats code
-- Requires a Python project marker (`pyproject.toml`, `setup.py`, or `setup.cfg`)
+**Python files** (ruff + ty):
+- Auto-fixes lint issues, sorts imports, formats code with ruff
+- Type checks with ty (Astral's Rust-based type checker)
+- Re-stages auto-fixed files automatically
 
-**yamllint** (YAML files):
-- Validates YAML syntax and style
+**YAML files** (yamllint):
+- Validates YAML syntax and style (max line length: 120)
 
-**Requirements:** `uv` installed. Each hook skips silently if prerequisites are not met.
+**Requirements:** `uv` installed. Skips silently if prerequisites are not met.
 
 ## Installation
 
@@ -65,7 +66,7 @@ PostToolUse hooks that automatically lint and format code after every Write or E
 # Install Jira Manager
 /plugin install jira-manager@ai-engineering-skills
 
-# Install Python Dev (ruff linting, formatting, import sorting)
+# Install Python Dev (pre-commit: ruff + ty + yamllint)
 /plugin install python-dev@ai-engineering-skills
 ```
 
@@ -77,7 +78,7 @@ Once installed, plugins are automatically available in Claude Code.
 
 **Jira Manager**: Ask to create, search, or update Jira tickets. The skill provides both text generation and direct API integration modes.
 
-**Python Dev**: Runs automatically after every Write/Edit on `.py` and `.yaml`/`.yml` files. No manual activation needed.
+**Python Dev**: Runs automatically before `git commit` on staged `.py` and `.yaml`/`.yml` files. Blocks commit if issues remain after auto-fix.
 
 ## Structure
 
@@ -86,9 +87,8 @@ claude-skills/
 ├── .claude-plugin/
 │   └── marketplace.json          # Marketplace configuration
 ├── hooks/                        # Python Dev plugin
-│   ├── hooks.json                # Hook configuration (PostToolUse)
-│   ├── ruff-lint.sh              # Ruff linting, formatting, import sorting
-│   └── yamllint.sh               # YAML validation
+│   ├── hooks.json                # Hook configuration (PreToolUse)
+│   └── pre-commit.sh             # Pre-commit: ruff + ty + yamllint
 ├── nemo-builder/                 # NeMo Builder plugin
 │   ├── SKILL.md                  # Main skill file
 │   ├── README.md                 # Documentation
