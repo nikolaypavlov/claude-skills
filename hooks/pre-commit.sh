@@ -53,12 +53,12 @@ if [[ -n "$py_files" ]]; then
       has_issues=true
     fi
 
-    # Type check (capture stdout, let stderr through)
-    mypy_issues=$(uvx mypy "${py_array[@]}")
-    mypy_exit=$?
-    if [[ $mypy_exit -ne 0 && -n "$mypy_issues" ]]; then
-      echo "mypy: type errors in staged Python files:" >&2
-      echo "$mypy_issues" >&2
+    # Type check (ty is much faster than mypy -- written in Rust by Astral)
+    ty_issues=$(uvx ty check --ignore unresolved-import "${py_array[@]}" 2>&1)
+    ty_exit=$?
+    if [[ $ty_exit -ne 0 && -n "$ty_issues" ]]; then
+      echo "ty: type errors in staged Python files:" >&2
+      echo "$ty_issues" >&2
       has_issues=true
     fi
   fi

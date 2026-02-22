@@ -44,8 +44,8 @@
     {
       "name": "python-dev",
       "source": "./",
-      "description": "Pre-commit hooks for code quality: ruff + mypy (Python linting, formatting, type checking) and yamllint (YAML validation) via uvx. Runs on staged files before git commit.",
-      "version": "1.4.1",
+      "description": "Pre-commit hooks for code quality: ruff + ty (Python linting, formatting, type checking) and yamllint (YAML validation) via uvx. Runs on staged files before git commit.",
+      "version": "1.5.0",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"

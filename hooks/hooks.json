@@ -1,5 +1,5 @@
 {
-  "description": "Pre-commit hooks: ruff + mypy for Python, yamllint for YAML",
+  "description": "Pre-commit hooks: ruff + ty for Python, yamllint for YAML",
   "hooks": {
     "PreToolUse": [
       {
