@@ -12,11 +12,8 @@ command_str=$(echo "$input" | jq -r '.tool_input.command // empty')
 # Not a bash command with input
 [[ -z "$command_str" ]] && exit 0
 
-# Not a git commit command
-[[ "$command_str" != *"git commit"* ]] && exit 0
-
-# Skip if it's just git commit --amend with no staged changes check needed
-# (let git handle that)
+# Not a git commit command (handles git -C <path> commit, git commit, etc.)
+[[ "$command_str" != *git*commit* ]] && exit 0
 
 # uv not available
 command -v uv &>/dev/null || exit 0
