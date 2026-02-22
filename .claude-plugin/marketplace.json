@@ -44,8 +44,8 @@
     {
       "name": "python-dev",
       "source": "./",
-      "description": "PostToolUse hooks for code quality: ruff (Python linting, formatting, import sorting) and yamllint (YAML validation) via uvx.",
-      "version": "1.3.0",
+      "description": "Pre-commit hooks for code quality: ruff + mypy (Python linting, formatting, type checking) and yamllint (YAML validation) via uvx. Runs on staged files before git commit.",
+      "version": "1.4.0",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"

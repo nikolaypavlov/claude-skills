@@ -1,18 +1,13 @@
 {
-  "description": "Development hooks: ruff for Python, yamllint for YAML",
+  "description": "Pre-commit hooks: ruff + mypy for Python, yamllint for YAML",
   "hooks": {
-    "PostToolUse": [
+    "PreToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/ruff-lint.sh",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/yamllint.sh",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pre-commit.sh",
             "timeout": 30
           }
         ]
