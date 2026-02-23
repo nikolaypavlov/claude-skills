@@ -57,6 +57,10 @@ Each plugin with hooks must be registered separately in `marketplace.json` -- do
 
 This repository is a Claude Code plugin. When creating or modifying skills, commands, hooks, agents, or plugin structure, prefer using skills from the `plugin-dev` plugin (e.g., `/skill-development`, `/plugin-structure`, `/hook-development`, `/agent-development`, `/command-development`).
 
+## Release Workflow
+
+- Always bump plugin version in `.claude-plugin/marketplace.json` before pushing changes that affect a plugin (hooks, skills, etc.)
+
 ## Conventions
 
 - SKILL.md files use YAML frontmatter for skill metadata
