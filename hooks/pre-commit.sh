@@ -5,7 +5,7 @@ set -uo pipefail
 # Runs as PreToolUse on Bash -- intercepts git commit commands,
 # auto-fixes what it can, and blocks the commit if issues remain.
 #
-# Requires tools installed via: uv tool install ruff ty yamllint
+# Requires: uv tool install ruff && uv tool install ty && uv tool install yamllint
 
 input=$(cat)
 
@@ -90,7 +90,8 @@ if [[ -n "$yaml_files" ]]; then
 fi
 
 if [[ ${#missing_tools[@]} -gt 0 ]]; then
-  echo "pre-commit: missing tools: ${missing_tools[*]}. Install with: uv tool install ${missing_tools[*]}" >&2
+  install_cmd=$(printf ' && uv tool install %s' "${missing_tools[@]}")
+  echo "pre-commit: missing tools: ${missing_tools[*]}. Install with:${install_cmd# &&}" >&2
 fi
 
 if [[ "$has_issues" == true ]]; then
