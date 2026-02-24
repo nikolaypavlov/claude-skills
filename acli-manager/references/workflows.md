@@ -118,9 +118,47 @@ echo "PROJ-1,PROJ-2,PROJ-3" > to-delete.txt
 acli jira workitem delete --from-file to-delete.txt --yes
 ```
 
+### Bulk Create Subtasks Under a Parent
+
+**Using CLI flags (recommended):**
+
+```bash
+#!/bin/bash
+PARENT="PROJ-100"
+PROJECT="PROJ"
+
+for TITLE in "Design API schema" "Implement endpoints" "Write integration tests" "Update documentation"; do
+  acli jira workitem create --project "$PROJECT" --type "Sub-task" \
+    --summary "$TITLE" --parent "$PARENT"
+done
+```
+
+**Using `--from-json`** (when you need ADF descriptions or other fields):
+
+```bash
+# Get the numeric ID of the parent issue
+PARENT_ID=$(acli jira workitem view PROJ-100 --json | jq -r '.id')
+
+# Create subtask JSON with numeric parentIssueId
+cat <<EOF > subtask.json
+{
+  "summary": "Design API schema",
+  "projectKey": "PROJ",
+  "type": "Sub-task",
+  "parentIssueId": $PARENT_ID
+}
+EOF
+
+acli jira workitem create --from-json subtask.json
+```
+
+> Use CLI flags for simple subtasks. Reserve `--from-json` for cases requiring ADF descriptions or fields not available as flags.
+
 ## Migration Patterns
 
 ### Clone Project Issues
+
+> **Clone limitations**: `clone` resets status to "To Do" and drops parent-child relationships. Use it for simple copies. For full-fidelity migration (preserving status, hierarchy, ADF descriptions), see the scripting pattern below.
 
 ```bash
 # Clone all epics to new project
@@ -132,6 +170,88 @@ acli jira workitem clone --key "OLD-1,OLD-2,OLD-3" --to-project "NEW"
 # Clone to different site
 acli jira workitem clone --jql "project = OLD" --to-project "NEW" --to-site "other-site" --yes
 ```
+
+### Full-Fidelity Project Migration
+
+Script pattern for copying issues between projects preserving status, hierarchy, and ADF descriptions. Clone cannot do this -- you must view + create + transition per issue.
+
+```bash
+#!/bin/bash
+# Migrate issues from SRC to DST project, preserving hierarchy, status, and ADF descriptions.
+# Requires: jq
+#
+# Strategy:
+# 1. Create epics/parents first, build old-key -> new-id map
+# 2. Create child issues with parentIssueId from the map
+# 3. Transition each issue to its original status
+
+SRC="OLD"
+DST="NEW"
+declare -A KEY_MAP  # old key -> new key
+
+# --- Step 1: Migrate epics (no parent) ---
+for KEY in $(acli jira workitem search --jql "project = $SRC AND type = Epic" --fields "key" --csv | tail -n +2 | tr -d '"'); do
+  echo "Migrating epic $KEY..."
+  DATA=$(acli jira workitem view "$KEY" --json)
+  SUMMARY=$(echo "$DATA" | jq -r '.fields.summary')
+  STATUS=$(echo "$DATA" | jq -r '.fields.status.name')
+  DESC=$(echo "$DATA" | jq '.fields.description')
+
+  # Create in destination
+  cat <<EOF > /tmp/migrate-issue.json
+{
+  "summary": $(echo "$SUMMARY" | jq -Rs .),
+  "projectKey": "$DST",
+  "type": "Epic",
+  "description": $DESC
+}
+EOF
+  NEW_KEY=$(acli jira workitem create --from-json /tmp/migrate-issue.json 2>&1 | grep -oE '[A-Z]+-[0-9]+')
+  KEY_MAP[$KEY]=$NEW_KEY
+
+  # Transition to original status
+  if [ "$STATUS" != "To Do" ]; then
+    acli jira workitem transition --key "$NEW_KEY" --status "$STATUS" 2>/dev/null
+  fi
+  echo "  $KEY -> $NEW_KEY ($STATUS)"
+done
+
+# --- Step 2: Migrate stories/tasks (with parent) ---
+for KEY in $(acli jira workitem search --jql "project = $SRC AND type in (Story, Task, Bug) AND parent is not EMPTY" --fields "key" --csv | tail -n +2 | tr -d '"'); do
+  echo "Migrating $KEY..."
+  DATA=$(acli jira workitem view "$KEY" --json)
+  SUMMARY=$(echo "$DATA" | jq -r '.fields.summary')
+  STATUS=$(echo "$DATA" | jq -r '.fields.status.name')
+  TYPE=$(echo "$DATA" | jq -r '.fields.issuetype.name')
+  DESC=$(echo "$DATA" | jq '.fields.description')
+  PARENT_KEY=$(echo "$DATA" | jq -r '.fields.parent.key')
+
+  # Look up new parent ID
+  NEW_PARENT=${KEY_MAP[$PARENT_KEY]}
+  PARENT_ID=$(acli jira workitem view "$NEW_PARENT" --json | jq -r '.id')
+
+  cat <<EOF > /tmp/migrate-issue.json
+{
+  "summary": $(echo "$SUMMARY" | jq -Rs .),
+  "projectKey": "$DST",
+  "type": "$TYPE",
+  "parentIssueId": $PARENT_ID,
+  "description": $DESC
+}
+EOF
+  NEW_KEY=$(acli jira workitem create --from-json /tmp/migrate-issue.json 2>&1 | grep -oE '[A-Z]+-[0-9]+')
+  KEY_MAP[$KEY]=$NEW_KEY
+
+  if [ "$STATUS" != "To Do" ]; then
+    acli jira workitem transition --key "$NEW_KEY" --status "$STATUS" 2>/dev/null
+  fi
+  echo "  $KEY -> $NEW_KEY ($STATUS)"
+done
+
+echo "Migration complete. ${#KEY_MAP[@]} issues migrated."
+```
+
+> Adapt the JQL queries and issue types to your project. Multi-step transitions (e.g., "To Do" -> "In Progress" -> "Done") may be required if your workflow doesn't allow direct jumps.
 
 ### Create Project from Template
 
@@ -151,8 +271,11 @@ acli jira project create --from-json project.json
 # Export all project issues to CSV
 acli jira workitem search --jql "project = PROJ" --fields "key,summary,status,assignee,priority,type,created,updated" --csv --paginate > export.csv
 
-# Export to JSON
-acli jira workitem search --jql "project = PROJ" --paginate --json > export.json
+# Export full JSON (search doesn't support --json, so pipe through view)
+acli jira workitem search --jql "project = PROJ" --fields "key" --csv --paginate | \
+  tail -n +2 | tr -d '"' | while read key; do
+    acli jira workitem view "$key" --json
+  done > export.json
 ```
 
 ### Confluence Space Setup
@@ -176,7 +299,7 @@ acli confluence space list --json --expand description,homepage
 
 acli jira workitem search \
   --jql "project = PROJ AND type = Bug AND priority = High AND status = Open" \
-  --json | jq -r '.[].key' | while read key; do
+  --fields "key" --csv | tail -n +2 | tr -d '"' | while read key; do
     echo "Processing $key..."
     acli jira workitem assign --key "$key" --assignee "@me"
     acli jira workitem transition --key "$key" --status "In Progress"

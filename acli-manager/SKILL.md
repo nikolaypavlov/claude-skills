@@ -1,7 +1,7 @@
 ---
 name: acli-manager
 description: This skill should be used when the user needs to manage Jira Cloud or Confluence Cloud resources using the Atlassian CLI (acli). Covers creating, searching, editing, and transitioning Jira issues, bulk operations, sprint management, board configuration, Confluence space management, and scripting workflows. Triggers include "create a Jira issue", "search Jira tickets", "manage Confluence spaces", "bulk create issues", "use acli", "run acli command", or any mention of Atlassian CLI operations.
-version: 0.2.0
+version: 0.3.0
 ---
 
 # Atlassian CLI (acli) Manager
@@ -49,7 +49,9 @@ Switch accounts: `acli jira auth switch`
 All commands follow the pattern: `acli <product> <resource> <action> [flags]`
 
 Products: `jira`, `confluence`
-Global flags: `--help`, `--json`, `--yes` (skip confirmation)
+Global flags: `--help`, `--json` (view/list commands only -- not search), `--yes` (skip confirmation)
+
+> **Non-interactive usage**: Always pass `--yes` to multi-item modification commands (`edit`, `transition`, `delete`, `clone`, `archive` with `--jql` or comma-separated keys). Without it, commands prompt for confirmation and hang in non-interactive environments like Claude Code.
 
 ## Jira Operations
 
@@ -59,7 +61,7 @@ Global flags: `--help`, `--json`, `--yes` (skip confirmation)
 ```bash
 acli jira workitem create --summary "Title" --project "PROJ" --type "Task"
 acli jira workitem create --summary "Bug title" --project "PROJ" --type "Bug" --assignee "@me" --label "critical,backend"
-acli jira workitem create --description-file desc.txt --project "PROJ" --type "Story" --parent "PROJ-100"
+acli jira workitem create --description-file desc.txt --project "PROJ" --type "Story" --parent "PROJ-100"  # parent can only be set at creation
 acli jira workitem create --from-json workitem.json
 acli jira workitem create --generate-json  # generate template
 ```
@@ -77,7 +79,7 @@ acli jira workitem view KEY-123 --fields "*all"
 acli jira workitem search --jql "project = PROJ" --paginate
 acli jira workitem search --jql "assignee = currentUser() AND status != Done" --fields "key,summary,status"
 acli jira workitem search --jql "type = Bug AND priority = High" --csv
-acli jira workitem search --jql "text ~ 'login'" --limit 20 --json
+acli jira workitem search --jql "text ~ 'login'" --limit 20
 acli jira workitem search --filter 10001  # saved filter
 ```
 
@@ -128,6 +130,8 @@ acli jira workitem create-bulk --from-json issues.json
 acli jira workitem create-bulk --from-csv issues.csv
 acli jira workitem create-bulk --generate-json  # generate template
 ```
+
+> `create-bulk --from-csv` supports `parentIssueId` column for subtask creation but only plain text descriptions. For ADF descriptions in bulk, use `create-bulk --from-json` or loop with single `create --from-json` calls.
 
 **Delete / Archive:**
 ```bash
@@ -218,7 +222,9 @@ Add `--yes` to skip confirmation prompts. Add `--ignore-errors` to continue on f
 
 ### Quick Reference: Output Formats
 
-Most commands support: `--json` for JSON output, `--csv` for CSV (search), `--web` to open in browser.
+> **`--json` support varies by command.** `view` supports `--json` and returns the raw Jira API response (including `fields.description` as ADF). `search` does **not** support `--json` -- use `--csv` or `--fields` instead. To get full JSON for search results, pipe keys through `view`: `acli jira workitem search --jql "..." --fields "key" | xargs -I{} acli jira workitem view {} --json`.
+
+Common output flags: `--json` (view, list commands), `--csv` (search), `--fields "key,summary,status"` (search), `--web` (open in browser).
 
 ### Quick Reference: Description Input
 
@@ -243,7 +249,7 @@ acli jira workitem create --from-json workitem.json
 {
   "summary": "My Task",
   "projectKey": "PROJ",
-  "issueType": "Story",
+  "type": "Story",
   "description": {
     "type": "doc",
     "version": 1,
@@ -268,6 +274,8 @@ acli jira workitem create --from-json workitem.json
   }
 }
 ```
+
+> **`--from-json` field name gotchas**: Use `type` (not `issueType`), and `parentIssueId` with a numeric ID (not an issue key). Get numeric ID via: `acli jira workitem view PROJ-1 --json | jq '.id'`. When debugging, use CLI flags instead of `--from-json` for clearer error messages.
 
 To update an existing work item's description with ADF:
 
@@ -304,6 +312,16 @@ Common JQL patterns for use with `--jql` flag:
 | Overdue items | `due < now() AND status != Done` |
 | By component | `component = "Backend"` |
 | Combine conditions | `project = PROJ AND type = Bug AND status = Open AND priority = High` |
+
+## Known Limitations
+
+- **Comment body size**: Comments have a ~32KB size limit. Exceeding it causes a `CONTENT_LIMIT_EXCEEDED` error. Workaround: split long content into multiple comments, or attach as a file instead.
+- **Attachment upload**: `acli jira workitem attachment` only supports `list` and `delete` -- there is no `create` or `upload` subcommand.
+- **Parent cannot be changed after creation**: There is no way to set or change a parent/epic link on an existing issue via `acli jira workitem edit`. The `--parent` flag only works on `create`. Workarounds: delete and recreate with the correct parent, or change the parent manually in the Jira UI.
+- **Clone does not preserve hierarchy or status**: `acli jira workitem clone` copies issues but resets status to "To Do" and drops parent-child (epic-story) relationships. For full-fidelity project migration, see the scripting pattern in `references/workflows.md`.
+- **Search does not support `--json`**: `acli jira workitem search` outputs tabular text or `--csv`. It does not accept `--json`. Use `view --json` per issue to get full JSON (including ADF descriptions).
+- **Board subtask visibility**: Subtasks created via CLI may not appear on Scrum/Kanban boards until the board's filter is configured to include sub-tasks.
+- **`--from-json` debugging**: Errors from `--from-json` are often generic. For easier debugging: use `--generate-json` to get the expected field names, pass `--json` to get structured error output, and prefer CLI flags over `--from-json` when possible.
 
 ## Additional Resources
 

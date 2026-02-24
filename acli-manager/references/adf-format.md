@@ -2,6 +2,8 @@
 
 ADF is the JSON format Jira Cloud uses for rich text content (descriptions, comments). This is the **only way** to get formatted descriptions via acli -- the `--description` and `--description-file` flags always produce plain text.
 
+Full JSON schema: http://go.atlassian.com/adf-json-schema (~3000 lines -- use only as a validation reference, not as a starting point).
+
 ## How to use ADF with acli
 
 ADF works through the `--from-json` flag on `create` and `edit` commands:
@@ -156,8 +158,8 @@ For `acli jira workitem create --from-json`:
 {
   "summary": "Work item title",
   "projectKey": "PROJ",
-  "issueType": "Story",
-  "parentIssueKey": "PROJ-1",
+  "type": "Story",
+  "parentIssueId": 10001,
   "assignee": "user@example.com",
   "label": ["label1", "label2"],
   "description": {
@@ -167,6 +169,8 @@ For `acli jira workitem create --from-json`:
   }
 }
 ```
+
+> **`--from-json` field name gotchas**: The JSON field names differ from CLI flag names. Use `type` (not `issueType`) and `parentIssueId` with a **numeric ID** (not an issue key like `PROJ-1`). To get the numeric ID of a parent issue: `acli jira workitem view PROJ-1 --json | jq '.id'`. When in doubt, run `acli jira workitem create --generate-json` to see the exact field names expected.
 
 ## Edit JSON structure
 

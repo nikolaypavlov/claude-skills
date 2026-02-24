@@ -60,7 +60,7 @@
       "name": "acli-manager",
       "source": "./",
       "description": "Atlassian CLI (acli) skill for managing Jira Cloud and Confluence Cloud from the command line. Covers work items, projects, boards, sprints, spaces, bulk operations, and automation workflows.",
-      "version": "0.1.0",
+      "version": "0.3.0",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"
