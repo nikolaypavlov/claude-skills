@@ -15,6 +15,15 @@ Run `git remote -v` and determine the platform:
 
 Verify the CLI tool is available by running `which gh` or `which glab`. If not found, show installation instructions and stop.
 
+**GitLab `-R` format for all `glab mr` commands:**
+- For gitlab.com repos: `-R group/project`
+- For self-hosted: `-R gitlab.example.com/group/project`
+- The `-R` flag is required when not inside the git repo directory
+
+**GitLab `glab api` hostname:**
+- `glab api` supports `--hostname gitlab.example.com` for self-hosted instances
+- Auto-detects hostname when inside a git repo with configured remote
+
 ## Phase 2: PR/MR Identification and Context Gathering
 
 ### 2.1 Identify the PR/MR
@@ -23,7 +32,7 @@ Parse `$ARGUMENTS` for a PR/MR number (first numeric argument).
 
 If no number is provided, auto-detect from current branch:
 - **GitHub**: `gh pr view --json number,title,body,url,baseRefName,headRefName`
-- **GitLab**: `glab mr view`
+- **GitLab**: `glab mr view -F json` (returns full metadata including `diff_refs`)
 
 If no PR/MR is found for the current branch, tell the user and stop.
 
@@ -35,7 +44,11 @@ If no PR/MR is found for the current branch, tell the user and stop.
 ### 2.3 Fetch changed files list
 
 - **GitHub**: `gh pr diff <number> --name-only`
-- **GitLab**: `glab mr diff <iid> --name-only`
+- **GitLab**: `glab mr diff` does NOT support `--name-only`. Instead use the changes API:
+  ```bash
+  glab api projects/<url-encoded-path>/merge_requests/<iid>/changes --hostname <host> \
+    | python3 -c "import json,sys; [print(c['new_path']) for c in json.load(sys.stdin).get('changes',[])]"
+  ```
 
 ### 2.4 Fetch existing comments and discussion
 
@@ -52,11 +65,17 @@ gh api repos/{owner}/{repo}/pulls/{number}/comments
 
 **GitLab:**
 ```bash
-# MR description
-glab mr view <iid>
+# MR description + full metadata (includes diff_refs for inline comments)
+glab mr view <iid> -R <repo> -F json
 
-# All notes/comments
-glab api projects/:id/merge_requests/:iid/notes
+# All notes/comments - structured, filterable by type
+glab mr note list <iid> -R <repo> -F json
+
+# Filter to only diff (inline) comments
+glab mr note list <iid> -R <repo> -F json --type diff
+
+# Or via API for self-hosted with --hostname
+glab api projects/<url-encoded-path>/merge_requests/<iid>/notes --hostname <host>
 ```
 
 Format the comments into an "Existing Discussion" context block:
@@ -200,17 +219,27 @@ ALWAYS output the full formatted review text to the user. This is mandatory befo
 
 Use the AskUserQuestion tool to ask the user:
 
-Question: "Post this review as inline comments on the PR/MR?"
+Question: "Post this review to the PR/MR?"
 Options:
-- "Post inline comments (English)"
-- "Post inline comments (Ukrainian)"
+- "Post inline comments (English)" - each finding as a separate inline comment on the corresponding file/line
+- "Post inline comments (Ukrainian)" - same as above but translated to Ukrainian
+- "Post as single comment (English)" - one top-level comment with the full review
+- "Post as single comment (Ukrainian)" - same as above but translated to Ukrainian
 - "Do not post"
 
 NEVER post comments without the user's explicit approval via AskUserQuestion.
 
-### 7.3 Post inline comments (if approved)
+### 7.3 Post (if approved)
 
 Translate the review to the selected language if needed.
+
+**If "single comment" was selected**, post the full review as one top-level comment:
+- **GitHub**: `gh pr comment <number> --body "<full review markdown>"`
+- **GitLab**: `glab mr note <iid> -R <repo> -m "<full review markdown>" --unique`
+
+The `--unique` flag (GitLab) prevents duplicate comments when re-running the review.
+
+**If "inline comments" was selected**, post each finding separately:
 
 **GitHub - Create a PR review with inline comments:**
 
@@ -244,14 +273,13 @@ JSON payload structure:
 
 For each finding, create a separate discussion:
 ```bash
-# Get merge request metadata for SHAs
-MR_DATA=$(glab api projects/:id/merge_requests/:iid)
-BASE_SHA=<from MR_DATA diff_refs.base_sha>
-HEAD_SHA=<from MR_DATA diff_refs.head_sha>
-START_SHA=<from MR_DATA diff_refs.start_sha>
+# Get diff_refs from MR metadata (already fetched in Phase 2.1 via glab mr view -F json)
+# Extract: diff_refs.base_sha, diff_refs.head_sha, diff_refs.start_sha
 
 # Post each inline comment as a discussion
-glab api projects/:id/merge_requests/:iid/discussions \
+# Use --hostname for self-hosted GitLab instances
+glab api projects/<url-encoded-path>/merge_requests/<iid>/discussions \
+  --hostname <host> \
   --method POST \
   -f body="**[agent-name]** SEVERITY: Description.\n\n**Recommendation**: Fix suggestion." \
   -f "position[position_type]=text" \
