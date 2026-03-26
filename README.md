@@ -68,6 +68,9 @@ PreToolUse pre-commit hook that lints all staged files before `git commit` via `
 
 # Install Python Dev (pre-commit: ruff + ty + yamllint)
 /plugin install python-dev@ai-engineering-skills
+
+# Install PR Reviewer
+/plugin install pr-reviewer@ai-engineering-skills
 ```
 
 ## Usage
@@ -80,7 +83,23 @@ Once installed, plugins are automatically available in Claude Code.
 
 **Python Dev**: Runs automatically before `git commit` on staged `.py` and `.yaml`/`.yml` files. Blocks commit if issues remain after auto-fix.
 
-## Structure
+**PR Reviewer**: Run `/pr-reviewer:review-pr` to review the current branch's PR/MR. Supports `gh` (GitHub) and `glab` (GitLab, including self-hosted).
+
+### PR Reviewer
+
+PR/MR code review with GitHub and GitLab support (including self-hosted).
+
+**Features:**
+- Auto-detects platform from git remotes (`gh` / `glab`)
+- 6 specialized review agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification
+- Fetches existing PR/MR discussion and Jira/Linear issue context
+- Validates all findings: enforces file:line references, deduplicates, filters weak results, removes by-design items
+- Posts inline comments or single top-level comment with user permission
+- English and Ukrainian output
+
+[View Documentation](./pr-reviewer/README.md)
+
+## Installation
 
 ```
 claude-skills/
@@ -101,5 +120,10 @@ claude-skills/
 │   ├── reference/                # Setup and config guides
 │   ├── examples/                 # Ticket examples and code
 │   └── tools/                    # API integration (Python)
+├── pr-reviewer/                  # PR Reviewer plugin
+│   ├── commands/
+│   │   └── review-pr.md          # Orchestrator command
+│   ├── agents/                   # 6 specialized review agents
+│   └── README.md                 # Documentation
 └── README.md                     # This file
 ```

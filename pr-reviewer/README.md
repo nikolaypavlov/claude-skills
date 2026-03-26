@@ -9,8 +9,9 @@ Comprehensive PR/MR code review plugin for Claude Code with GitHub and GitLab su
 - Recognizes Jira/Linear issue references and filters out by-design findings
 - 6 specialized review agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification
 - Main model validates all findings: enforces file:line references, deduplicates, filters weak/speculative results
-- Posts inline review comments with explicit user permission
+- Posts review with explicit user permission: inline comments per finding or single top-level comment
 - Supports English and Ukrainian output
+- Self-hosted GitLab support via `glab -R hostname/group/project`
 
 ## Usage
 
@@ -52,7 +53,15 @@ Comprehensive PR/MR code review plugin for Claude Code with GitHub and GitLab su
 3. Launches applicable review agents with full context
 4. Validates all findings: enforces file:line, deduplicates, filters low-confidence, removes by-design items
 5. Displays formatted report to user
-6. Asks permission before posting inline comments to PR/MR
+6. Asks permission before posting to PR/MR (inline comments or single comment, EN/UK)
+
+## GitLab Notes
+
+- For self-hosted GitLab: `glab auth login --hostname gitlab.example.com --token <token>`
+- All `glab mr` commands use `-R gitlab.example.com/group/project` for remote repos
+- `glab api` uses `--hostname gitlab.example.com` for self-hosted instances
+- `glab mr diff` does not support `--name-only` - the plugin uses the changes API instead
+- `glab mr note --unique` prevents duplicate comments when re-running review
 
 ## Requirements
 

@@ -10,14 +10,18 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **Jira Manager** (`jira-manager/`) -- Jira ticket generation and Server API integration. Hybrid skill with both text generation templates and Python API tools.
 - **ACLI Manager** (`acli-manager/`) -- Atlassian CLI (acli) skill for managing Jira Cloud and Confluence Cloud from the command line. Documentation-only skill with command reference and workflow guides.
 - **Python Dev** (`hooks/`) -- PreToolUse pre-commit hook: ruff (lint, format, import sort) + ty (type check) for Python, yamllint for YAML. Runs on staged files before `git commit`.
-- **PR Reviewer** (`pr-reviewer/`) -- PR/MR code review with GitHub and GitLab support. Command + 6 agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification. Fetches existing discussion, validates findings, posts inline comments.
+- **PR Reviewer** (`pr-reviewer/`) -- PR/MR code review with GitHub and GitLab support (including self-hosted). Command (`review-pr`) + 6 agents. Fetches existing discussion and Jira/Linear context, validates findings with file:line enforcement, posts inline or single comments with user permission.
 
-## Skill Architecture
+## Plugin Architecture
 
-Each skill follows the same structure:
+Most plugins use skills with the same structure:
 - `SKILL.md` -- Main entry point that Claude reads when the skill activates
 - `reference/` -- Detailed guides loaded on-demand (referenced from SKILL.md)
 - `examples/` -- Code examples and sample outputs
+
+PR Reviewer uses a different pattern - command + agents:
+- `commands/review-pr.md` -- Orchestrator command invoked via `/pr-reviewer:review-pr`
+- `agents/` -- 6 specialized review agents launched by the command
 
 The marketplace is configured in `.claude-plugin/marketplace.json`.
 
