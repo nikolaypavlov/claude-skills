@@ -10,6 +10,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **Jira Manager** (`jira-manager/`) -- Jira ticket generation and Server API integration. Hybrid skill with both text generation templates and Python API tools.
 - **ACLI Manager** (`acli-manager/`) -- Atlassian CLI (acli) skill for managing Jira Cloud and Confluence Cloud from the command line. Documentation-only skill with command reference and workflow guides.
 - **Python Dev** (`hooks/`) -- PreToolUse pre-commit hook: ruff (lint, format, import sort) + ty (type check) for Python, yamllint for YAML. Runs on staged files before `git commit`.
+- **PR Reviewer** (`pr-reviewer/`) -- PR/MR code review with GitHub and GitLab support. Command + 6 agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification. Fetches existing discussion, validates findings, posts inline comments.
 
 ## Skill Architecture
 
