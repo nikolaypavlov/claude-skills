@@ -87,7 +87,13 @@
       "homepage": "https://github.com/nikolaypavlov/claude-skills",
       "repository": "https://github.com/nikolaypavlov/claude-skills.git",
       "license": "MIT",
-      "strict": false
+      "strict": false,
+      "commands": [
+        "./pr-reviewer/commands"
+      ],
+      "agents": [
+        "./pr-reviewer/agents"
+      ]
     }
   ]
 }
