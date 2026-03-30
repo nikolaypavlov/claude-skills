@@ -90,9 +90,6 @@
       "strict": false,
       "commands": [
         "./pr-reviewer/commands"
-      ],
-      "agents": [
-        "./pr-reviewer/agents"
       ]
     }
   ]
