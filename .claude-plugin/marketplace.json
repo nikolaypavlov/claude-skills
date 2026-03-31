@@ -91,6 +91,27 @@
       "commands": [
         "./pr-reviewer/commands"
       ]
+    },
+    {
+      "name": "autoresearch",
+      "source": "./",
+      "description": "Autonomous hyperparameter/model optimization with parallel GPU researchers using Agent Teams",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["autoresearch", "optimization", "gpu", "agent-teams", "ml"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./autoresearch/skills/autoresearch"
+      ],
+      "commands": [
+        "./autoresearch/commands"
+      ]
     }
   ]
 }

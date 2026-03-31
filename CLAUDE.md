@@ -11,6 +11,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **ACLI Manager** (`acli-manager/`) -- Atlassian CLI (acli) skill for managing Jira Cloud and Confluence Cloud from the command line. Documentation-only skill with command reference and workflow guides.
 - **Python Dev** (`hooks/`) -- PreToolUse pre-commit hook: ruff (lint, format, import sort) + ty (type check) for Python, yamllint for YAML. Runs on staged files before `git commit`.
 - **PR Reviewer** (`pr-reviewer/`) -- PR/MR code review with GitHub and GitLab support (including self-hosted). Command (`review-pr`) + 6 agents. Fetches existing discussion and Jira/Linear context, validates findings with file:line enforcement, posts inline or single comments with user permission.
+- **Autoresearch** (`autoresearch/`) -- Autonomous hyperparameter/model optimization with parallel GPU researchers using Agent Teams. Command (`autoresearch`) + lead skill + researcher agent. Coordinates worktree-isolated experiments across multiple GPUs, tracks metrics, broadcasts learnings.
 
 ## Plugin Architecture
 
@@ -22,6 +23,12 @@ Most plugins use skills with the same structure:
 PR Reviewer uses a different pattern - command + agents:
 - `commands/review-pr.md` -- Orchestrator command invoked via `/pr-reviewer:review-pr`
 - `agents/` -- 6 specialized review agents launched by the command
+
+Autoresearch uses command + skill + agent:
+- `commands/autoresearch.md` -- Entry point invoked via `/autoresearch:autoresearch`, parses YAML config and validates environment
+- `skills/autoresearch/SKILL.md` -- Lead agent coordination program (worktree creation, researcher spawning, experiment loop)
+- `agents/researcher.md` -- GPU researcher agent that runs experiments in isolated worktrees
+- `skills/autoresearch/scripts/` -- Shell/Python utilities (worktree-setup.sh, harvest.py, cleanup.sh)
 
 The marketplace is configured in `.claude-plugin/marketplace.json`.
 
