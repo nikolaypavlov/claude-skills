@@ -49,6 +49,40 @@ PreToolUse pre-commit hook that lints all staged files before `git commit` via `
 
 **Requirements:** `uv` installed. Skips silently if prerequisites are not met.
 
+### ACLI Manager
+
+Atlassian CLI (acli) skill for managing Jira Cloud and Confluence Cloud from the command line.
+
+**Features:**
+- Work items, projects, boards, sprints management
+- Confluence spaces and pages
+- Bulk operations and automation workflows
+- ADF format support for rich content
+
+### PR Reviewer
+
+PR/MR code review with GitHub and GitLab support (including self-hosted).
+
+**Features:**
+- Auto-detects platform from git remotes (`gh` / `glab`)
+- 6 specialized review agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification
+- Fetches existing PR/MR discussion and Jira/Linear issue context
+- Validates all findings: enforces file:line references, deduplicates, filters weak results, removes by-design items
+- Posts inline comments or single top-level comment with user permission
+
+### Autoresearch
+
+Autonomous hyperparameter and model optimization with parallel GPU researchers using Agent Teams.
+
+**Features:**
+- YAML-based experiment configuration
+- Parallel GPU researchers in isolated git worktrees
+- Coordinated experiment loop with metrics tracking
+- Cross-researcher learning broadcasts
+- Automatic cleanup of worktrees and resources
+
+Run `/autoresearch:autoresearch [path-to-autoresearch.yaml]` to start optimization.
+
 ## Installation
 
 ### Add Marketplace
@@ -69,8 +103,14 @@ PreToolUse pre-commit hook that lints all staged files before `git commit` via `
 # Install Python Dev (pre-commit: ruff + ty + yamllint)
 /plugin install python-dev@ai-engineering-skills
 
+# Install ACLI Manager
+/plugin install acli-manager@ai-engineering-skills
+
 # Install PR Reviewer
 /plugin install pr-reviewer@ai-engineering-skills
+
+# Install Autoresearch
+/plugin install autoresearch@ai-engineering-skills
 ```
 
 ## Usage
@@ -83,23 +123,13 @@ Once installed, plugins are automatically available in Claude Code.
 
 **Python Dev**: Runs automatically before `git commit` on staged `.py` and `.yaml`/`.yml` files. Blocks commit if issues remain after auto-fix.
 
+**ACLI Manager**: Start conversations about Jira Cloud or Confluence Cloud tasks and the skill will activate automatically.
+
 **PR Reviewer**: Run `/pr-reviewer:review-pr` to review the current branch's PR/MR. Supports `gh` (GitHub) and `glab` (GitLab, including self-hosted).
 
-### PR Reviewer
+**Autoresearch**: Run `/autoresearch:autoresearch` with an `autoresearch.yaml` config in your project root to launch parallel GPU optimization.
 
-PR/MR code review with GitHub and GitLab support (including self-hosted).
-
-**Features:**
-- Auto-detects platform from git remotes (`gh` / `glab`)
-- 6 specialized review agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification
-- Fetches existing PR/MR discussion and Jira/Linear issue context
-- Validates all findings: enforces file:line references, deduplicates, filters weak results, removes by-design items
-- Posts inline comments or single top-level comment with user permission
-- English and Ukrainian output
-
-[View Documentation](./pr-reviewer/README.md)
-
-## Installation
+## Structure
 
 ```
 claude-skills/
@@ -110,20 +140,29 @@ claude-skills/
 │   └── pre-commit.sh             # Pre-commit: ruff + ty + yamllint
 ├── nemo-builder/                 # NeMo Builder plugin
 │   ├── SKILL.md                  # Main skill file
-│   ├── README.md                 # Documentation
-│   ├── reference/                # Detailed guides
+│   ├── references/               # Detailed guides
 │   └── examples/                 # Code examples
 ├── jira-manager/                 # Jira Manager plugin
 │   ├── SKILL.md                  # Main skill file
-│   ├── README.md                 # Documentation
 │   ├── pyproject.toml            # Python dependencies
-│   ├── reference/                # Setup and config guides
+│   ├── references/               # Setup and config guides
 │   ├── examples/                 # Ticket examples and code
 │   └── tools/                    # API integration (Python)
+├── acli-manager/                 # ACLI Manager plugin
+│   ├── SKILL.md                  # Main skill file
+│   └── references/               # Workflow and ADF guides
 ├── pr-reviewer/                  # PR Reviewer plugin
 │   ├── commands/
 │   │   └── review-pr.md          # Orchestrator command
-│   ├── agents/                   # 6 specialized review agents
-│   └── README.md                 # Documentation
+│   └── agents/                   # 6 specialized review agents
+├── autoresearch/                 # Autoresearch plugin
+│   ├── commands/
+│   │   └── autoresearch.md       # Entry point command
+│   ├── skills/autoresearch/
+│   │   ├── SKILL.md              # Lead agent coordination
+│   │   ├── references/           # Config schema, learnings format
+│   │   └── scripts/              # Worktree setup, harvest, cleanup
+│   └── agents/
+│       └── researcher.md         # GPU researcher agent
 └── README.md                     # This file
 ```
