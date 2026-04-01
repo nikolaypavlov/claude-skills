@@ -79,7 +79,7 @@ This document contains the complete NeMo 2.0 framework overview and architecture
 
 NeMo 2.0 represents a fundamental shift from YAML-based to Python-based configuration. If you're familiar with NeMo 1.x or see YAML-based examples elsewhere, review the migration guide:
 
-- [📘 NeMo 2.0 Guide](./reference/nemo_2.0_guide.md) - Complete guide to NeMo 2.0
+- [📘 NeMo 2.0 Guide](./references/nemo_2.0_guide.md) - Complete guide to NeMo 2.0
 - **Migration Documentation**: `https://docs.nvidia.com/nemo-framework/user-guide/latest/nemo-2.0/migration/index.html`
 
 **Key differences in NeMo 2.0:**
@@ -92,13 +92,13 @@ NeMo 2.0 represents a fundamental shift from YAML-based to Python-based configur
 
 **Essential reference files (load as needed):**
 
-- [📋 NeMo Best Practices](./reference/nemo_best_practices.md) - Universal guidelines
-- [🎯 Training Guide](./reference/nemo_training.md) - Training and fine-tuning
-- [📊 Data Preparation](./reference/nemo_data_preparation.md) - Data curation with NeMo Curator
-- [🎓 Post-Training](./reference/nemo_post_training.md) - RLHF alignment (optional)
-- [🚀 Deployment Guide](./reference/nemo_deployment.md) - Production deployment
-- [🎤 Speech Tools](./reference/nemo_speech_tools.md) - Speech AI toolkit (if needed)
-- [📚 Tutorials](./reference/nemo_tutorials.md) - Interactive notebooks for hands-on learning
+- [📋 NeMo Best Practices](./references/nemo_best_practices.md) - Universal guidelines
+- [🎯 Training Guide](./references/nemo_training.md) - Training and fine-tuning
+- [📊 Data Preparation](./references/nemo_data_preparation.md) - Data curation with NeMo Curator
+- [🎓 Post-Training](./references/nemo_post_training.md) - RLHF alignment (optional)
+- [🚀 Deployment Guide](./references/nemo_deployment.md) - Production deployment
+- [🎤 Speech Tools](./references/nemo_speech_tools.md) - Speech AI toolkit (if needed)
+- [📚 Tutorials](./references/nemo_tutorials.md) - Interactive notebooks for hands-on learning
 
 #### 1.4 Define Project Requirements
 
@@ -205,7 +205,7 @@ python -c "import nemo; print(nemo.__version__)"
 #### 3.2 Use NeMo Curator for Data Curation
 
 **Load the data preparation guide:**
-[📊 Data Preparation Guide](./reference/nemo_data_preparation.md)
+[📊 Data Preparation Guide](./references/nemo_data_preparation.md)
 
 **Key steps:**
 - Quality filtering (remove low-quality, duplicate content)
@@ -244,7 +244,7 @@ python -c "import nemo; print(nemo.__version__)"
 #### 4.2 Configure Training
 
 **Load the training guide:**
-[🎯 Training Guide](./reference/nemo_training.md)
+[🎯 Training Guide](./references/nemo_training.md)
 
 **Configure NeMo Run experiment:**
 ```python
@@ -361,7 +361,7 @@ For models requiring alignment with human preferences, use NeMo RL for post-trai
 #### 6.1 Understand Post-Training Methods
 
 **Load the post-training guide:**
-[🎓 Post-Training Guide](./reference/nemo_post_training.md)
+[🎓 Post-Training Guide](./references/nemo_post_training.md)
 
 **Available methods:**
 - **RLHF with GRPO**: Group Relative Policy Optimization for reinforcement learning
@@ -435,7 +435,7 @@ grpo_config.train()
 **Prepare model for deployment:**
 
 **Load the deployment guide:**
-[🚀 Deployment Guide](./reference/nemo_deployment.md)
+[🚀 Deployment Guide](./references/nemo_deployment.md)
 
 **Export options:**
 - NeMo checkpoint → NIM (enterprise deployment)

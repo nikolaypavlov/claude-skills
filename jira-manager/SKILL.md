@@ -14,7 +14,7 @@ Skill for generating structured Jira ticket content for small development teams 
 2. **Determine language**:
    - Use language explicitly requested by user
    - If not specified, use the language of conversation with user
-3. **Read appropriate template** from `reference/ticket_templates.md`
+3. **Read appropriate template** from `references/ticket_templates.md`
 4. **Gather required information** through conversation:
    - Summary (following template format)
    - Description details (structured per template)
@@ -121,7 +121,7 @@ python -c "import jira; print('jira:', jira.__version__)"
 
 ## Template Usage
 
-**Always read** `reference/ticket_templates.md` to ensure:
+**Always read** `references/ticket_templates.md` to ensure:
 - Correct summary format
 - Proper description structure
 - All sections included

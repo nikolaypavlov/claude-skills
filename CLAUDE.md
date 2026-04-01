@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Contains:
@@ -17,7 +15,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 
 Most plugins use skills with the same structure:
 - `SKILL.md` -- Main entry point that Claude reads when the skill activates
-- `reference/` -- Detailed guides loaded on-demand (referenced from SKILL.md)
+- `references/` -- Detailed guides loaded on-demand (referenced from SKILL.md)
 - `examples/` -- Code examples and sample outputs
 
 PR Reviewer uses a different pattern - command + agents:
@@ -40,7 +38,7 @@ The only skill with executable code. Python package in `jira-manager/`.
 
 **Package management:** Uses `uv`. Install with:
 ```bash
-cd jira-manager && uv pip install -e .
+cd jira-manager && uv sync
 ```
 
 **Run tools directly:**
