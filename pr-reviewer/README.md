@@ -7,7 +7,7 @@ Comprehensive PR/MR code review plugin for Claude Code with GitHub and GitLab su
 - Auto-detects GitHub (`gh`) or GitLab (`glab`) from git remotes
 - Fetches existing PR/MR comments and discussion as context for review agents
 - Recognizes Jira/Linear issue references and filters out by-design findings
-- 6 specialized review agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification
+- 7 specialized review agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification, infrastructure
 - Main model validates all findings: enforces file:line references, deduplicates, filters weak/speculative results
 - Posts review with explicit user permission: inline comments per finding or single top-level comment
 - Supports English and Ukrainian output
@@ -44,6 +44,7 @@ Comprehensive PR/MR code review plugin for Claude Code with GitHub and GitLab su
 | `comments` | comment-analyzer | Comment accuracy, outdated docs |
 | `types` | type-design-analyzer | Type invariants, encapsulation |
 | `simplify` | code-simplifier | Code clarity and simplification |
+| `infra` | infra-reviewer | Terraform, Kubernetes, Helm, CI pipelines |
 | `all` | Smart selection | Picks agents based on changed files (default) |
 
 ## Workflow
