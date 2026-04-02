@@ -78,12 +78,12 @@
       "name": "pr-reviewer",
       "source": "./",
       "description": "PR/MR review with GitHub and GitLab support. Runs specialized agents, validates findings, posts inline comments.",
-      "version": "0.2.2",
+      "version": "0.3.0",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"
       },
-      "keywords": ["pr", "mr", "review", "github", "gitlab", "code-review"],
+      "keywords": ["pr", "mr", "review", "github", "gitlab", "code-review", "terraform", "infrastructure"],
       "homepage": "https://github.com/nikolaypavlov/claude-skills",
       "repository": "https://github.com/nikolaypavlov/claude-skills.git",
       "license": "MIT",

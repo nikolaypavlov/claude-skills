@@ -65,7 +65,7 @@ PR/MR code review with GitHub and GitLab support (including self-hosted).
 
 **Features:**
 - Auto-detects platform from git remotes (`gh` / `glab`)
-- 6 specialized review agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification
+- 7 specialized review agents: code quality, test coverage, error handling, comment accuracy, type design, code simplification
 - Fetches existing PR/MR discussion and Jira/Linear issue context
 - Validates all findings: enforces file:line references, deduplicates, filters weak results, removes by-design items
 - Posts inline comments or single top-level comment with user permission
@@ -154,7 +154,7 @@ claude-skills/
 ├── pr-reviewer/                  # PR Reviewer plugin
 │   ├── commands/
 │   │   └── review-pr.md          # Orchestrator command
-│   └── agents/                   # 6 specialized review agents
+│   └── agents/                   # 7 specialized review agents
 ├── autoresearch/                 # Autoresearch plugin
 │   ├── commands/
 │   │   └── autoresearch.md       # Entry point command
