@@ -276,23 +276,39 @@ JSON payload structure:
 
 **GitLab - Create inline discussions:**
 
-For each finding, create a separate discussion:
+For each finding, create a separate discussion. Use `--input -` with JSON because `glab api -f` does not support nested objects (the `position` field requires a nested JSON object).
+
 ```bash
 # Get diff_refs from MR metadata (already fetched in Phase 2.1 via glab mr view -F json)
 # Extract: diff_refs.base_sha, diff_refs.head_sha, diff_refs.start_sha
 
 # Post each inline comment as a discussion
 # Use --hostname for self-hosted GitLab instances
-glab api projects/<url-encoded-path>/merge_requests/<iid>/discussions \
+echo '<json_payload>' | glab api projects/<url-encoded-path>/merge_requests/<iid>/discussions \
   --hostname <host> \
   --method POST \
-  -f body="**[agent-name]** SEVERITY: Description.\n\n**Recommendation**: Fix suggestion." \
-  -f "position[position_type]=text" \
-  -f "position[new_path]=relative/path/to/file.ext" \
-  -f "position[new_line]=42" \
-  -f "position[base_sha]=$BASE_SHA" \
-  -f "position[head_sha]=$HEAD_SHA" \
-  -f "position[start_sha]=$START_SHA"
+  --input -
 ```
+
+JSON payload structure:
+```json
+{
+  "body": "**[agent-name]** SEVERITY: Description.\n\n**Recommendation**: Fix suggestion.",
+  "position": {
+    "position_type": "text",
+    "old_path": "relative/path/to/file.ext",
+    "new_path": "relative/path/to/file.ext",
+    "new_line": 42,
+    "base_sha": "<diff_refs.base_sha>",
+    "head_sha": "<diff_refs.head_sha>",
+    "start_sha": "<diff_refs.start_sha>"
+  }
+}
+```
+
+Notes:
+- `old_path` is required by GitLab API even for new files (set same as `new_path`)
+- For added/modified lines use `new_line`; for removed lines use `old_line` instead
+- Both `old_path` and `new_path` must always be present
 
 After posting, confirm to the user how many comments were posted and provide a link to the PR/MR.
