@@ -1,6 +1,6 @@
 ---
 description: "Comprehensive PR/MR review with GitHub and GitLab support"
-argument-hint: "[pr-number] [aspects: code|tests|errors|comments|types|simplify|all] [parallel] [--lang en|uk]"
+argument-hint: "[pr-number] [aspects: code|tests|errors|comments|types|simplify|all] [parallel] [--lang en|uk] [--post inline|single|no]"
 allowed-tools: ["Bash", "Glob", "Grep", "Read", "Agent", "AskUserQuestion"]
 ---
 
@@ -215,9 +215,14 @@ Rules:
 
 ALWAYS output the full formatted review text to the user. This is mandatory before any posting.
 
-### 7.2 Ask for permission
+### 7.2 Determine posting action
 
-Use the AskUserQuestion tool to ask the user:
+Check `$ARGUMENTS` for `--post` flag:
+- `--post inline` - post inline comments without asking (use language from `--lang`, default English)
+- `--post single` - post as single comment without asking (use language from `--lang`, default English)
+- `--post no` - do not post, just display the report
+
+If `--post` is NOT specified, use the AskUserQuestion tool to ask the user:
 
 Question: "Post this review to the PR/MR?"
 Options:
@@ -227,7 +232,7 @@ Options:
 - "Post as single comment (Ukrainian)" - same as above but translated to Ukrainian
 - "Do not post"
 
-NEVER post comments without the user's explicit approval via AskUserQuestion.
+NEVER post comments without the user's explicit approval via AskUserQuestion or the `--post` flag.
 
 ### 7.3 Post (if approved)
 
