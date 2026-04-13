@@ -240,7 +240,14 @@ Translate the review to the selected language if needed.
 
 **If "single comment" was selected**, post the full review as one top-level comment:
 - **GitHub**: `gh pr comment <number> --body "<full review markdown>"`
-- **GitLab**: `glab mr note <iid> -R <repo> -m "<full review markdown>" --unique`
+- **GitLab**: Write the review body to a temp file first to preserve actual newlines (passing `\n` to `-m` posts literal backslash-n):
+  ```bash
+  cat > /tmp/gl-review.md << 'REVIEW_BODY'
+  <full review markdown>
+  REVIEW_BODY
+
+  glab mr note <iid> -R <repo> -m "$(cat /tmp/gl-review.md)" --unique
+  ```
 
 The `--unique` flag (GitLab) prevents duplicate comments when re-running the review.
 
@@ -283,27 +290,28 @@ For each finding, create a separate discussion. Use `--input -` with JSON becaus
 # Extract: diff_refs.base_sha, diff_refs.head_sha, diff_refs.start_sha
 
 # Post each inline comment as a discussion
+# Use python3 json.dumps() to build JSON - this guarantees correct newline escaping
+# (echo with manual JSON risks literal \n or double-escaped \\n in the body)
 # Use --hostname for self-hosted GitLab instances
-echo '<json_payload>' | glab api projects/<url-encoded-path>/merge_requests/<iid>/discussions \
-  --hostname <host> \
-  --method POST \
-  --input -
-```
+python3 << 'PYEOF' | glab api projects/<url-encoded-path>/merge_requests/<iid>/discussions \
+  --hostname <host> --method POST --input -
+import json
+payload = {
+    "body": """**[agent-name]** SEVERITY: Description.
 
-JSON payload structure:
-```json
-{
-  "body": "**[agent-name]** SEVERITY: Description.\n\n**Recommendation**: Fix suggestion.",
-  "position": {
-    "position_type": "text",
-    "old_path": "relative/path/to/file.ext",
-    "new_path": "relative/path/to/file.ext",
-    "new_line": 42,
-    "base_sha": "<diff_refs.base_sha>",
-    "head_sha": "<diff_refs.head_sha>",
-    "start_sha": "<diff_refs.start_sha>"
-  }
+**Recommendation**: Fix suggestion.""",
+    "position": {
+        "position_type": "text",
+        "old_path": "relative/path/to/file.ext",
+        "new_path": "relative/path/to/file.ext",
+        "new_line": 42,
+        "base_sha": "<diff_refs.base_sha>",
+        "head_sha": "<diff_refs.head_sha>",
+        "start_sha": "<diff_refs.start_sha>"
+    }
 }
+print(json.dumps(payload))
+PYEOF
 ```
 
 Notes:
