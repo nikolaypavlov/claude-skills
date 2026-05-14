@@ -8,20 +8,20 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow, bail};
-use async_imap::Session;
+use anyhow::{anyhow, bail, Context, Result};
 use async_imap::imap_proto;
 use async_imap::types::{Fetch, Name, NameAttribute};
+use async_imap::Session;
 use chrono::{DateTime, Utc};
 use futures::stream::TryStreamExt;
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use mail_parser::{MessageParser, MimeHeaders};
-use uuid::Uuid;
 use rustls::ClientConfig;
 use rustls_pki_types::ServerName;
 use tokio::net::TcpStream;
-use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
+use tokio_rustls::TlsConnector;
+use uuid::Uuid;
 
 use crate::config::{Config, IMAP_HOST, IMAP_PORT};
 
@@ -106,10 +106,7 @@ impl ImapClient {
             .with_context(|| format!("connect to {IMAP_HOST}:{IMAP_PORT}"))?;
         let sni = ServerName::try_from(IMAP_HOST.to_string()).context("invalid server name")?;
         let connector = TlsConnector::from(self.tls_config.clone());
-        let tls = connector
-            .connect(sni, tcp)
-            .await
-            .context("TLS handshake")?;
+        let tls = connector.connect(sni, tcp).await.context("TLS handshake")?;
 
         let mut client = async_imap::Client::new(tls);
         let _greeting = client
@@ -127,10 +124,7 @@ impl ImapClient {
 
     pub async fn list_folders(&self) -> Result<Vec<Folder>> {
         let mut session = self.login().await?;
-        let folders_stream = session
-            .list(Some(""), Some("*"))
-            .await
-            .context("LIST")?;
+        let folders_stream = session.list(Some(""), Some("*")).await.context("LIST")?;
         let names: Vec<Name> = folders_stream.try_collect().await.context("collect LIST")?;
         let folders: Vec<Folder> = names
             .into_iter()
@@ -184,7 +178,7 @@ impl ImapClient {
             .iter()
             .filter_map(|m| summary_from_envelope(m, folder))
             .collect();
-        out.sort_by(|a, b| b.uid.cmp(&a.uid));
+        out.sort_by_key(|m| std::cmp::Reverse(m.uid));
 
         let _ = session.logout().await;
         Ok(out)
@@ -276,12 +270,16 @@ fn special_use(attrs: &[NameAttribute<'_>]) -> Option<String> {
 }
 
 async fn find_drafts_folder(session: &mut ImapSession) -> Result<String> {
-    let stream = session.list(Some(""), Some("*")).await.context("LIST for drafts")?;
+    let stream = session
+        .list(Some(""), Some("*"))
+        .await
+        .context("LIST for drafts")?;
     let names: Vec<Name> = stream.try_collect().await?;
-    if let Some(n) = names
-        .iter()
-        .find(|n| n.attributes().iter().any(|a| matches!(a, NameAttribute::Drafts)))
-    {
+    if let Some(n) = names.iter().find(|n| {
+        n.attributes()
+            .iter()
+            .any(|a| matches!(a, NameAttribute::Drafts))
+    }) {
         return Ok(n.name().to_string());
     }
     // Fallback: iCloud usually exposes a folder literally named "Drafts".
@@ -444,7 +442,9 @@ fn first_addr<'a>(addr: &'a mail_parser::Address<'_>) -> Option<&'a mail_parser:
 }
 
 fn collect_addrs(addr: Option<&mail_parser::Address<'_>>) -> Vec<String> {
-    let Some(a) = addr else { return Vec::new(); };
+    let Some(a) = addr else {
+        return Vec::new();
+    };
     match a {
         mail_parser::Address::List(list) => list.iter().map(format_parser_addr).collect(),
         mail_parser::Address::Group(groups) => groups

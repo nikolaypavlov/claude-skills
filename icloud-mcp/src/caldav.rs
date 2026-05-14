@@ -9,30 +9,28 @@
 //!        (multiget) for the iCalendar data.
 //!     4. `create_event` builds a VEVENT with `icalendar` and PUTs it with If-None-Match.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use http::Uri;
 use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::client::legacy::{
-    Client as HyperClient,
-    connect::HttpConnector,
-};
+use hyper_util::client::legacy::{connect::HttpConnector, Client as HyperClient};
 use hyper_util::rt::TokioExecutor;
-use icalendar::{Calendar as ICalendar, CalendarComponent, Component, Event as ICalEvent, EventLike};
+use icalendar::{
+    Calendar as ICalendar, CalendarComponent, Component, Event as ICalEvent, EventLike,
+};
 use libdav::caldav::{
     FindCalendarHomeSet, FindCalendars, GetCalendarResources, ListCalendarResources,
 };
 use libdav::dav::{GetProperty, PutResource, WebDavClient};
-use libdav::{CalDavClient, FetchedResource, names};
+use libdav::{names, CalDavClient, FetchedResource};
 use tokio::sync::OnceCell;
 use tower_http::auth::AddAuthorization;
 use uuid::Uuid;
 
-use crate::config::{CALDAV_BASE, Config};
+use crate::config::{Config, CALDAV_BASE};
 
-type AuthClient = AddAuthorization<
-    HyperClient<hyper_rustls::HttpsConnector<HttpConnector>, String>,
->;
+type AuthClient =
+    AddAuthorization<HyperClient<hyper_rustls::HttpsConnector<HttpConnector>, String>>;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CalendarInfo {
@@ -88,9 +86,7 @@ pub struct Client {
 
 impl Client {
     pub async fn new(config: &Config) -> Result<Self> {
-        let base_url: Uri = CALDAV_BASE
-            .parse()
-            .context("invalid CALDAV_BASE")?;
+        let base_url: Uri = CALDAV_BASE.parse().context("invalid CALDAV_BASE")?;
 
         let connector = HttpsConnectorBuilder::new()
             .with_native_roots()
@@ -99,7 +95,8 @@ impl Client {
             .enable_http1()
             .build();
         let hyper_client = HyperClient::builder(TokioExecutor::new()).build(connector);
-        let auth_client = AddAuthorization::basic(hyper_client, &config.apple_id, &config.app_password);
+        let auth_client =
+            AddAuthorization::basic(hyper_client, &config.apple_id, &config.app_password);
 
         let webdav = WebDavClient::new(base_url, auth_client);
         let caldav = CalDavClient::bootstrap_via_service_discovery(webdav)
@@ -212,11 +209,7 @@ impl Client {
         Ok(out)
     }
 
-    pub async fn get_event(
-        &self,
-        calendar_href: &str,
-        uid_or_href: &str,
-    ) -> Result<EventDetail> {
+    pub async fn get_event(&self, calendar_href: &str, uid_or_href: &str) -> Result<EventDetail> {
         let href = href_for(calendar_href, uid_or_href);
         let resp = self
             .inner
@@ -281,10 +274,7 @@ impl Client {
         let uid = Uuid::new_v4().to_string();
 
         let mut ev = ICalEvent::new();
-        ev.uid(&uid)
-            .summary(&p.title)
-            .starts(p.start)
-            .ends(p.end);
+        ev.uid(&uid).summary(&p.title).starts(p.start).ends(p.end);
         if let Some(d) = &p.description {
             ev.description(d);
         }
@@ -303,7 +293,11 @@ impl Client {
         cal.append_property(("VERSION", "2.0"));
         let ical_text = cal.to_string();
 
-        let href = format!("{}{}.ics", calendar_href.trim_end_matches('/').to_string() + "/", uid);
+        let href = format!(
+            "{}{}.ics",
+            calendar_href.trim_end_matches('/').to_string() + "/",
+            uid
+        );
         let resp = self
             .inner
             .request(
@@ -434,4 +428,3 @@ fn dpt_to_string(dpt: Option<icalendar::DatePerhapsTime>) -> (String, bool) {
         None => (String::new(), false),
     }
 }
-

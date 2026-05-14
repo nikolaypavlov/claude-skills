@@ -101,3 +101,18 @@ This repository is a Claude Code plugin. When creating or modifying skills, comm
 - Python code uses full type annotations and tuple returns `(success: bool, message: str, data: Optional)`
 - CLI tools communicate via JSON on stdin/stdout
 - No automated test suite -- testing is done manually via example scripts in `examples/`
+
+### Rust projects
+
+Every Rust crate in this repo must use `cargo fmt` (rustfmt) and `cargo clippy` and pass both before commit:
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets
+```
+
+Rules:
+- Each Rust crate has a `rustfmt.toml` (or inherits sensible defaults) and pins lint policy in `Cargo.toml` under `[lints]` -- at minimum `unsafe_code = "forbid"` under `[lints.rust]` and `clippy::all = warn` (with `priority = -1`) under `[lints.clippy]`.
+- Fix clippy warnings rather than suppressing them. Use `#[allow(...)]` only with a comment explaining why.
+- Run `cargo fmt` after any code change. Do not hand-format -- let rustfmt own layout.
+- `cargo build --release` must succeed warning-free before pushing.

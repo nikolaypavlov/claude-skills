@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 pub const CALDAV_BASE: &str = "https://caldav.icloud.com";
 pub const IMAP_HOST: &str = "imap.mail.me.com";
@@ -42,8 +42,8 @@ impl Config {
 #[cfg(target_os = "macos")]
 fn keychain_lookup(apple_id: &str) -> Result<String> {
     use security_framework::passwords::get_generic_password;
-    let bytes = get_generic_password(KEYCHAIN_SERVICE, apple_id)
-        .context("keychain item not found")?;
+    let bytes =
+        get_generic_password(KEYCHAIN_SERVICE, apple_id).context("keychain item not found")?;
     String::from_utf8(bytes).context("keychain password is not valid UTF-8")
 }
 

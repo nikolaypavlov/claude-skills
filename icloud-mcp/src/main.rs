@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
         CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     schemars, tool, tool_handler, tool_router,
     transport::stdio,
+    ErrorData as McpError, ServerHandler, ServiceExt,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -171,9 +171,7 @@ impl IcloudServer {
         Ok(json_result(&cals))
     }
 
-    #[tool(
-        description = "List VEVENTs in a calendar between start and end (RFC 3339 UTC)."
-    )]
+    #[tool(description = "List VEVENTs in a calendar between start and end (RFC 3339 UTC).")]
     async fn calendar_list_events(
         &self,
         Parameters(args): Parameters<ListEventsArgs>,
@@ -396,17 +394,13 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("icloud_mcp=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("icloud_mcp=info")),
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
 
-    tracing::info!(
-        version = env!("CARGO_PKG_VERSION"),
-        "icloud-mcp starting"
-    );
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "icloud-mcp starting");
 
     let config = Config::load()?;
     let server = IcloudServer::new(config).await?;

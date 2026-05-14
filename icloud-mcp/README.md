@@ -101,6 +101,16 @@ Restart Claude Code if needed. The MCP server starts automatically when Claude C
 
 All timestamps are RFC 3339 UTC, e.g. `2026-05-14T09:00:00Z`.
 
+## Development
+
+```
+cargo fmt              # apply rustfmt (config in rustfmt.toml)
+cargo clippy --all-targets   # lint; [lints] in Cargo.toml gates warnings
+cargo build --release
+```
+
+`Cargo.toml` enables `unsafe_code = "forbid"` and `clippy::all = warn`. The release profile uses `lto = "thin"` and `strip = "symbols"`.
+
 ## Dependencies
 
 - `rmcp` - MCP SDK

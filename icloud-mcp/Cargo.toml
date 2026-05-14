@@ -10,6 +10,14 @@ authors = ["Mykola Pavlov <me@nikolaypavlov.com>"]
 name = "icloud-mcp"
 path = "src/main.rs"
 
+[lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+
 [dependencies]
 # MCP SDK
 rmcp = { version = "0.16", features = ["server", "macros", "transport-io"] }
