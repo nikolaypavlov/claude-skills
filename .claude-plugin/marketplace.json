@@ -133,6 +133,21 @@
       "commands": [
         "./pdf-design-system/commands"
       ]
+    },
+    {
+      "name": "icloud-mcp",
+      "source": "./icloud-mcp",
+      "description": "Local MCP server (Rust) for Apple iCloud Calendar (CalDAV) and Mail (IMAP). Read + create-only: list/search/create events, list folders, search/fetch messages, and APPEND drafts to the Drafts folder. No SMTP - user reviews drafts and sends manually in iCloud Mail.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["icloud", "mcp", "caldav", "imap", "calendar", "mail", "drafts", "rust"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false
     }
   ]
 }

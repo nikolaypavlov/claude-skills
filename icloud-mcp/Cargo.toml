@@ -1,0 +1,60 @@
+[package]
+name = "icloud-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP/SMTP)"
+license = "MIT"
+authors = ["Mykola Pavlov <me@nikolaypavlov.com>"]
+
+[[bin]]
+name = "icloud-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# MCP SDK
+rmcp = { version = "0.16", features = ["server", "macros", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
+
+# Common
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1", features = ["chrono04"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+futures = "0.3"
+
+# CalDAV via libdav (hyper-based)
+libdav = "0.10"
+http = "1"
+hyper = { version = "1", features = ["http1", "client"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "rustls-native-certs", "native-tokio"] }
+tower-http = { version = "0.6", features = ["auth"] }
+icalendar = "0.16"
+
+# IMAP
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pki-types = "1"
+mail-parser = "0.11"
+
+# Draft email construction (RFC 822 builder only, no transport - drafts are APPENDed
+# to the Drafts IMAP folder rather than sent via SMTP).
+lettre = { version = "0.11", default-features = false, features = ["builder"] }
+
+# HTML -> Markdown
+html2md = "0.2"
+
+# Logging (stderr; stdout reserved for MCP)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

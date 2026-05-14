@@ -11,6 +11,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **PR Reviewer** (`pr-reviewer/`) -- PR/MR code review with GitHub and GitLab support (including self-hosted). Command (`review-pr`) + 7 agents. Fetches existing discussion and Jira/Linear context, validates findings with file:line enforcement, posts inline or single comments with user permission.
 - **Autoresearch** (`autoresearch/`) -- Autonomous hyperparameter/model optimization with parallel GPU researchers using Agent Teams. Command (`autoresearch`) + lead skill + researcher agent. Coordinates worktree-isolated experiments across multiple GPUs, tracks metrics, broadcasts learnings.
 - **PDF Design System** (`pdf-design-system/`) -- Skill + command for converting markdown to PDF using a canonical editorial design (navy/gold/cream, Fraunces + Source Serif 4 + JetBrains Mono). Default path uses only the skill's canonical stylesheet. Per-project customization (wordmark, palette) is opt-in via `/pdf-design-system:init`, which scaffolds `docs/pdf-overrides.css` with `:root` token redeclarations only.
+- **iCloud MCP** (`icloud-mcp/`) -- Local Rust MCP server for Apple iCloud Calendar (CalDAV via `libdav`) and Mail (IMAP via `async-imap` + `tokio-rustls`). Read + create-only: events can be created; mail can only be saved as drafts via IMAP APPEND (no SMTP). Credentials via `APPLE_ID`/`APPLE_APP_PASSWORD` env vars with macOS Keychain fallback.
 
 ## Plugin Architecture
 
@@ -30,6 +31,28 @@ Autoresearch uses command + skill + agent:
 - `skills/autoresearch/scripts/` -- Shell/Python utilities (worktree-setup.sh, harvest.py, cleanup.sh)
 
 The marketplace is configured in `.claude-plugin/marketplace.json`.
+
+## iCloud MCP Development
+
+Rust binary plugin. Not a skill - it ships as a standalone MCP server registered via `icloud-mcp/.mcp.json`.
+
+**Build:**
+```bash
+cd icloud-mcp && cargo build --release
+```
+
+The binary lands at `icloud-mcp/target/release/icloud-mcp`. `.mcp.json` references it via `${CLAUDE_PLUGIN_ROOT}/target/release/icloud-mcp`.
+
+**Key files:**
+- `src/main.rs` -- entry point, `IcloudServer` struct with `#[tool_router]`, 9 tools, stdio transport
+- `src/caldav.rs` -- thin wrapper around `libdav::CalDavClient` (list_calendars, list_events, get_event, search_events, create_event)
+- `src/imap_client.rs` -- `async-imap` over `tokio-rustls` (list_folders, search, get_message, create_draft via APPEND)
+- `src/config.rs` -- env-or-Keychain credential loading
+- `src/error.rs` -- McpError helpers
+
+**Configuration:** Environment variables `APPLE_ID` and `APPLE_APP_PASSWORD` (a 16-char app-specific password from account.apple.com). On macOS, password can also live in Keychain under service `icloud-mcp`, account `$APPLE_ID`.
+
+**Design constraint:** No SMTP. Drafts are APPENDed to the IMAP Drafts folder with the `\Draft` flag; the user reviews and sends them manually in iCloud Mail. This keeps the server from producing external side-effects.
 
 ## Jira Manager Development
 

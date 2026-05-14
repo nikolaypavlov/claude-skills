@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "icloud": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/target/release/icloud-mcp",
+      "args": []
+    }
+  }
+}
