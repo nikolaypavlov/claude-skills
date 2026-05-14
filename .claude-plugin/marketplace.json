@@ -112,6 +112,27 @@
       "commands": [
         "./autoresearch/commands"
       ]
+    },
+    {
+      "name": "pdf-design-system",
+      "source": "./",
+      "description": "Convert markdown to PDF using a canonical editorial design system (navy/gold/cream, Fraunces + Source Serif 4 + JetBrains Mono). Provides the canonical stylesheet, pandoc + WeasyPrint workflow, and a slash command to scaffold per-project token overrides.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["pdf", "markdown", "pandoc", "weasyprint", "design-system", "typography", "documents"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./pdf-design-system"
+      ],
+      "commands": [
+        "./pdf-design-system/commands"
+      ]
     }
   ]
 }

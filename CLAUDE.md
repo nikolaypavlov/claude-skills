@@ -10,6 +10,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **Python Dev** (`hooks/`) -- PreToolUse pre-commit hook: ruff (lint, format, import sort) + ty (type check) for Python, yamllint for YAML. Runs on staged files before `git commit`.
 - **PR Reviewer** (`pr-reviewer/`) -- PR/MR code review with GitHub and GitLab support (including self-hosted). Command (`review-pr`) + 7 agents. Fetches existing discussion and Jira/Linear context, validates findings with file:line enforcement, posts inline or single comments with user permission.
 - **Autoresearch** (`autoresearch/`) -- Autonomous hyperparameter/model optimization with parallel GPU researchers using Agent Teams. Command (`autoresearch`) + lead skill + researcher agent. Coordinates worktree-isolated experiments across multiple GPUs, tracks metrics, broadcasts learnings.
+- **PDF Design System** (`pdf-design-system/`) -- Skill + command for converting markdown to PDF using a canonical editorial design (navy/gold/cream, Fraunces + Source Serif 4 + JetBrains Mono). Default path uses only the skill's canonical stylesheet. Per-project customization (wordmark, palette) is opt-in via `/pdf-design-system:init`, which scaffolds `docs/pdf-overrides.css` with `:root` token redeclarations only.
 
 ## Plugin Architecture
 
