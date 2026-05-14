@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<multistatus xmlns="DAV:">
+  <response>
+    <href>/1234/calendars/work/</href>
+    <propstat>
+      <prop>
+        <resourcetype><collection/></resourcetype>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/1234/calendars/work/event-1.ics</href>
+    <propstat>
+      <prop>
+        <getetag>"e-1"</getetag>
+        <getcontenttype>text/calendar</getcontenttype>
+        <resourcetype/>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/1234/calendars/work/event-2.ics</href>
+    <propstat>
+      <prop>
+        <getetag>"e-2"</getetag>
+        <getcontenttype>text/calendar</getcontenttype>
+        <resourcetype/>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>

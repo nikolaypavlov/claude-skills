@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<multistatus xmlns="DAV:" xmlns:A="http://apple.com/ns/ical/">
+  <response>
+    <href>/1234/calendars/personal/</href>
+    <propstat>
+      <prop>
+        <displayname>Personal</displayname>
+        <A:calendar-color>#33A1FF</A:calendar-color>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>

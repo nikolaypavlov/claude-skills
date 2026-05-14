@@ -1,8 +1,8 @@
 [package]
 name = "icloud-mcp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
-description = "Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP/SMTP)"
+description = "Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP)"
 license = "MIT"
 authors = ["Mykola Pavlov <me@nikolaypavlov.com>"]
 
@@ -21,7 +21,15 @@ pedantic = { level = "allow", priority = -1 }
 [dependencies]
 # MCP SDK
 rmcp = { version = "0.16", features = ["server", "macros", "transport-io"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "io-std",
+    "io-util",
+    "net",
+    "time",
+    "sync",
+] }
 
 # Common
 anyhow = "1"
@@ -30,7 +38,7 @@ serde_json = "1"
 schemars = { version = "1", features = ["chrono04"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
-futures = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # CalDAV via libdav (hyper-based)
 libdav = "0.10"
@@ -62,6 +70,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+
+[dev-dependencies]
+httpmock = "0.7"
+tokio = { version = "1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "test-util",
+] }
 
 [profile.release]
 lto = "thin"

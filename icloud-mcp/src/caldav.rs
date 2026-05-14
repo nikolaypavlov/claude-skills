@@ -4,33 +4,49 @@
 //!     1. `Client::new` builds a hyper-rustls https client, wraps it with Basic auth
 //!        (tower_http), then bootstraps a [`CalDavClient`] via DNS service discovery.
 //!     2. `list_calendars` finds the principal -> calendar-home-set -> collections,
-//!        then queries displayname + colour for each.
+//!        then queries displayname + colour for each (one combined PROPFIND each).
 //!     3. `list_events` does ListCalendarResources(time-range) then GetCalendarResources
 //!        (multiget) for the iCalendar data.
-//!     4. `create_event` builds a VEVENT with `icalendar` and PUTs it with If-None-Match.
+//!     4. `search_events` fans out across calendars in parallel.
+//!     5. `create_event` builds a VEVENT with `icalendar` (full DTSTAMP+METHOD+
+//!        ATTENDEE params) and PUTs it.
 
-use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
+use futures_util::future::join_all;
 use http::Uri;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::{connect::HttpConnector, Client as HyperClient};
 use hyper_util::rt::TokioExecutor;
 use icalendar::{
-    Calendar as ICalendar, CalendarComponent, Component, Event as ICalEvent, EventLike,
+    Calendar as ICalendar, CalendarComponent, Component, Event as ICalEvent, EventLike, Property,
 };
 use libdav::caldav::{
     FindCalendarHomeSet, FindCalendars, GetCalendarResources, ListCalendarResources,
 };
-use libdav::dav::{GetProperty, PutResource, WebDavClient};
+use libdav::dav::{GetProperties, PutResource, WebDavClient};
 use libdav::{names, CalDavClient, FetchedResource};
 use tokio::sync::OnceCell;
 use tower_http::auth::AddAuthorization;
 use uuid::Uuid;
 
 use crate::config::{Config, CALDAV_BASE};
+use crate::error::DomainError;
+use crate::timeout::{with_timeout, CALDAV_REQUEST};
 
 type AuthClient =
     AddAuthorization<HyperClient<hyper_rustls::HttpsConnector<HttpConnector>, String>>;
+
+fn build_webdav(base_url: Uri, config: &Config) -> Result<WebDavClient<AuthClient>, DomainError> {
+    let connector = HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .map_err(|e| DomainError::permanent(format!("loading native TLS roots: {e}")))?
+        .https_or_http()
+        .enable_http1()
+        .build();
+    let hyper_client = HyperClient::builder(TokioExecutor::new()).build(connector);
+    let auth_client = AddAuthorization::basic(hyper_client, &config.apple_id, &config.app_password);
+    Ok(WebDavClient::new(base_url, auth_client))
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CalendarInfo {
@@ -85,77 +101,112 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn new(config: &Config) -> Result<Self> {
-        let base_url: Uri = CALDAV_BASE.parse().context("invalid CALDAV_BASE")?;
-
-        let connector = HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .context("loading native TLS roots")?
-            .https_only()
-            .enable_http1()
-            .build();
-        let hyper_client = HyperClient::builder(TokioExecutor::new()).build(connector);
-        let auth_client =
-            AddAuthorization::basic(hyper_client, &config.apple_id, &config.app_password);
-
-        let webdav = WebDavClient::new(base_url, auth_client);
-        let caldav = CalDavClient::bootstrap_via_service_discovery(webdav)
-            .await
-            .context("CalDAV service discovery (caldav.icloud.com)")?;
-
+    pub async fn new(config: &Config) -> Result<Self, DomainError> {
+        let base_url: Uri = CALDAV_BASE.parse().map_err(|e: http::uri::InvalidUri| {
+            DomainError::permanent(format!("CALDAV_BASE: {e}"))
+        })?;
+        let webdav = build_webdav(base_url, config)?;
+        let caldav = with_timeout("CalDAV service discovery", CALDAV_REQUEST, async {
+            CalDavClient::bootstrap_via_service_discovery(webdav)
+                .await
+                .map_err(|e| DomainError::transient(format!("CalDAV service discovery: {e}")))
+        })
+        .await?;
         Ok(Self {
             inner: caldav,
             home: OnceCell::new(),
         })
     }
 
-    async fn calendar_home(&self) -> Result<String> {
+    /// Build a client against an explicit base URL without service discovery.
+    /// Used by integration tests against a local httpmock instance and by any
+    /// caller that already knows the exact CalDAV root path.
+    pub fn with_base_url_no_discovery(base_url: Uri, config: &Config) -> Result<Self, DomainError> {
+        let webdav = build_webdav(base_url, config)?;
+        Ok(Self {
+            inner: CalDavClient::new(webdav),
+            home: OnceCell::new(),
+        })
+    }
+
+    /// Inject an already-discovered calendar-home-set href. Tests use this so
+    /// they do not need to mock the principal -> home-set dance.
+    pub fn set_calendar_home_for_tests(&self, href: String) {
+        let _ = self.home.set(href);
+    }
+
+    async fn calendar_home(&self) -> Result<String, DomainError> {
         self.home
             .get_or_try_init(|| async {
-                let principal = self
-                    .inner
-                    .find_current_user_principal()
-                    .await
-                    .context("find_current_user_principal")?
-                    .ok_or_else(|| anyhow!("server did not return a current-user-principal"))?;
-                let resp = self
-                    .inner
-                    .request(FindCalendarHomeSet::new(principal.path()))
-                    .await
-                    .map_err(|e| anyhow!("FindCalendarHomeSet: {e}"))?;
+                let principal =
+                    with_timeout("find_current_user_principal", CALDAV_REQUEST, async {
+                        self.inner
+                            .find_current_user_principal()
+                            .await
+                            .map_err(|e| {
+                                DomainError::permanent(format!("find_current_user_principal: {e}"))
+                            })?
+                            .ok_or_else(|| {
+                                DomainError::permanent(
+                                    "server did not return a current-user-principal",
+                                )
+                            })
+                    })
+                    .await?;
+                let resp = with_timeout("FindCalendarHomeSet", CALDAV_REQUEST, async {
+                    self.inner
+                        .request(FindCalendarHomeSet::new(principal.path()))
+                        .await
+                        .map_err(|e| DomainError::permanent(format!("FindCalendarHomeSet: {e}")))
+                })
+                .await?;
                 let first = resp
                     .home_sets
                     .into_iter()
                     .next()
-                    .ok_or_else(|| anyhow!("no calendar-home-set returned"))?;
-                Ok::<_, anyhow::Error>(first.path().to_string())
+                    .ok_or_else(|| DomainError::permanent("no calendar-home-set returned"))?;
+                Ok::<_, DomainError>(first.path().to_string())
             })
             .await
             .cloned()
     }
 
-    pub async fn list_calendars(&self) -> Result<Vec<CalendarInfo>> {
+    pub async fn list_calendars(&self) -> Result<Vec<CalendarInfo>, DomainError> {
         let home = self.calendar_home().await?;
-        let resp = self
-            .inner
-            .request(FindCalendars::new(&home))
-            .await
-            .map_err(|e| anyhow!("FindCalendars: {e}"))?;
+        let resp = with_timeout("FindCalendars", CALDAV_REQUEST, async {
+            self.inner
+                .request(FindCalendars::new(&home))
+                .await
+                .map_err(|e| DomainError::permanent(format!("FindCalendars: {e}")))
+        })
+        .await?;
+
+        let props: [&libdav::PropertyName<'_, '_>; 2] =
+            [&names::DISPLAY_NAME, &names::CALENDAR_COLOUR];
 
         let mut out = Vec::with_capacity(resp.calendars.len());
         for cal in resp.calendars {
-            let name = self
-                .inner
-                .request(GetProperty::new(&cal.href, &names::DISPLAY_NAME))
-                .await
-                .ok()
-                .and_then(|r| r.value);
-            let color = self
-                .inner
-                .request(GetProperty::new(&cal.href, &names::CALENDAR_COLOUR))
-                .await
-                .ok()
-                .and_then(|r| r.value);
+            let combined = with_timeout("GetProperties", CALDAV_REQUEST, async {
+                self.inner
+                    .request(GetProperties::new(&cal.href, &props))
+                    .await
+                    .map_err(|e| DomainError::permanent(format!("GetProperties: {e}")))
+            })
+            .await;
+
+            let (name, color) = match combined {
+                Ok(r) => {
+                    // r.values keeps request order: [DISPLAY_NAME, CALENDAR_COLOUR].
+                    let mut iter = r.values.into_iter();
+                    let name = iter.next().and_then(|(_, v)| v);
+                    let color = iter.next().and_then(|(_, v)| v);
+                    (name, color)
+                }
+                Err(e) => {
+                    tracing::warn!(calendar = %cal.href, error = %e, "PROPFIND failed");
+                    (None, None)
+                }
+            };
             out.push(CalendarInfo {
                 id: cal.href,
                 display_name: name.unwrap_or_else(|| "(unnamed)".to_string()),
@@ -170,19 +221,21 @@ impl Client {
         calendar_href: &str,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-    ) -> Result<Vec<EventSummary>> {
+    ) -> Result<Vec<EventSummary>, DomainError> {
         let start_s = fmt_caldav_dt(start);
         let end_s = fmt_caldav_dt(end);
 
-        let listing = self
-            .inner
-            .request(
-                ListCalendarResources::new(calendar_href)
-                    .with_component_and_time_range("VEVENT", Some(&start_s), Some(&end_s))
-                    .map_err(|e| anyhow!("invalid time-range: {e}"))?,
-            )
-            .await
-            .map_err(|e| anyhow!("ListCalendarResources: {e}"))?;
+        let listing = with_timeout("ListCalendarResources", CALDAV_REQUEST, async {
+            self.inner
+                .request(
+                    ListCalendarResources::new(calendar_href)
+                        .with_component_and_time_range("VEVENT", Some(&start_s), Some(&end_s))
+                        .map_err(|e| DomainError::invalid(format!("invalid time-range: {e}")))?,
+                )
+                .await
+                .map_err(|e| DomainError::permanent(format!("ListCalendarResources: {e}")))
+        })
+        .await?;
 
         let hrefs: Vec<String> = listing
             .resources
@@ -194,11 +247,13 @@ impl Client {
             return Ok(Vec::new());
         }
 
-        let fetched = self
-            .inner
-            .request(GetCalendarResources::new(calendar_href).with_hrefs(&hrefs))
-            .await
-            .map_err(|e| anyhow!("GetCalendarResources: {e}"))?;
+        let fetched = with_timeout("GetCalendarResources", CALDAV_REQUEST, async {
+            self.inner
+                .request(GetCalendarResources::new(calendar_href).with_hrefs(&hrefs))
+                .await
+                .map_err(|e| DomainError::permanent(format!("GetCalendarResources: {e}")))
+        })
+        .await?;
 
         let mut out = Vec::with_capacity(fetched.resources.len());
         for r in fetched.resources {
@@ -209,21 +264,31 @@ impl Client {
         Ok(out)
     }
 
-    pub async fn get_event(&self, calendar_href: &str, uid_or_href: &str) -> Result<EventDetail> {
+    pub async fn get_event(
+        &self,
+        calendar_href: &str,
+        uid_or_href: &str,
+    ) -> Result<EventDetail, DomainError> {
         let href = href_for(calendar_href, uid_or_href);
-        let resp = self
-            .inner
-            .request(GetCalendarResources::new(calendar_href).with_hrefs([href.clone()]))
-            .await
-            .map_err(|e| anyhow!("GetCalendarResources: {e}"))?;
+        let resp = with_timeout("GetCalendarResources", CALDAV_REQUEST, async {
+            self.inner
+                .request(GetCalendarResources::new(calendar_href).with_hrefs([href.clone()]))
+                .await
+                .map_err(|e| DomainError::permanent(format!("GetCalendarResources: {e}")))
+        })
+        .await?;
         let resource = resp
             .resources
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow!("event not found: {href}"))?;
-        let content = resource
-            .content
-            .map_err(|status| anyhow!("event fetch failed with status {status}"))?;
+            .ok_or_else(|| DomainError::not_found(format!("event not found: {href}")))?;
+        let content = resource.content.map_err(|status| {
+            if status.as_u16() == 404 {
+                DomainError::not_found(format!("event {href}"))
+            } else {
+                DomainError::permanent(format!("event fetch failed: status {status}"))
+            }
+        })?;
         parse_event_detail(&content.data, &resource.href, Some(content.etag))
     }
 
@@ -233,7 +298,7 @@ impl Client {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         calendar_href: Option<&str>,
-    ) -> Result<Vec<EventSummary>> {
+    ) -> Result<Vec<EventSummary>, DomainError> {
         let calendars: Vec<String> = match calendar_href {
             Some(c) => vec![c.to_string()],
             None => self
@@ -245,16 +310,22 @@ impl Client {
         };
 
         let q = query.to_lowercase();
+        let results = join_all(
+            calendars
+                .into_iter()
+                .map(|cal| async move { (cal.clone(), self.list_events(&cal, start, end).await) }),
+        )
+        .await;
+
         let mut out = Vec::new();
-        for cal in calendars {
-            match self.list_events(&cal, start, end).await {
+        for (cal, res) in results {
+            match res {
                 Ok(events) => {
                     for e in events {
                         if e.summary.to_lowercase().contains(&q)
                             || e.location
                                 .as_ref()
-                                .map(|s| s.to_lowercase().contains(&q))
-                                .unwrap_or(false)
+                                .is_some_and(|s| s.to_lowercase().contains(&q))
                         {
                             out.push(e);
                         }
@@ -270,41 +341,25 @@ impl Client {
         &self,
         calendar_href: &str,
         p: CreateEventParams,
-    ) -> Result<EventSummary> {
+    ) -> Result<EventSummary, DomainError> {
         let uid = Uuid::new_v4().to_string();
-
-        let mut ev = ICalEvent::new();
-        ev.uid(&uid).summary(&p.title).starts(p.start).ends(p.end);
-        if let Some(d) = &p.description {
-            ev.description(d);
-        }
-        if let Some(l) = &p.location {
-            ev.location(l);
-        }
-        for a in &p.attendees {
-            ev.add_property("ATTENDEE", format!("mailto:{a}"));
-        }
-        ev.add_property("ORGANIZER", format!("mailto:{}", p.organizer));
-        let event = ev.done();
-
-        let mut cal = ICalendar::new();
-        cal.push(event);
-        cal.append_property(("PRODID", "-//icloud-mcp//EN"));
-        cal.append_property(("VERSION", "2.0"));
-        let ical_text = cal.to_string();
+        let ical_text = build_vevent(&uid, &p);
 
         let href = format!(
             "{}{}.ics",
             calendar_href.trim_end_matches('/').to_string() + "/",
             uid
         );
-        let resp = self
-            .inner
-            .request(
-                PutResource::new(&href).create(ical_text.clone(), "text/calendar; charset=utf-8"),
-            )
-            .await
-            .map_err(|e| anyhow!("PutResource: {e}"))?;
+        let resp = with_timeout("PutResource", CALDAV_REQUEST, async {
+            self.inner
+                .request(
+                    PutResource::new(&href)
+                        .create(ical_text.clone(), "text/calendar; charset=utf-8"),
+                )
+                .await
+                .map_err(|e| DomainError::permanent(format!("PutResource: {e}")))
+        })
+        .await?;
 
         Ok(EventSummary {
             uid,
@@ -326,7 +381,10 @@ fn fmt_caldav_dt(dt: DateTime<Utc>) -> String {
 }
 
 fn href_for(calendar_href: &str, uid_or_href: &str) -> String {
-    if uid_or_href.starts_with('/') || uid_or_href.starts_with("http") {
+    if uid_or_href.starts_with('/')
+        || uid_or_href.starts_with("http://")
+        || uid_or_href.starts_with("https://")
+    {
         uid_or_href.to_string()
     } else {
         let stem = uid_or_href.trim_end_matches(".ics");
@@ -339,8 +397,14 @@ fn into_summary(r: &FetchedResource) -> Option<EventSummary> {
     parse_event_summary(&content.data, &r.href, Some(content.etag.clone())).ok()
 }
 
-fn parse_event_summary(data: &str, href: &str, etag: Option<String>) -> Result<EventSummary> {
-    let cal: ICalendar = data.parse().map_err(|e| anyhow!("ical parse: {e}"))?;
+fn parse_event_summary(
+    data: &str,
+    href: &str,
+    etag: Option<String>,
+) -> Result<EventSummary, DomainError> {
+    let cal: ICalendar = data
+        .parse()
+        .map_err(|e: String| DomainError::permanent(format!("ical parse: {e}")))?;
     let event = cal
         .components
         .iter()
@@ -348,7 +412,7 @@ fn parse_event_summary(data: &str, href: &str, etag: Option<String>) -> Result<E
             CalendarComponent::Event(e) => Some(e),
             _ => None,
         })
-        .ok_or_else(|| anyhow!("no VEVENT in calendar-data"))?;
+        .ok_or_else(|| DomainError::permanent("no VEVENT in calendar-data"))?;
 
     let (start, all_day) = dpt_to_string(event.get_start());
     let (end, _) = dpt_to_string(event.get_end());
@@ -365,8 +429,14 @@ fn parse_event_summary(data: &str, href: &str, etag: Option<String>) -> Result<E
     })
 }
 
-fn parse_event_detail(data: &str, href: &str, etag: Option<String>) -> Result<EventDetail> {
-    let cal: ICalendar = data.parse().map_err(|e| anyhow!("ical parse: {e}"))?;
+fn parse_event_detail(
+    data: &str,
+    href: &str,
+    etag: Option<String>,
+) -> Result<EventDetail, DomainError> {
+    let cal: ICalendar = data
+        .parse()
+        .map_err(|e: String| DomainError::permanent(format!("ical parse: {e}")))?;
     let event = cal
         .components
         .iter()
@@ -374,7 +444,7 @@ fn parse_event_detail(data: &str, href: &str, etag: Option<String>) -> Result<Ev
             CalendarComponent::Event(e) => Some(e),
             _ => None,
         })
-        .ok_or_else(|| anyhow!("no VEVENT in calendar-data"))?;
+        .ok_or_else(|| DomainError::permanent("no VEVENT in calendar-data"))?;
 
     let (start, all_day) = dpt_to_string(event.get_start());
     let (end, _) = dpt_to_string(event.get_end());
@@ -429,6 +499,57 @@ fn dpt_to_string(dpt: Option<icalendar::DatePerhapsTime>) -> (String, bool) {
     }
 }
 
+/// Build a full VCALENDAR/VEVENT block for `create_event`.
+///
+/// Adds DTSTAMP (required by RFC 5545), CALSCALE:GREGORIAN, and METHOD:REQUEST
+/// when attendees are present (so iCloud actually mails invitations). Attendee
+/// lines include `RSVP=TRUE;PARTSTAT=NEEDS-ACTION;ROLE=REQ-PARTICIPANT`.
+fn build_vevent(uid: &str, p: &CreateEventParams) -> String {
+    let mut ev = ICalEvent::new();
+    ev.uid(uid).summary(&p.title).starts(p.start).ends(p.end);
+    ev.add_property("DTSTAMP", fmt_caldav_dt(Utc::now()));
+    if let Some(d) = &p.description {
+        ev.description(d);
+    }
+    if let Some(l) = &p.location {
+        ev.location(l);
+    }
+    for a in &p.attendees {
+        // Build ATTENDEE with structured parameters via icalendar's Property API
+        // so that semicolons separating params survive serialization (raw
+        // values would have `;` escaped as `\;`, breaking parameter parsing).
+        let mut prop = Property::new("ATTENDEE", format!("mailto:{a}"));
+        prop.append_parameter(("RSVP", "TRUE"));
+        prop.append_parameter(("PARTSTAT", "NEEDS-ACTION"));
+        prop.append_parameter(("ROLE", "REQ-PARTICIPANT"));
+        ev.append_multi_property(prop);
+    }
+    ev.append_property(Property::new(
+        "ORGANIZER",
+        format!("mailto:{}", p.organizer),
+    ));
+    let event = ev.done();
+
+    let mut cal = ICalendar::new();
+    cal.push(event);
+    // VERSION/PRODID/CALSCALE are emitted by `icalendar` itself - do not
+    // re-append, or the output will have duplicate top-level properties.
+    let method = if p.attendees.is_empty() {
+        "PUBLISH"
+    } else {
+        "REQUEST"
+    };
+    cal.append_property(("METHOD", method));
+    cal.to_string()
+}
+
+/// Strip RFC 5545 line folds (`\r\n ` or `\n ` continuations). Used in tests
+/// to assert against the logical content rather than the wire format.
+#[cfg(test)]
+fn unfold_ical(s: &str) -> String {
+    s.replace("\r\n ", "").replace("\n ", "")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,6 +589,13 @@ mod tests {
     fn href_for_passes_through_full_url() {
         let full = "https://p01-caldav.icloud.com/123/calendars/abc/evt1.ics";
         assert_eq!(href_for("/123/calendars/abc/", full), full);
+    }
+
+    #[test]
+    fn href_for_does_not_match_httpx_prefix() {
+        // "httpx" is a UID, not a URL - must be treated as a bare UID and
+        // get `.ics` appended.
+        assert_eq!(href_for("/cal/", "httpx-event-1"), "/cal/httpx-event-1.ics");
     }
 
     #[test]
@@ -547,5 +675,45 @@ END:VCALENDAR\r
     fn parse_rejects_non_vevent() {
         let bad = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n";
         assert!(parse_event_summary(bad, "/x.ics", None).is_err());
+    }
+
+    fn sample_create_params(attendees: Vec<&str>) -> CreateEventParams {
+        CreateEventParams {
+            title: "Standup".into(),
+            start: Utc.with_ymd_and_hms(2026, 5, 14, 9, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 5, 14, 9, 30, 0).unwrap(),
+            description: Some("daily".into()),
+            location: Some("Zoom".into()),
+            attendees: attendees.into_iter().map(String::from).collect(),
+            organizer: "me@example.com".into(),
+        }
+    }
+
+    #[test]
+    fn build_vevent_includes_dtstamp_and_method_request() {
+        let p = sample_create_params(vec!["alice@example.com"]);
+        let s = unfold_ical(&build_vevent("uid-1", &p));
+        assert!(s.contains("BEGIN:VEVENT"));
+        assert!(s.contains("UID:uid-1"));
+        assert!(s.contains("DTSTAMP:"));
+        assert!(s.contains("CALSCALE:GREGORIAN"));
+        assert!(s.contains("METHOD:REQUEST"));
+        assert!(s.contains("RSVP=TRUE"));
+        assert!(s.contains("PARTSTAT=NEEDS-ACTION"));
+        assert!(s.contains("ROLE=REQ-PARTICIPANT"));
+        assert!(s.contains("mailto:alice@example.com"));
+        assert!(s.contains("ORGANIZER:mailto:me@example.com"));
+        // VCALENDAR-level properties are emitted exactly once.
+        assert_eq!(s.matches("VERSION:2.0").count(), 1);
+        assert_eq!(s.matches("CALSCALE:GREGORIAN").count(), 1);
+        assert_eq!(s.matches("METHOD:REQUEST").count(), 1);
+    }
+
+    #[test]
+    fn build_vevent_without_attendees_uses_method_publish() {
+        let p = sample_create_params(vec![]);
+        let s = build_vevent("uid-2", &p);
+        assert!(s.contains("METHOD:PUBLISH"));
+        assert!(!s.contains("ATTENDEE"));
     }
 }

@@ -83,7 +83,7 @@ From any Claude Code session:
 /plugin install icloud-mcp
 ```
 
-Restart Claude Code if needed. The MCP server starts automatically when Claude Code loads the plugin.
+The MCP server starts automatically when Claude Code loads the plugin.
 
 ## Tools
 
@@ -96,7 +96,7 @@ Restart Claude Code if needed. The MCP server starts automatically when Claude C
 | `calendar_create_event`    | Create a VEVENT (organizer auto-set to your Apple ID).              |
 | `mail_list_folders`        | IMAP folders with special-use tags (Drafts/Sent/Trash/...).         |
 | `mail_search`              | UID search (FROM/SUBJECT/TEXT/SINCE/BEFORE/UNSEEN), newest first.   |
-| `mail_get_message`         | Full message; HTML body converted to markdown.                      |
+| `mail_get_message`         | Full or partial message (capped at `max_bytes`, default 512 KB). Returns `truncated`, `total_size_bytes`, attachment metadata (`name`/`mime`/`size`). HTML bodies are converted to markdown (off-thread for >100 KB). |
 | `mail_create_draft`        | Append RFC 822 to Drafts with `\Draft` flag. Does NOT send.         |
 
 All timestamps are RFC 3339 UTC, e.g. `2026-05-14T09:00:00Z`.
@@ -136,7 +136,22 @@ cargo build --release
 `could not locate Drafts folder ...`
 - Your iCloud Drafts folder has been renamed. Provide a literal name override via a future flag, or rename it back to `Drafts` in iCloud Mail.
 
-To raise log verbosity, set `ICLOUD_MCP_LOG=icloud_mcp=debug` (or pass `RUST_LOG=debug` to the binary directly). Logs go to stderr; stdout is reserved for the MCP protocol.
+To raise log verbosity, set `ICLOUD_MCP_LOG=icloud_mcp=debug` (preferred) or `RUST_LOG=debug`. `ICLOUD_MCP_LOG` wins if both are set. Logs go to stderr; stdout is reserved for the MCP protocol.
+
+## Error semantics
+
+Tool errors are classified so the client can react meaningfully:
+
+- `invalid_params` -- bad argument or referenced resource does not exist (wrong `calendar_id`, missing event UID, malformed email, CR/LF in IMAP search terms). Fix the arguments and retry.
+- `internal_error` with `transient failure (safe to retry)` prefix -- network timeout, IMAP NOOP failure mid-session, TLS handshake failure. Retrying often resolves it.
+- `internal_error` with `auth failed` prefix -- the app-specific password is wrong or has been revoked. Mint a new one.
+- `internal_error` otherwise -- permanent server-side or protocol failure.
+
+All network calls (CalDAV requests, IMAP commands, TCP connect, TLS handshake) have explicit timeouts (10-20 s). The IMAP session is pooled across tool calls with a 5-minute idle expiry and revalidated via `NOOP`.
+
+## IMAP search and non-ASCII
+
+`mail_search` accepts non-ASCII (e.g. Cyrillic, accented Latin) in `from`, `subject`, and `text`. When any term contains non-ASCII bytes the server-side query is prefixed with `CHARSET UTF-8` (iCloud accepts this). CR/LF characters in any search term are rejected.
 
 ## Why no SMTP?
 

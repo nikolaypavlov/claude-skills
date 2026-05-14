@@ -24,11 +24,15 @@ impl Config {
         let app_password = match std::env::var("APPLE_APP_PASSWORD") {
             Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
             _ => keychain_lookup(&apple_id).with_context(|| {
-                format!(
-                    "APPLE_APP_PASSWORD not set and not found in Keychain. \
-                    Either export APPLE_APP_PASSWORD, or run: \
-                    security add-generic-password -s {KEYCHAIN_SERVICE} -a {apple_id} -w <app-specific-password>"
-                )
+                if cfg!(target_os = "macos") {
+                    format!(
+                        "APPLE_APP_PASSWORD not set and not found in Keychain. \
+                        Either export APPLE_APP_PASSWORD, or run: \
+                        security add-generic-password -s {KEYCHAIN_SERVICE} -a {apple_id} -w <app-specific-password>"
+                    )
+                } else {
+                    "APPLE_APP_PASSWORD env var is required on non-macOS platforms (no Keychain fallback)".to_string()
+                }
             })?,
         };
 

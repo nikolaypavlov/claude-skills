@@ -1,8 +1,3 @@
-mod caldav;
-mod config;
-mod error;
-mod imap_client;
-
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -17,9 +12,10 @@ use rmcp::{
 };
 use tracing_subscriber::EnvFilter;
 
-use crate::config::Config;
-use crate::error::{invalid_params, to_mcp};
-use crate::imap_client::{DraftParams, ImapClient, SearchCriteria};
+use icloud_mcp::caldav;
+use icloud_mcp::config::Config;
+use icloud_mcp::error::{invalid_params, to_mcp};
+use icloud_mcp::imap_client::{DraftParams, ImapClient, SearchCriteria};
 
 // ---------- tool argument types ----------
 
@@ -105,6 +101,12 @@ pub struct MailGetArgs {
     pub folder: String,
     /// IMAP UID (NOT sequence number) returned by mail_search.
     pub uid: u32,
+    /// Cap on body bytes pulled from the server. Default 524288 (512 KB).
+    /// When the message exceeds this, headers + first body part are fetched
+    /// and `truncated: true` is returned along with the full
+    /// `total_size_bytes` and attachment metadata.
+    #[serde(default)]
+    pub max_bytes: Option<u32>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Debug)]
@@ -143,8 +145,11 @@ struct ServerState {
 impl IcloudServer {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
         let config = Arc::new(config);
-        let caldav = caldav::Client::new(&config).await?;
-        let imap = ImapClient::new(config.clone())?;
+        let caldav = caldav::Client::new(&config)
+            .await
+            .map_err(|e| anyhow::anyhow!("caldav init: {e}"))?;
+        let imap =
+            ImapClient::new(config.clone()).map_err(|e| anyhow::anyhow!("imap init: {e}"))?;
         let state = Arc::new(ServerState {
             config,
             caldav,
@@ -315,7 +320,7 @@ impl IcloudServer {
         let msg = self
             .state
             .imap
-            .get_message(&args.folder, args.uid)
+            .get_message(&args.folder, args.uid, args.max_bytes)
             .await
             .map_err(|e| to_mcp("mail_get_message", e))?;
         Ok(json_result(&msg))
@@ -392,10 +397,11 @@ async fn main() -> anyhow::Result<()> {
     // rustls 0.23 requires an explicit crypto provider to be installed before any TLS use.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    let filter_spec = std::env::var("ICLOUD_MCP_LOG")
+        .or_else(|_| std::env::var("RUST_LOG"))
+        .unwrap_or_else(|_| "icloud_mcp=info".to_string());
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("icloud_mcp=info")),
-        )
+        .with_env_filter(EnvFilter::new(filter_spec))
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();

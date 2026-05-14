@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <response>
+    <href>/1234/calendars/work/</href>
+    <propstat>
+      <prop>
+        <resourcetype>
+          <collection/>
+          <C:calendar/>
+        </resourcetype>
+        <getetag>"work-1"</getetag>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+  <response>
+    <href>/1234/calendars/personal/</href>
+    <propstat>
+      <prop>
+        <resourcetype>
+          <collection/>
+          <C:calendar/>
+        </resourcetype>
+        <getetag>"personal-1"</getetag>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>
