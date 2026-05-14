@@ -501,3 +501,139 @@ fn build_rfc822(p: &DraftParams) -> Result<(Vec<u8>, String)> {
 
     Ok((msg.formatted(), message_id))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn quote_imap_escapes_backslash_and_quote() {
+        assert_eq!(quote_imap("hello"), "\"hello\"");
+        assert_eq!(quote_imap(r#"a"b"#), r#""a\"b""#);
+        assert_eq!(quote_imap(r"a\b"), r#""a\\b""#);
+    }
+
+    #[test]
+    fn imap_date_uses_dd_mmm_yyyy() {
+        let dt = Utc.with_ymd_and_hms(2026, 1, 5, 0, 0, 0).unwrap();
+        assert_eq!(fmt_imap_date(dt), "05-Jan-2026");
+    }
+
+    #[test]
+    fn search_query_empty_is_all() {
+        let q = build_search_query(&SearchCriteria::default());
+        assert_eq!(q, "ALL");
+    }
+
+    #[test]
+    fn search_query_combines_filters_with_space() {
+        let c = SearchCriteria {
+            from: Some("alice@example.com".into()),
+            subject: Some("hello".into()),
+            unseen: true,
+            ..Default::default()
+        };
+        let q = build_search_query(&c);
+        assert!(q.contains("UNSEEN"));
+        assert!(q.contains(r#"FROM "alice@example.com""#));
+        assert!(q.contains(r#"SUBJECT "hello""#));
+    }
+
+    #[test]
+    fn search_query_includes_date_bounds() {
+        let c = SearchCriteria {
+            since: Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()),
+            before: Some(Utc.with_ymd_and_hms(2026, 2, 1, 0, 0, 0).unwrap()),
+            ..Default::default()
+        };
+        let q = build_search_query(&c);
+        assert!(q.contains("SINCE 01-Jan-2026"));
+        assert!(q.contains("BEFORE 01-Feb-2026"));
+    }
+
+    #[test]
+    fn special_use_maps_drafts() {
+        let attrs = vec![NameAttribute::Drafts];
+        assert_eq!(special_use(&attrs).as_deref(), Some("Drafts"));
+    }
+
+    #[test]
+    fn special_use_returns_none_for_marked() {
+        let attrs = vec![NameAttribute::Marked];
+        assert_eq!(special_use(&attrs), None);
+    }
+
+    #[test]
+    fn format_parser_addr_with_name() {
+        let a = mail_parser::Addr {
+            name: Some("Alice".into()),
+            address: Some("alice@example.com".into()),
+        };
+        assert_eq!(format_parser_addr(&a), r#""Alice" <alice@example.com>"#);
+    }
+
+    #[test]
+    fn format_parser_addr_no_name() {
+        let a = mail_parser::Addr {
+            name: None,
+            address: Some("bob@example.com".into()),
+        };
+        assert_eq!(format_parser_addr(&a), "bob@example.com");
+    }
+
+    #[test]
+    fn build_rfc822_plain_includes_headers_and_body() {
+        let p = DraftParams {
+            from: "Me <me@example.com>".into(),
+            to: vec!["You <you@example.com>".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "Hello".into(),
+            body: "Body text".into(),
+            html: false,
+        };
+        let (bytes, msg_id) = build_rfc822(&p).unwrap();
+        let raw = std::str::from_utf8(&bytes).unwrap();
+        assert!(msg_id.starts_with("<") && msg_id.ends_with("@icloud-mcp>"));
+        assert!(
+            raw.contains("From: \"Me\" <me@example.com>")
+                || raw.contains("From: Me <me@example.com>")
+        );
+        assert!(raw.contains("To:"));
+        assert!(raw.to_lowercase().contains("subject:"));
+        assert!(raw.contains("Body text"));
+    }
+
+    #[test]
+    fn build_rfc822_html_produces_multipart() {
+        let p = DraftParams {
+            from: "me@example.com".into(),
+            to: vec!["you@example.com".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "T".into(),
+            body: "<p>hi</p>".into(),
+            html: true,
+        };
+        let (bytes, _) = build_rfc822(&p).unwrap();
+        let raw = std::str::from_utf8(&bytes).unwrap();
+        assert!(raw.to_lowercase().contains("multipart/alternative"));
+        assert!(raw.to_lowercase().contains("text/plain"));
+        assert!(raw.to_lowercase().contains("text/html"));
+    }
+
+    #[test]
+    fn build_rfc822_rejects_bad_address() {
+        let p = DraftParams {
+            from: "not an email".into(),
+            to: vec!["x@y.com".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "T".into(),
+            body: "B".into(),
+            html: false,
+        };
+        assert!(build_rfc822(&p).is_err());
+    }
+}

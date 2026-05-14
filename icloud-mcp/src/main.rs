@@ -412,3 +412,53 @@ async fn main() -> anyhow::Result<()> {
     service.waiting().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_rfc3339_accepts_utc_z() {
+        let dt = parse_rfc3339("2026-05-14T09:30:00Z", "start").unwrap();
+        assert_eq!(dt.to_rfc3339(), "2026-05-14T09:30:00+00:00");
+    }
+
+    #[test]
+    fn parse_rfc3339_accepts_offset() {
+        let dt = parse_rfc3339("2026-05-14T11:30:00+02:00", "start").unwrap();
+        assert_eq!(dt.to_rfc3339(), "2026-05-14T09:30:00+00:00");
+    }
+
+    #[test]
+    fn parse_rfc3339_rejects_garbage() {
+        let err = parse_rfc3339("yesterday", "end").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("end"));
+    }
+
+    #[test]
+    fn json_result_wraps_struct_as_text_content() {
+        #[derive(serde::Serialize)]
+        struct X {
+            a: i32,
+            b: String,
+        }
+        let r = json_result(&X {
+            a: 1,
+            b: "two".into(),
+        });
+        // CallToolResult holds Content::Text { text: <serialized JSON> }. The inner
+        // JSON gets re-escaped inside the outer text field, so verify by unwrapping.
+        let rendered = serde_json::to_string(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let text = v["content"][0]["text"].as_str().expect("text content");
+        let inner: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(inner["a"], 1);
+        assert_eq!(inner["b"], "two");
+    }
+
+    #[test]
+    fn default_limit_is_25() {
+        assert_eq!(default_limit(), 25);
+    }
+}

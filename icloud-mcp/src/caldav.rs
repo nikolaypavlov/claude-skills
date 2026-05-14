@@ -428,3 +428,124 @@ fn dpt_to_string(dpt: Option<icalendar::DatePerhapsTime>) -> (String, bool) {
         None => (String::new(), false),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn caldav_dt_format() {
+        let dt = Utc.with_ymd_and_hms(2026, 5, 14, 9, 30, 0).unwrap();
+        assert_eq!(fmt_caldav_dt(dt), "20260514T093000Z");
+    }
+
+    #[test]
+    fn href_for_bare_uid_appends_ics() {
+        assert_eq!(
+            href_for("/123/calendars/abc/", "evt1"),
+            "/123/calendars/abc/evt1.ics"
+        );
+    }
+
+    #[test]
+    fn href_for_strips_trailing_slash_and_ics_suffix() {
+        assert_eq!(
+            href_for("/123/calendars/abc", "evt1.ics"),
+            "/123/calendars/abc/evt1.ics"
+        );
+    }
+
+    #[test]
+    fn href_for_passes_through_absolute_path() {
+        assert_eq!(
+            href_for("/123/calendars/abc/", "/123/calendars/abc/evt1.ics"),
+            "/123/calendars/abc/evt1.ics"
+        );
+    }
+
+    #[test]
+    fn href_for_passes_through_full_url() {
+        let full = "https://p01-caldav.icloud.com/123/calendars/abc/evt1.ics";
+        assert_eq!(href_for("/123/calendars/abc/", full), full);
+    }
+
+    #[test]
+    fn dpt_string_utc_datetime() {
+        use icalendar::{CalendarDateTime, DatePerhapsTime};
+        let dt = Utc.with_ymd_and_hms(2026, 5, 14, 9, 30, 0).unwrap();
+        let (s, all_day) =
+            dpt_to_string(Some(DatePerhapsTime::DateTime(CalendarDateTime::Utc(dt))));
+        assert!(s.starts_with("2026-05-14T09:30:00"));
+        assert!(!all_day);
+    }
+
+    #[test]
+    fn dpt_string_date_only_is_all_day() {
+        use icalendar::DatePerhapsTime;
+        let d = chrono::NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let (s, all_day) = dpt_to_string(Some(DatePerhapsTime::Date(d)));
+        assert_eq!(s, "2026-05-14");
+        assert!(all_day);
+    }
+
+    #[test]
+    fn dpt_string_none() {
+        let (s, all_day) = dpt_to_string(None);
+        assert!(s.is_empty());
+        assert!(!all_day);
+    }
+
+    const SAMPLE_VEVENT: &str = "\
+BEGIN:VCALENDAR\r
+VERSION:2.0\r
+PRODID:-//test//EN\r
+BEGIN:VEVENT\r
+UID:abc-123\r
+DTSTAMP:20260514T090000Z\r
+DTSTART:20260514T090000Z\r
+DTEND:20260514T100000Z\r
+SUMMARY:Team sync\r
+LOCATION:Room 1\r
+DESCRIPTION:weekly\r
+ORGANIZER:mailto:me@example.com\r
+ATTENDEE:mailto:a@example.com\r
+ATTENDEE:mailto:b@example.com\r
+STATUS:CONFIRMED\r
+END:VEVENT\r
+END:VCALENDAR\r
+";
+
+    #[test]
+    fn parse_summary_extracts_basic_fields() {
+        let s =
+            parse_event_summary(SAMPLE_VEVENT, "/cal/abc-123.ics", Some("etag1".into())).unwrap();
+        assert_eq!(s.uid, "abc-123");
+        assert_eq!(s.summary, "Team sync");
+        assert_eq!(s.location.as_deref(), Some("Room 1"));
+        assert_eq!(s.href, "/cal/abc-123.ics");
+        assert_eq!(s.etag.as_deref(), Some("etag1"));
+        assert!(!s.all_day);
+        assert!(s.start.starts_with("2026-05-14T09:00:00"));
+        assert!(s.end.starts_with("2026-05-14T10:00:00"));
+    }
+
+    #[test]
+    fn parse_detail_extracts_attendees_and_status() {
+        let d = parse_event_detail(SAMPLE_VEVENT, "/cal/abc-123.ics", None).unwrap();
+        assert_eq!(d.description.as_deref(), Some("weekly"));
+        assert_eq!(d.organizer.as_deref(), Some("me@example.com"));
+        assert_eq!(d.status.as_deref(), Some("CONFIRMED"));
+        assert_eq!(
+            d.attendees,
+            vec!["a@example.com".to_string(), "b@example.com".to_string()]
+        );
+        assert!(d.ical.contains("UID:abc-123"));
+    }
+
+    #[test]
+    fn parse_rejects_non_vevent() {
+        let bad = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n";
+        assert!(parse_event_summary(bad, "/x.ics", None).is_err());
+    }
+}
