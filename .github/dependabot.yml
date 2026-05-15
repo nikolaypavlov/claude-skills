@@ -1,0 +1,19 @@
+# Dependabot keeps the SHA-pinned GitHub Actions in our workflows current.
+# Without this, supply-chain pinning to commit SHAs would freeze the actions
+# forever; with it, we get a PR whenever an upstream release ships, and
+# Dependabot updates the SHA along with the human-readable comment.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      # Bump first-party GitHub actions together to avoid PR spam.
+      github-actions:
+        patterns:
+          - "actions/*"
