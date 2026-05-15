@@ -33,6 +33,11 @@ venv/
 env/
 ENV/
 
+# Secrets / per-environment configuration
+.env
+.env.*
+.envrc
+
 # IDE
 .vscode/
 .idea/
