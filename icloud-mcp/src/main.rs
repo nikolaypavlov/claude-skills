@@ -153,7 +153,25 @@ struct AuthStats {
     last_caldav_ok_at: Option<DateTime<Utc>>,
 }
 
+/// Short status text used in `auth_status` and other surfaces that need a
+/// one-line summary. The verbose, LLM-targeted prompt lives in
+/// [`SETUP_PROMPT`] and is what we put on the `-32042` error itself.
 const SETUP_HINT: &str = "icloud-mcp is not configured. Run /icloud-mcp:setup to provide an Apple ID and app-specific password.";
+
+/// Imperative instructions to the LLM about how to resolve the missing
+/// credentials. This becomes the `message` field of every
+/// URL_ELICITATION_REQUIRED error so it lands directly in the assistant's
+/// context window when a tool call fails. Written second-person to the LLM
+/// because that is who actually reads it.
+const SETUP_PROMPT: &str = "\
+icloud-mcp has no Apple ID and app-specific password loaded. Do NOT ask the user for these \
+credentials in chat - they should not paste secrets into a normal conversation. Instead, tell \
+the user to run the slash command `/icloud-mcp:setup` in this Claude Code session. That command \
+launches an interactive wizard which: (1) walks them through generating a 16-character \
+app-specific password at https://account.apple.com/account/manage (App-Specific Passwords tab), \
+(2) stores it in macOS Keychain or a project .envrc, and (3) verifies the connection with one \
+IMAP login and one CalDAV bootstrap. Until that wizard completes, only the `auth_status` tool \
+will succeed; every other icloud-mcp tool returns this same error.";
 
 /// URL the client should direct the user to in order to complete the
 /// elicitation. Points at the plugin's Quick Start section in the public
@@ -165,12 +183,20 @@ const SETUP_URL: &str =
 /// the server is in unconfigured mode. MCP 2025-06-18 standardizes this
 /// shape (`code = -32042`, `data: {url, elicitationId}`) so the client can
 /// render a "needs authentication" affordance instead of a generic failure.
+/// The message itself is an LLM-targeted prompt with explicit "do X, don't
+/// do Y" guidance; `data` carries the structured URL plus a slash-command
+/// hint for clients that prefer machine-readable next-action metadata.
 fn setup_required_error() -> McpError {
     McpError::url_elicitation_required(
-        SETUP_HINT,
+        SETUP_PROMPT,
         Some(serde_json::json!({
             "url": SETUP_URL,
             "elicitationId": Uuid::new_v4().to_string(),
+            "nextAction": {
+                "type": "slash_command",
+                "command": "/icloud-mcp:setup",
+                "description": "Interactive wizard that captures Apple ID + app-specific password.",
+            },
         })),
     )
 }
