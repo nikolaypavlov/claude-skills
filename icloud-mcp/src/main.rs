@@ -10,6 +10,7 @@ use rmcp::{
 };
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 use icloud_mcp::caldav;
 use icloud_mcp::config::Config;
@@ -154,6 +155,26 @@ struct AuthStats {
 
 const SETUP_HINT: &str = "icloud-mcp is not configured. Run /icloud-mcp:setup to provide an Apple ID and app-specific password.";
 
+/// URL the client should direct the user to in order to complete the
+/// elicitation. Points at the plugin's Quick Start section in the public
+/// README so users without local clones still see the instructions.
+const SETUP_URL: &str =
+    "https://github.com/nikolaypavlov/claude-skills/blob/main/icloud-mcp/README.md#quick-start";
+
+/// Build the URL_ELICITATION_REQUIRED error returned from every tool when
+/// the server is in unconfigured mode. MCP 2025-06-18 standardizes this
+/// shape (`code = -32042`, `data: {url, elicitationId}`) so the client can
+/// render a "needs authentication" affordance instead of a generic failure.
+fn setup_required_error() -> McpError {
+    McpError::url_elicitation_required(
+        SETUP_HINT,
+        Some(serde_json::json!({
+            "url": SETUP_URL,
+            "elicitationId": Uuid::new_v4().to_string(),
+        })),
+    )
+}
+
 #[tool_router]
 impl IcloudServer {
     /// Build a fully-configured server. Returns Err if either backend
@@ -192,7 +213,7 @@ impl IcloudServer {
         self.state
             .configured
             .as_ref()
-            .ok_or_else(|| invalid_params(SETUP_HINT))
+            .ok_or_else(setup_required_error)
     }
 
     async fn mark_imap_ok(&self) {
@@ -425,6 +446,7 @@ impl IcloudServer {
             "last_imap_ok_at": stats.last_imap_ok_at.map(|t| t.to_rfc3339()),
             "last_caldav_ok_at": stats.last_caldav_ok_at.map(|t| t.to_rfc3339()),
             "setup_hint": setup_hint,
+            "setup_url": SETUP_URL,
         });
         Ok(json_result(&body))
     }
@@ -448,7 +470,7 @@ impl ServerHandler for IcloudServer {
             )
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_protocol_version(ProtocolVersion::V_2025_06_18)
             .with_instructions(instructions)
     }
 }
@@ -622,10 +644,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unconfigured_server_returns_setup_hint() {
+    async fn unconfigured_server_returns_url_elicitation() {
+        use rmcp::model::ErrorCode;
         let s = IcloudServer::unconfigured();
         let err = s.calendar_list_calendars().await.unwrap_err();
-        assert!(err.message.contains("/icloud-mcp:setup"), "got: {err:?}");
+        assert_eq!(
+            err.code,
+            ErrorCode::URL_ELICITATION_REQUIRED,
+            "expected -32042, got {err:?}"
+        );
+        assert!(err.message.contains("/icloud-mcp:setup"), "msg: {err:?}");
+        let data = err
+            .data
+            .expect("error data must include url + elicitationId");
+        assert_eq!(data["url"], SETUP_URL);
+        assert!(data["elicitationId"].is_string());
     }
 
     #[tokio::test]
