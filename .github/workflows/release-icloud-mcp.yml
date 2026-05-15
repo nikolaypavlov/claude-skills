@@ -8,6 +8,13 @@ on:
 permissions:
   contents: write
 
+env:
+  # Force any JS-based actions still pinned to Node 20 to run on Node 24,
+  # ahead of the June 2026 forced cutover. Removes the deprecation warning
+  # without waiting for third-party actions (rust-toolchain, rust-cache,
+  # action-gh-release) to publish Node-24-native releases.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -28,7 +35,7 @@ jobs:
       # Build on macos-26 SDK but support older OS versions at runtime.
       MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -80,7 +87,7 @@ jobs:
           rm "dist/icloud-mcp"
           ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: icloud-mcp-${{ matrix.target }}
           path: icloud-mcp/dist/*
@@ -94,7 +101,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
