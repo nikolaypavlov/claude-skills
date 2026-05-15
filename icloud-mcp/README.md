@@ -7,6 +7,27 @@ Read + create-only by design:
 - Calendars: list, list events, get one event, search, create event.
 - Mail: list folders, search, get message. Draft creation goes through IMAP APPEND to the Drafts folder - there is no SMTP transport, so the server cannot send mail. The user reviews each draft and sends it manually in iCloud Mail.
 
+## Quick start
+
+Three steps from a clean Claude Code session:
+
+```
+/plugin marketplace add nikolaypavlov/claude-skills
+/plugin install icloud-mcp
+/icloud-mcp:setup
+```
+
+What happens:
+
+1. On install, a SessionStart hook downloads the prebuilt binary for your platform (darwin/linux, arm64/x64). No Rust toolchain required.
+2. `/icloud-mcp:setup` walks you through generating an Apple app-specific password, captures it, stores it in the macOS Keychain (or `.envrc` on Linux), and verifies the connection with one IMAP login and one CalDAV bootstrap.
+3. Ask in chat: `list my iCloud calendars`, `search mail from <someone>`, `draft an email about <topic>`.
+
+Prerequisites:
+
+- An Apple ID with two-factor authentication enabled (required to mint app-specific passwords).
+- macOS (arm64 or x64) or Linux (x64 or arm64). Other platforms fall back to building from source if `cargo` is in PATH.
+
 ## Architecture
 
 ```
@@ -34,57 +55,6 @@ Read + create-only by design:
         (env vars, or macOS Keychain on macOS)
 ```
 
-## Prerequisites
-
-- macOS or Linux. Keychain fallback for credentials is macOS-only.
-- Rust toolchain (1.86+, edition 2021 is fine).
-- An Apple ID with two-factor authentication enabled (required to mint app-specific passwords).
-- App-specific password: https://account.apple.com -> Sign-In and Security -> App-Specific Passwords -> Generate. Use the 16-character output, including dashes.
-
-## Setup
-
-### 1. Build the binary
-
-```
-cd icloud-mcp
-cargo build --release
-```
-
-The binary lands at `icloud-mcp/target/release/icloud-mcp`. The plugin manifest in `.mcp.json` references this path via `${CLAUDE_PLUGIN_ROOT}`.
-
-### 2. Provide credentials
-
-You can use environment variables or, on macOS, the Keychain. Both are checked in that order.
-
-Environment variables (any shell):
-
-```
-export APPLE_ID="you@icloud.com"
-export APPLE_APP_PASSWORD="abcd-efgh-ijkl-mnop"
-```
-
-macOS Keychain (preferred on Mac):
-
-```
-security add-generic-password \
-    -s icloud-mcp \
-    -a "$APPLE_ID" \
-    -w "abcd-efgh-ijkl-mnop"
-```
-
-The server reads `APPLE_APP_PASSWORD` from the env first; if absent it queries the `icloud-mcp` service in the Keychain using `APPLE_ID` as the account.
-
-### 3. Activate the plugin
-
-From any Claude Code session:
-
-```
-/plugin marketplace add nikolaypavlov/claude-skills
-/plugin install icloud-mcp
-```
-
-The MCP server starts automatically when Claude Code loads the plugin.
-
 ## Tools
 
 | Tool                       | Behavior                                                            |
@@ -98,8 +68,85 @@ The MCP server starts automatically when Claude Code loads the plugin.
 | `mail_search`              | UID search (FROM/SUBJECT/TEXT/SINCE/BEFORE/UNSEEN), newest first.   |
 | `mail_get_message`         | Full or partial message (capped at `max_bytes`, default 512 KB). Returns `truncated`, `total_size_bytes`, attachment metadata (`name`/`mime`/`size`). HTML bodies are converted to markdown (off-thread for >100 KB). |
 | `mail_create_draft`        | Append RFC 822 to Drafts with `\Draft` flag. Does NOT send.         |
+| `auth_status`              | Diagnostic. Returns whether credentials are loaded, their source, and last-OK timestamps for IMAP/CalDAV. Use when other tools fail. |
 
 All timestamps are RFC 3339 UTC, e.g. `2026-05-14T09:00:00Z`.
+
+## Diagnostics
+
+If a tool fails and you are not sure why:
+
+1. Call the `auth_status` MCP tool from chat. The JSON tells you whether credentials are loaded, where they were sourced from (env vs Keychain), and when each subsystem last succeeded.
+2. Run the binary in `--probe` mode directly. It tries one IMAP login and one CalDAV bootstrap, then prints a JSON diagnostic to stdout:
+
+   ```
+   "${CLAUDE_PLUGIN_ROOT}/target/release/icloud-mcp" --probe
+   ```
+
+   Useful response shapes:
+   - `{"ok": true, "imap": {"folders": 18}, "caldav": {"calendars": 4}}` - login works.
+   - `{"imap": {"ok": false, "error": "...AUTHENTICATIONFAILED..."}}` - password is wrong or revoked.
+   - `{"ok": false, "stage": "config"}` - no credentials. Re-run `/icloud-mcp:setup`.
+
+3. Raise log verbosity: `ICLOUD_MCP_LOG=icloud_mcp=debug` (preferred) or `RUST_LOG=debug`. `ICLOUD_MCP_LOG` wins if both are set. Logs go to stderr; stdout is reserved for the MCP protocol.
+
+### macOS env var pitfall
+
+If you launch Claude Code from Finder (not a shell), it does NOT inherit `APPLE_ID` / `APPLE_APP_PASSWORD` set in `~/.zshrc` or similar. Either:
+
+- Use the macOS Keychain path (default in `/icloud-mcp:setup`), which all processes see.
+- Run `launchctl setenv APPLE_ID ... && launchctl setenv APPLE_APP_PASSWORD ...` to expose the vars to GUI apps until reboot.
+
+## Error semantics
+
+Tool errors are classified so the client can react meaningfully:
+
+- `invalid_params` -- bad argument or referenced resource does not exist (wrong `calendar_id`, missing event UID, malformed email, CR/LF in IMAP search terms), or the plugin is unconfigured (run `/icloud-mcp:setup`).
+- `internal_error` with `transient failure (safe to retry)` prefix -- network timeout, IMAP NOOP failure mid-session, TLS handshake failure. Retrying often resolves it.
+- `internal_error` with `auth failed` prefix -- the app-specific password is wrong or has been revoked. Mint a new one.
+- `internal_error` otherwise -- permanent server-side or protocol failure.
+
+All network calls (CalDAV requests, IMAP commands, TCP connect, TLS handshake) have explicit timeouts (10-20 s). The IMAP session is pooled across tool calls with a 5-minute idle expiry and revalidated via `NOOP`.
+
+## IMAP search and non-ASCII
+
+`mail_search` accepts non-ASCII (e.g. Cyrillic, accented Latin) in `from`, `subject`, and `text`. When any term contains non-ASCII bytes the server-side query is prefixed with `CHARSET UTF-8` (iCloud accepts this). CR/LF characters in any search term are rejected.
+
+## Advanced: manual installation
+
+If you cannot use the prebuilt binary (no curl, restricted network, unsupported platform), or prefer to build from source:
+
+```
+cd icloud-mcp
+cargo build --release
+```
+
+The binary lands at `icloud-mcp/target/release/icloud-mcp`. The plugin manifest in `.mcp.json` references this path via `${CLAUDE_PLUGIN_ROOT}`. Re-launch Claude Code so it picks up the binary.
+
+### Manual credentials
+
+The `--setup` wizard handles credentials, but if you want to provision them yourself:
+
+Environment variables (any shell):
+
+```
+export APPLE_ID="you@icloud.com"
+export APPLE_APP_PASSWORD="abcd-efgh-ijkl-mnop"
+```
+
+macOS Keychain (preferred on Mac, all processes see it):
+
+```
+printf '%s' "abcd-efgh-ijkl-mnop" | security add-generic-password \
+    -s icloud-mcp -a "$APPLE_ID" -U -w
+```
+
+The trailing `-w` with no argument reads the password from stdin, so it does not end up in shell history. `-U` updates the entry if it already exists.
+
+The server reads `APPLE_APP_PASSWORD` from the env first; if absent it queries the `icloud-mcp` service in the Keychain using `APPLE_ID` as the account.
+
+App-specific password URL:
+`https://account.apple.com/sign-in-security/app-passwords`
 
 ## Development
 
@@ -107,9 +154,12 @@ All timestamps are RFC 3339 UTC, e.g. `2026-05-14T09:00:00Z`.
 cargo fmt              # apply rustfmt (config in rustfmt.toml)
 cargo clippy --all-targets   # lint; [lints] in Cargo.toml gates warnings
 cargo build --release
+cargo test             # unit + integration tests
 ```
 
-`Cargo.toml` enables `unsafe_code = "forbid"` and `clippy::all = warn`. The release profile uses `lto = "thin"` and `strip = "symbols"`.
+`Cargo.toml` enables `unsafe_code = "forbid"` and `clippy::all = warn`. The release profile uses `lto = "thin"` and `strip = "symbols"`. Integration tests under `tests/` use `httpmock` to stub CalDAV endpoints.
+
+Cross-platform release binaries are produced by `.github/workflows/release-icloud-mcp.yml` on tags matching `icloud-mcp-v*`. The matrix builds for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, and `aarch64-unknown-linux-gnu`. macOS binaries target `MACOSX_DEPLOYMENT_TARGET=13.0` for compatibility with older OS versions.
 
 ## Dependencies
 
@@ -121,37 +171,6 @@ cargo build --release
 - `lettre` (builder feature only) - draft construction
 - `html2md` - HTML to markdown for mail bodies
 - `security-framework` (macOS) - Keychain lookup
-
-## Troubleshooting
-
-`APPLE_ID env var not set ...`
-- Export the env var, or add a Keychain entry as shown above.
-
-`IMAP login: ...AUTHENTICATIONFAILED`
-- The app-specific password is wrong, was revoked, or 2FA is disabled. Mint a fresh one at account.apple.com.
-
-`CalDAV service discovery (caldav.icloud.com): ...`
-- The CalDAV endpoint is unreachable, or your Apple account has restricted CalDAV access (rare). Verify with `curl -u "$APPLE_ID:$APPLE_APP_PASSWORD" https://caldav.icloud.com/`.
-
-`could not locate Drafts folder ...`
-- Your iCloud Drafts folder has been renamed. Provide a literal name override via a future flag, or rename it back to `Drafts` in iCloud Mail.
-
-To raise log verbosity, set `ICLOUD_MCP_LOG=icloud_mcp=debug` (preferred) or `RUST_LOG=debug`. `ICLOUD_MCP_LOG` wins if both are set. Logs go to stderr; stdout is reserved for the MCP protocol.
-
-## Error semantics
-
-Tool errors are classified so the client can react meaningfully:
-
-- `invalid_params` -- bad argument or referenced resource does not exist (wrong `calendar_id`, missing event UID, malformed email, CR/LF in IMAP search terms). Fix the arguments and retry.
-- `internal_error` with `transient failure (safe to retry)` prefix -- network timeout, IMAP NOOP failure mid-session, TLS handshake failure. Retrying often resolves it.
-- `internal_error` with `auth failed` prefix -- the app-specific password is wrong or has been revoked. Mint a new one.
-- `internal_error` otherwise -- permanent server-side or protocol failure.
-
-All network calls (CalDAV requests, IMAP commands, TCP connect, TLS handshake) have explicit timeouts (10-20 s). The IMAP session is pooled across tool calls with a 5-minute idle expiry and revalidated via `NOOP`.
-
-## IMAP search and non-ASCII
-
-`mail_search` accepts non-ASCII (e.g. Cyrillic, accented Latin) in `from`, `subject`, and `text`. When any term contains non-ASCII bytes the server-side query is prefixed with `CHARSET UTF-8` (iCloud accepts this). CR/LF characters in any search term are rejected.
 
 ## Why no SMTP?
 

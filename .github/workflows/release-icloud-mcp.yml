@@ -1,0 +1,114 @@
+name: Release icloud-mcp
+
+on:
+  push:
+    tags:
+      - "icloud-mcp-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target: aarch64-apple-darwin
+          - runner: macos-26
+            target: x86_64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    env:
+      # Build on macos-26 SDK but support older OS versions at runtime.
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: icloud-mcp -> target
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        working-directory: icloud-mcp
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Read crate version
+        id: ver
+        working-directory: icloud-mcp
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches Cargo.toml version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          CRATE_VERSION: ${{ steps.ver.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          expected="icloud-mcp-v${CRATE_VERSION}"
+          if [ "$expected" != "$REF_NAME" ]; then
+            echo "tag '$REF_NAME' does not match Cargo.toml version (expected '$expected')" >&2
+            exit 1
+          fi
+
+      - name: Package tarball + checksum
+        working-directory: icloud-mcp
+        env:
+          CRATE_VERSION: ${{ steps.ver.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          name="icloud-mcp-v${CRATE_VERSION}-${TARGET}"
+          mkdir -p dist
+          cp "target/${TARGET}/release/icloud-mcp" "dist/icloud-mcp"
+          tar -C dist -czf "dist/${name}.tar.gz" icloud-mcp
+          rm "dist/icloud-mcp"
+          ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: icloud-mcp-${{ matrix.target }}
+          path: icloud-mcp/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Combine per-target checksums into SHA256SUMS
+        working-directory: dist
+        shell: bash
+        run: |
+          cat *.tar.gz.sha256 > SHA256SUMS
+          rm *.tar.gz.sha256
+          cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

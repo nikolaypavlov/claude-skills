@@ -10,6 +10,7 @@ use rmcp::{
     transport::stdio,
     ErrorData as McpError, ServerHandler, ServiceExt,
 };
+use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 
 use icloud_mcp::caldav;
@@ -136,13 +137,31 @@ pub struct IcloudServer {
 }
 
 struct ServerState {
+    /// `None` means the plugin is running but no credentials are loaded yet.
+    /// Tools surface a "run /icloud-mcp:setup" error in this state.
+    configured: Option<ConfiguredState>,
+    stats: Mutex<AuthStats>,
+}
+
+struct ConfiguredState {
     config: Arc<Config>,
     caldav: caldav::Client,
     imap: ImapClient,
 }
 
+#[derive(Default)]
+struct AuthStats {
+    last_imap_ok_at: Option<DateTime<Utc>>,
+    last_caldav_ok_at: Option<DateTime<Utc>>,
+}
+
+const SETUP_HINT: &str = "icloud-mcp is not configured. Run /icloud-mcp:setup to provide an Apple ID and app-specific password.";
+
 #[tool_router]
 impl IcloudServer {
+    /// Build a fully-configured server. Returns Err if either backend
+    /// (CalDAV bootstrap or IMAP TLS config) cannot be initialized - those
+    /// failures are unrelated to credentials and indicate environment issues.
     pub async fn new(config: Config) -> anyhow::Result<Self> {
         let config = Arc::new(config);
         let caldav = caldav::Client::new(&config)
@@ -150,15 +169,42 @@ impl IcloudServer {
             .map_err(|e| anyhow::anyhow!("caldav init: {e}"))?;
         let imap =
             ImapClient::new(config.clone()).map_err(|e| anyhow::anyhow!("imap init: {e}"))?;
-        let state = Arc::new(ServerState {
+        Ok(Self::with_state(Some(ConfiguredState {
             config,
             caldav,
             imap,
-        });
-        Ok(Self {
-            state,
+        })))
+    }
+
+    /// Build an unconfigured server. Tools that need credentials return a
+    /// setup-hint error; `auth_status` still works.
+    pub fn unconfigured() -> Self {
+        Self::with_state(None)
+    }
+
+    fn with_state(configured: Option<ConfiguredState>) -> Self {
+        Self {
+            state: Arc::new(ServerState {
+                configured,
+                stats: Mutex::new(AuthStats::default()),
+            }),
             tool_router: Self::tool_router(),
-        })
+        }
+    }
+
+    fn require(&self) -> Result<&ConfiguredState, McpError> {
+        self.state
+            .configured
+            .as_ref()
+            .ok_or_else(|| invalid_params(SETUP_HINT))
+    }
+
+    async fn mark_imap_ok(&self) {
+        self.state.stats.lock().await.last_imap_ok_at = Some(Utc::now());
+    }
+
+    async fn mark_caldav_ok(&self) {
+        self.state.stats.lock().await.last_caldav_ok_at = Some(Utc::now());
     }
 
     // ---- Calendar (CalDAV) ----
@@ -167,12 +213,13 @@ impl IcloudServer {
         description = "List all iCloud calendars. Returns id (href), display_name, and color. Use id with the other calendar_* tools."
     )]
     async fn calendar_list_calendars(&self) -> Result<CallToolResult, McpError> {
-        let cals = self
-            .state
+        let s = self.require()?;
+        let cals = s
             .caldav
             .list_calendars()
             .await
             .map_err(|e| to_mcp("calendar_list_calendars", e))?;
+        self.mark_caldav_ok().await;
         Ok(json_result(&cals))
     }
 
@@ -181,14 +228,15 @@ impl IcloudServer {
         &self,
         Parameters(args): Parameters<ListEventsArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let s = self.require()?;
         let start = parse_rfc3339(&args.start, "start")?;
         let end = parse_rfc3339(&args.end, "end")?;
-        let events = self
-            .state
+        let events = s
             .caldav
             .list_events(&args.calendar_id, start, end)
             .await
             .map_err(|e| to_mcp("calendar_list_events", e))?;
+        self.mark_caldav_ok().await;
         Ok(json_result(&events))
     }
 
@@ -199,12 +247,13 @@ impl IcloudServer {
         &self,
         Parameters(args): Parameters<GetEventArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let ev = self
-            .state
+        let s = self.require()?;
+        let ev = s
             .caldav
             .get_event(&args.calendar_id, &args.uid)
             .await
             .map_err(|e| to_mcp("calendar_get_event", e))?;
+        self.mark_caldav_ok().await;
         Ok(json_result(&ev))
     }
 
@@ -215,6 +264,7 @@ impl IcloudServer {
         &self,
         Parameters(args): Parameters<SearchEventsArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let s = self.require()?;
         let now = Utc::now();
         let start = match &args.start {
             Some(s) => parse_rfc3339(s, "start")?,
@@ -224,12 +274,12 @@ impl IcloudServer {
             Some(s) => parse_rfc3339(s, "end")?,
             None => now + Duration::days(90),
         };
-        let events = self
-            .state
+        let events = s
             .caldav
             .search_events(&args.query, start, end, args.calendar_id.as_deref())
             .await
             .map_err(|e| to_mcp("calendar_search_events", e))?;
+        self.mark_caldav_ok().await;
         Ok(json_result(&events))
     }
 
@@ -240,6 +290,7 @@ impl IcloudServer {
         &self,
         Parameters(args): Parameters<CreateEventArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let s = self.require()?;
         let start = parse_rfc3339(&args.start, "start")?;
         let end = parse_rfc3339(&args.end, "end")?;
         if end <= start {
@@ -252,14 +303,14 @@ impl IcloudServer {
             description: args.description,
             location: args.location,
             attendees: args.attendees,
-            organizer: self.state.config.apple_id.clone(),
+            organizer: s.config.apple_id.clone(),
         };
-        let summary = self
-            .state
+        let summary = s
             .caldav
             .create_event(&args.calendar_id, params)
             .await
             .map_err(|e| to_mcp("calendar_create_event", e))?;
+        self.mark_caldav_ok().await;
         Ok(json_result(&summary))
     }
 
@@ -269,12 +320,13 @@ impl IcloudServer {
         description = "List all IMAP folders. Each entry has a name and optional special_use label (Drafts, Sent, Trash, Junk, Archive, Flagged, All)."
     )]
     async fn mail_list_folders(&self) -> Result<CallToolResult, McpError> {
-        let folders = self
-            .state
+        let s = self.require()?;
+        let folders = s
             .imap
             .list_folders()
             .await
             .map_err(|e| to_mcp("mail_list_folders", e))?;
+        self.mark_imap_ok().await;
         Ok(json_result(&folders))
     }
 
@@ -285,6 +337,7 @@ impl IcloudServer {
         &self,
         Parameters(args): Parameters<MailSearchArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let s = self.require()?;
         let since = match &args.since {
             Some(s) => Some(parse_rfc3339(s, "since")?),
             None => None,
@@ -301,28 +354,29 @@ impl IcloudServer {
             before,
             unseen: args.unseen,
         };
-        let messages = self
-            .state
+        let messages = s
             .imap
             .search(&args.folder, &criteria, args.limit)
             .await
             .map_err(|e| to_mcp("mail_search", e))?;
+        self.mark_imap_ok().await;
         Ok(json_result(&messages))
     }
 
     #[tool(
-        description = "Fetch one message by UID from a folder. Returns parsed headers, body (HTML converted to markdown when no plain-text part exists), and attachment filenames."
+        description = "Fetch one message by UID from a folder. Returns parsed headers, body (HTML converted to markdown when no plain-text part exists), attachment metadata, and `truncated` + `total_size_bytes` when the body was capped by `max_bytes`."
     )]
     async fn mail_get_message(
         &self,
         Parameters(args): Parameters<MailGetArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let msg = self
-            .state
+        let s = self.require()?;
+        let msg = s
             .imap
             .get_message(&args.folder, args.uid, args.max_bytes)
             .await
             .map_err(|e| to_mcp("mail_get_message", e))?;
+        self.mark_imap_ok().await;
         Ok(json_result(&msg))
     }
 
@@ -333,6 +387,7 @@ impl IcloudServer {
         &self,
         Parameters(args): Parameters<CreateDraftArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let s = self.require()?;
         if args.to.is_empty() {
             return Err(invalid_params("`to` must contain at least one address"));
         }
@@ -345,33 +400,62 @@ impl IcloudServer {
             body: args.body,
             html: args.html,
         };
-        let res = self
-            .state
+        let res = s
             .imap
             .create_draft(&params)
             .await
             .map_err(|e| to_mcp("mail_create_draft", e))?;
+        self.mark_imap_ok().await;
         Ok(json_result(&res))
+    }
+
+    // ---- Diagnostics ----
+
+    #[tool(
+        description = "Diagnose plugin auth state. Returns whether credentials are loaded, which source (env vs Keychain), and the timestamp of the last successful IMAP / CalDAV call. Call this when other tools fail to determine whether to run /icloud-mcp:setup."
+    )]
+    async fn auth_status(&self) -> Result<CallToolResult, McpError> {
+        let stats = self.state.stats.lock().await;
+        let configured = self.state.configured.as_ref();
+        let setup_hint = if configured.is_some() {
+            "Credentials are loaded. If tools fail, the password may have been revoked; mint a new one and re-run /icloud-mcp:setup.".to_string()
+        } else {
+            SETUP_HINT.to_string()
+        };
+        let body = serde_json::json!({
+            "apple_id": configured.map(|c| c.config.apple_id.clone()),
+            "credential_source": configured.map(|c| c.config.source),
+            "binary_version": env!("CARGO_PKG_VERSION"),
+            "last_imap_ok_at": stats.last_imap_ok_at.map(|t| t.to_rfc3339()),
+            "last_caldav_ok_at": stats.last_caldav_ok_at.map(|t| t.to_rfc3339()),
+            "setup_hint": setup_hint,
+        });
+        Ok(json_result(&body))
     }
 }
 
 #[tool_handler]
 impl ServerHandler for IcloudServer {
     fn get_info(&self) -> ServerInfo {
+        let instructions = if self.state.configured.is_some() {
+            "Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP). \
+             Read + create-only: events can be created, mail can only be saved as drafts \
+             - there is no SMTP transport, the user reviews and sends manually in iCloud Mail. \
+             All datetimes are RFC 3339 UTC. \
+             Workflow: 1) `calendar_list_calendars` / `mail_list_folders` to discover ids; \
+             2) list/search/get with those ids; 3) `calendar_create_event` or \
+             `mail_create_draft` for write operations."
+                .to_string()
+        } else {
+            format!(
+                "{SETUP_HINT} Until then, the only working tool is `auth_status` (diagnostics)."
+            )
+        };
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some(
-                "Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP). \
-                 Read + create-only: events can be created, mail can only be saved as drafts \
-                 - there is no SMTP transport, the user reviews and sends manually in iCloud Mail. \
-                 All datetimes are RFC 3339 UTC. \
-                 Workflow: 1) `calendar_list_calendars` / `mail_list_folders` to discover ids; \
-                 2) list/search/get with those ids; 3) `calendar_create_event` or \
-                 `mail_create_draft` for write operations."
-                    .to_string(),
-            ),
+            instructions: Some(instructions),
         }
     }
 }
@@ -406,16 +490,92 @@ async fn main() -> anyhow::Result<()> {
         .with_ansi(false)
         .init();
 
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--probe") {
+        return run_probe().await;
+    }
+
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "icloud-mcp starting");
 
-    let config = Config::load()?;
-    let server = IcloudServer::new(config).await?;
+    let server = match Config::try_load() {
+        Some(config) => {
+            tracing::info!(source = ?config.source, apple_id = %config.apple_id, "config loaded");
+            IcloudServer::new(config).await?
+        }
+        None => {
+            tracing::warn!(
+                "no credentials available (env vars APPLE_ID/APPLE_APP_PASSWORD missing \
+                 and no Keychain entry); starting in unconfigured mode - run /icloud-mcp:setup"
+            );
+            IcloudServer::unconfigured()
+        }
+    };
 
     let service = server
         .serve(stdio())
         .await
         .inspect_err(|e| tracing::error!("serve error: {e:?}"))?;
     service.waiting().await?;
+    Ok(())
+}
+
+/// `icloud-mcp --probe`: load credentials, attempt one IMAP login and one
+/// CalDAV bootstrap, write a JSON diagnostic to stdout, exit.
+///
+/// Used by `/icloud-mcp:setup` to verify credentials immediately after the
+/// user pastes the app-specific password, and by humans for manual debugging.
+async fn run_probe() -> anyhow::Result<()> {
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            let out = serde_json::json!({
+                "ok": false,
+                "stage": "config",
+                "error": format!("{e:#}"),
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+            return Ok(());
+        }
+    };
+
+    let apple_id = config.apple_id.clone();
+    let source = config.source;
+
+    // IMAP login + folder count.
+    let imap_result: Result<usize, String> = match ImapClient::new(Arc::new(config.clone())) {
+        Ok(c) => match c.list_folders().await {
+            Ok(fs) => Ok(fs.len()),
+            Err(e) => Err(e.to_string()),
+        },
+        Err(e) => Err(e.to_string()),
+    };
+
+    // CalDAV bootstrap + calendar count.
+    let caldav_result: Result<usize, String> = match caldav::Client::new(&config).await {
+        Ok(c) => match c.list_calendars().await {
+            Ok(cs) => Ok(cs.len()),
+            Err(e) => Err(e.to_string()),
+        },
+        Err(e) => Err(e.to_string()),
+    };
+
+    let imap_ok = imap_result.is_ok();
+    let caldav_ok = caldav_result.is_ok();
+
+    let out = serde_json::json!({
+        "ok": imap_ok && caldav_ok,
+        "apple_id": apple_id,
+        "credential_source": source,
+        "imap": match &imap_result {
+            Ok(n) => serde_json::json!({ "ok": true, "folders": n }),
+            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        },
+        "caldav": match &caldav_result {
+            Ok(n) => serde_json::json!({ "ok": true, "calendars": n }),
+            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        },
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
@@ -466,5 +626,28 @@ mod tests {
     #[test]
     fn default_limit_is_25() {
         assert_eq!(default_limit(), 25);
+    }
+
+    #[tokio::test]
+    async fn unconfigured_server_returns_setup_hint() {
+        let s = IcloudServer::unconfigured();
+        let err = s.calendar_list_calendars().await.unwrap_err();
+        assert!(err.message.contains("/icloud-mcp:setup"), "got: {err:?}");
+    }
+
+    #[tokio::test]
+    async fn unconfigured_auth_status_reports_no_credentials() {
+        let s = IcloudServer::unconfigured();
+        let r = s.auth_status().await.expect("auth_status should not error");
+        let rendered = serde_json::to_string(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let text = v["content"][0]["text"].as_str().expect("text content");
+        let inner: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(inner["apple_id"].is_null());
+        assert!(inner["credential_source"].is_null());
+        assert!(inner["setup_hint"]
+            .as_str()
+            .unwrap()
+            .contains("/icloud-mcp:setup"));
     }
 }

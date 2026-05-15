@@ -9,7 +9,7 @@
 use http::Uri;
 use httpmock::prelude::*;
 use icloud_mcp::caldav::{Client, CreateEventParams};
-use icloud_mcp::config::Config;
+use icloud_mcp::config::{Config, CredentialSource};
 
 const FIND_CALENDARS: &str = include_str!("fixtures/find_calendars.xml");
 const PROPS_WORK: &str = include_str!("fixtures/properties_work.xml");
@@ -22,6 +22,7 @@ fn test_config() -> Config {
     Config {
         apple_id: "test@icloud.com".into(),
         app_password: "test-pass".into(),
+        source: CredentialSource::Env,
     }
 }
 
