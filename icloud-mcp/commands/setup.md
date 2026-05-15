@@ -50,9 +50,9 @@ Validate:
 First, print this exact block to the user (verbatim, in a code fence):
 
 ```
-1. Open: https://account.apple.com/sign-in-security/app-passwords
-2. Sign in if prompted, then click "Generate password".
-3. Name the password "icloud-mcp" and copy the 16-character code (with dashes).
+1. Open: https://account.apple.com/account/manage
+2. Sign in if prompted, then select the "App-Specific Passwords" tab.
+3. Click "Generate password", name it "icloud-mcp", and copy the 16-character code (with dashes).
 ```
 
 Then AskUserQuestion:
@@ -149,7 +149,7 @@ Parse the JSON. Report based on `ok`:
 
 - `ok: true`: "Probe OK. Found N folders, M calendars." (use values from `imap.folders` and `caldav.calendars`).
 - `ok: false` with `imap.ok: false` and error matching `AUTHENTICATIONFAILED`:
-  "Apple rejected the password. It may have been mistyped or revoked. Generate a new one at https://account.apple.com/sign-in-security/app-passwords and re-run /icloud-mcp:setup."
+  "Apple rejected the password. It may have been mistyped or revoked. Generate a new one at https://account.apple.com/account/manage (App-Specific Passwords tab) and re-run /icloud-mcp:setup."
 - `ok: false` with other errors: show the full JSON, suggest the user check connectivity.
 
 If the probe failed, stop. Do not declare success.

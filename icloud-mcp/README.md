@@ -146,7 +146,7 @@ The trailing `-w` with no argument reads the password from stdin, so it does not
 The server reads `APPLE_APP_PASSWORD` from the env first; if absent it queries the `icloud-mcp` service in the Keychain using `APPLE_ID` as the account.
 
 App-specific password URL:
-`https://account.apple.com/sign-in-security/app-passwords`
+`https://account.apple.com/account/manage` (select the App-Specific Passwords tab)
 
 ## Development
 
