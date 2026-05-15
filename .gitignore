@@ -38,6 +38,9 @@ ENV/
 .env.*
 .envrc
 
+# Local message drafts (per global rule)
+.msgs/
+
 # IDE
 .vscode/
 .idea/

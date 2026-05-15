@@ -371,40 +371,57 @@ impl ImapClient {
                     .try_collect()
                     .await
                     .map_err(|e| DomainError::transient(format!("collect partial: {e}")))?;
-                let f = msgs
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| DomainError::not_found(format!("message uid={uid}")))?;
-                let mut out = Vec::new();
-                if let Some(h) = f.header() {
-                    out.extend_from_slice(h);
+                if msgs.is_empty() {
+                    return Err(DomainError::not_found(format!("message uid={uid}")));
                 }
-                if let Some(b) = f.body() {
-                    out.extend_from_slice(b);
+                // Walk every Fetch in case the server split the response.
+                // We piece the message back together as <headers><crlf><body>;
+                // mail-parser is then asked to parse what may be a
+                // truncated multipart and is allowed to come up short.
+                let mut out = Vec::new();
+                for m in &msgs {
+                    if let Some(h) = m.header() {
+                        out.extend_from_slice(h);
+                        break;
+                    }
+                }
+                for m in &msgs {
+                    if let Some(b) = m.body() {
+                        out.extend_from_slice(b);
+                        break;
+                    }
                 }
                 Ok::<_, DomainError>(out)
             })
             .await?
         } else {
-            with_timeout("IMAP UID FETCH RFC822", IMAP_COMMAND, async {
+            // BODY.PEEK[] instead of RFC822:
+            //  - PEEK avoids the \Seen side-effect that RFC822 implies.
+            //  - Some servers (iCloud included) only populate the response
+            //    under the BODY[] attribute name; async-imap's Fetch::body()
+            //    matches the BodySection { section: None } branch for that.
+            //    Asking for RFC822 produced empty bodies in the wild for
+            //    multipart/alternative messages from forwarder senders.
+            // Iterate ALL Fetch responses instead of just `.next()`: a server
+            // is allowed to split metadata and body data into separate
+            // untagged FETCH responses, and the first one may not carry the
+            // body.
+            with_timeout("IMAP UID FETCH body", IMAP_COMMAND, async {
                 let stream = p
                     .session
-                    .uid_fetch(uid.to_string(), "(UID FLAGS RFC822)")
+                    .uid_fetch(uid.to_string(), "(UID FLAGS BODY.PEEK[])")
                     .await
-                    .map_err(|e| DomainError::transient(format!("UID FETCH RFC822: {e}")))?;
+                    .map_err(|e| DomainError::transient(format!("UID FETCH body: {e}")))?;
                 let msgs: Vec<Fetch> = stream
                     .try_collect()
                     .await
-                    .map_err(|e| DomainError::transient(format!("collect RFC822: {e}")))?;
-                let f = msgs
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| DomainError::not_found(format!("message uid={uid}")))?;
-                Ok::<_, DomainError>(
-                    f.body()
-                        .ok_or_else(|| DomainError::permanent("message has no body"))?
-                        .to_vec(),
-                )
+                    .map_err(|e| DomainError::transient(format!("collect body: {e}")))?;
+                let body = msgs
+                    .iter()
+                    .find_map(|m| m.body())
+                    .ok_or_else(|| DomainError::permanent("message has no body"))?
+                    .to_vec();
+                Ok::<_, DomainError>(body)
             })
             .await?
         };
