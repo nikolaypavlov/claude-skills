@@ -4,7 +4,7 @@
 //! through `Client::with_base_url_no_discovery` and injecting the calendar
 //! home href via `set_calendar_home_for_tests`. CalDAV uses non-standard
 //! HTTP methods (PROPFIND, REPORT), so the mocks are configured via
-//! `when.matches(...)` rather than `when.method(...)`.
+//! `when.is_true(...)` rather than `when.method(...)`.
 
 use http::Uri;
 use httpmock::prelude::*;
@@ -47,13 +47,26 @@ fn parse_time_range(
     )
 }
 
+/// httpmock 0.8 exposes request data through accessor methods; we wrap the
+/// "is the method M and path P" check that every test below uses.
+fn method_and_path(method: &str, path: &str) -> impl Fn(&httpmock::HttpMockRequest) -> bool {
+    let method = method.to_string();
+    let path = path.to_string();
+    move |req| req.method_str() == method && req.uri().path() == path
+}
+
+fn body_contains(req: &httpmock::HttpMockRequest, needle: &str) -> bool {
+    let body = String::from_utf8_lossy(req.body_ref());
+    body.contains(needle)
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn list_calendars_returns_both_with_combined_propfind() {
     let server = MockServer::start_async().await;
 
     // FindCalendars (PROPFIND with Depth:1) on the calendar home.
     server.mock(|when, then| {
-        when.matches(|req| req.method == "PROPFIND" && req.path == "/1234/calendars/");
+        when.is_true(method_and_path("PROPFIND", "/1234/calendars/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(FIND_CALENDARS);
@@ -61,13 +74,13 @@ async fn list_calendars_returns_both_with_combined_propfind() {
 
     // PROPFIND for properties on /1234/calendars/work/.
     server.mock(|when, then| {
-        when.matches(|req| req.method == "PROPFIND" && req.path == "/1234/calendars/work/");
+        when.is_true(method_and_path("PROPFIND", "/1234/calendars/work/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(PROPS_WORK);
     });
     server.mock(|when, then| {
-        when.matches(|req| req.method == "PROPFIND" && req.path == "/1234/calendars/personal/");
+        when.is_true(method_and_path("PROPFIND", "/1234/calendars/personal/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(PROPS_PERSONAL);
@@ -100,14 +113,10 @@ async fn list_events_filters_collection_and_returns_summaries() {
     // more specific (body-discriminated) matcher FIRST so httpmock picks it
     // for the multiget call instead of falling back to the LIST response.
     server.mock(|when, then| {
-        when.matches(|req| {
-            req.method == "REPORT"
-                && req.path == "/1234/calendars/work/"
-                && req
-                    .body
-                    .as_ref()
-                    .map(|b| String::from_utf8_lossy(b).contains("calendar-multiget"))
-                    .unwrap_or(false)
+        when.is_true(|req| {
+            req.method_str() == "REPORT"
+                && req.uri().path() == "/1234/calendars/work/"
+                && body_contains(req, "calendar-multiget")
         });
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
@@ -116,7 +125,7 @@ async fn list_events_filters_collection_and_returns_summaries() {
     // ListCalendarResources (REPORT calendar-query) - fallback for the
     // generic REPORT.
     server.mock(|when, then| {
-        when.matches(|req| req.method == "REPORT" && req.path == "/1234/calendars/work/");
+        when.is_true(method_and_path("REPORT", "/1234/calendars/work/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(LIST_RESOURCES);
@@ -141,7 +150,7 @@ async fn list_events_filters_collection_and_returns_summaries() {
 async fn get_event_missing_resource_maps_to_not_found() {
     let server = MockServer::start_async().await;
     server.mock(|when, then| {
-        when.matches(|req| req.method == "REPORT" && req.path == "/1234/calendars/work/");
+        when.is_true(method_and_path("REPORT", "/1234/calendars/work/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(MULTIGET_EMPTY);
@@ -163,20 +172,17 @@ async fn create_event_puts_full_vevent_with_method_request() {
     let server = MockServer::start_async().await;
     // Body assertions live inside the matcher: if the PUT body lacks any of
     // the required iCalendar properties the mock will not match and the call
-    // would fail. This is httpmock 0.7's idiom for body inspection.
+    // would fail.
     let put_mock = server.mock(|when, then| {
-        when.matches(|req| {
-            if req.method != "PUT" {
+        when.is_true(|req| {
+            if req.method_str() != "PUT" {
                 return false;
             }
-            if !(req.path.starts_with("/1234/calendars/work/") && req.path.ends_with(".ics")) {
+            let path = req.uri().path().to_string();
+            if !(path.starts_with("/1234/calendars/work/") && path.ends_with(".ics")) {
                 return false;
             }
-            let body = req
-                .body
-                .as_ref()
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .unwrap_or_default();
+            let body = String::from_utf8_lossy(req.body_ref());
             let body = body.replace("\r\n ", "").replace("\n ", "");
             body.contains("BEGIN:VEVENT")
                 && body.contains("DTSTAMP:")
@@ -207,7 +213,7 @@ async fn create_event_puts_full_vevent_with_method_request() {
     assert!(summary.href.ends_with(".ics"));
     assert_eq!(summary.summary, "Standup");
 
-    assert_eq!(put_mock.hits(), 1, "PUT should be called exactly once");
+    assert_eq!(put_mock.calls(), 1, "PUT should be called exactly once");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -216,7 +222,7 @@ async fn search_events_runs_across_multiple_calendars_in_parallel() {
 
     // 1) FindCalendars on home.
     server.mock(|when, then| {
-        when.matches(|req| req.method == "PROPFIND" && req.path == "/1234/calendars/");
+        when.is_true(method_and_path("PROPFIND", "/1234/calendars/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(FIND_CALENDARS);
@@ -224,13 +230,13 @@ async fn search_events_runs_across_multiple_calendars_in_parallel() {
     // 2) PROPFIND for properties (work + personal). list_calendars hits these
     //    before search dispatches per-calendar requests.
     server.mock(|when, then| {
-        when.matches(|req| req.method == "PROPFIND" && req.path == "/1234/calendars/work/");
+        when.is_true(method_and_path("PROPFIND", "/1234/calendars/work/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(PROPS_WORK);
     });
     server.mock(|when, then| {
-        when.matches(|req| req.method == "PROPFIND" && req.path == "/1234/calendars/personal/");
+        when.is_true(method_and_path("PROPFIND", "/1234/calendars/personal/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(PROPS_PERSONAL);
@@ -238,27 +244,23 @@ async fn search_events_runs_across_multiple_calendars_in_parallel() {
 
     // 3) REPORT (list + multiget) on each calendar. Both fan out concurrently.
     server.mock(|when, then| {
-        when.matches(|req| {
-            req.method == "REPORT"
-                && req.path == "/1234/calendars/work/"
-                && req
-                    .body
-                    .as_ref()
-                    .map(|b| String::from_utf8_lossy(b).contains("calendar-multiget"))
-                    .unwrap_or(false)
+        when.is_true(|req| {
+            req.method_str() == "REPORT"
+                && req.uri().path() == "/1234/calendars/work/"
+                && body_contains(req, "calendar-multiget")
         });
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(MULTIGET_EVENTS);
     });
     server.mock(|when, then| {
-        when.matches(|req| req.method == "REPORT" && req.path == "/1234/calendars/work/");
+        when.is_true(method_and_path("REPORT", "/1234/calendars/work/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(LIST_RESOURCES);
     });
     server.mock(|when, then| {
-        when.matches(|req| req.method == "REPORT" && req.path == "/1234/calendars/personal/");
+        when.is_true(method_and_path("REPORT", "/1234/calendars/personal/"));
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(MULTIGET_EMPTY);

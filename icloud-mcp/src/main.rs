@@ -2,10 +2,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use rmcp::{
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{
-        CallToolResult, Content, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
-    },
+    handler::server::wrapper::Parameters,
+    model::{CallToolResult, Content, ProtocolVersion, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router,
     transport::stdio,
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -133,7 +131,6 @@ pub struct CreateDraftArgs {
 #[derive(Clone)]
 pub struct IcloudServer {
     state: Arc<ServerState>,
-    tool_router: ToolRouter<Self>,
 }
 
 struct ServerState {
@@ -188,7 +185,6 @@ impl IcloudServer {
                 configured,
                 stats: Mutex::new(AuthStats::default()),
             }),
-            tool_router: Self::tool_router(),
         }
     }
 
@@ -451,12 +447,9 @@ impl ServerHandler for IcloudServer {
                 "{SETUP_HINT} Until then, the only working tool is `auth_status` (diagnostics)."
             )
         };
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation::from_build_env(),
-            instructions: Some(instructions),
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_instructions(instructions)
     }
 }
 
