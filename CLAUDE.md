@@ -34,25 +34,40 @@ The marketplace is configured in `.claude-plugin/marketplace.json`.
 
 ## iCloud MCP Development
 
-Rust binary plugin. Not a skill - it ships as a standalone MCP server registered via `icloud-mcp/.mcp.json`.
+Rust binary plugin. Not a skill - it ships as a standalone MCP server registered via `icloud-mcp/.mcp.json`, which spawns `scripts/launch.sh` (a thin wrapper that ensures the binary is on disk via `install-binary.sh`, then `exec`s it). The wrapper exists because `SessionStart` hooks fire only on new sessions, not on `/reload-plugins`, so the MCP transport could otherwise race the hook and surface `ENOENT`.
 
 **Build:**
 ```bash
 cd icloud-mcp && cargo build --release
 ```
 
-The binary lands at `icloud-mcp/target/release/icloud-mcp`. `.mcp.json` references it via `${CLAUDE_PLUGIN_ROOT}/target/release/icloud-mcp`.
+The binary lands at `icloud-mcp/target/release/icloud-mcp`. For plugin users it ships prebuilt from GitHub Releases; `.mcp.json` resolves to it indirectly through `scripts/launch.sh`.
 
 **Key files:**
-- `src/main.rs` -- entry point, `IcloudServer` struct with `#[tool_router]`, 9 tools, stdio transport
+- `src/main.rs` -- entry point, `IcloudServer` struct with `#[tool_router]`, 10 tools (incl. `auth_status`), `--probe` CLI mode, stdio transport
 - `src/caldav.rs` -- thin wrapper around `libdav::CalDavClient` (list_calendars, list_events, get_event, search_events, create_event)
 - `src/imap_client.rs` -- `async-imap` over `tokio-rustls` (list_folders, search, get_message, create_draft via APPEND)
 - `src/config.rs` -- env-or-Keychain credential loading
 - `src/error.rs` -- McpError helpers
+- `scripts/launch.sh` -- runs `install-binary.sh` then `exec`s the binary; referenced by `.mcp.json`
+- `scripts/install-binary.sh` -- idempotent: downloads release tarball matching `Cargo.toml` version, verifies SHA256, falls back to `cargo build` if no prebuilt artifact for the platform
+- `hooks/hooks.json` -- `SessionStart` hook that pre-warms the binary so the first MCP tool call is not the one paying the download cost
+- `commands/setup.md` -- `/icloud-mcp:setup` interactive wizard for first-time credential capture
 
 **Configuration:** Environment variables `APPLE_ID` and `APPLE_APP_PASSWORD` (a 16-char app-specific password from account.apple.com). On macOS, password can also live in Keychain under service `icloud-mcp`, account `$APPLE_ID`.
 
 **Design constraint:** No SMTP. Drafts are APPENDed to the IMAP Drafts folder with the `\Draft` flag; the user reviews and sends them manually in iCloud Mail. This keeps the server from producing external side-effects.
+
+## iCloud MCP releases
+
+Release is driven by pushing a tag `icloud-mcp-v<X.Y.Z>` matching `Cargo.toml`. The workflow at `.github/workflows/release-icloud-mcp.yml` asserts the tag equals `icloud-mcp-v${CRATE_VERSION}` and fails fast otherwise. To cut a new version:
+
+1. Bump `icloud-mcp/Cargo.toml`, `Cargo.lock`, and `.claude-plugin/marketplace.json` (icloud-mcp entry) to the same version.
+2. Commit with a message referencing the version.
+3. `git tag icloud-mcp-v<X.Y.Z> && git push origin icloud-mcp-v<X.Y.Z>`.
+4. Workflow builds 4 targets in parallel (macos-26 host cross-compiles to both darwin arches, ubuntu-24.04 + ubuntu-24.04-arm for Linux), packages tar.gz, publishes Release with SHA256SUMS.
+
+All third-party actions in the workflow are pinned to commit SHAs (not tags) with a human-readable version comment, per supply-chain hardening. Dependabot (`.github/dependabot.yml`) opens weekly PRs to bump SHAs as upstream cuts releases.
 
 ## Jira Manager Development
 
@@ -101,6 +116,11 @@ This repository is a Claude Code plugin. When creating or modifying skills, comm
 - Python code uses full type annotations and tuple returns `(success: bool, message: str, data: Optional)`
 - CLI tools communicate via JSON on stdin/stdout
 - No automated test suite -- testing is done manually via example scripts in `examples/`
+
+### Developer gotchas
+
+- **`.mcp.json` plugin-vs-project duplication**: Claude Code discovers `icloud-mcp/.mcp.json` twice when a contributor has the repo cloned AND the plugin installed - once as plugin (CLAUDE_PLUGIN_ROOT defined, works) and once as project config (variable unset, fails). The plugin instance is the working one. To silence the noise, add `"disabledMcpjsonServers": ["icloud"]` to `.claude/settings.local.json`.
+- **gh CLI auth is ephemeral in dev containers**: pushing to main with workflow file changes requires `workflow` scope on the gh token (`gh auth refresh -h github.com -s workflow`). Plain `gh auth login` only gives `gist, read:org, repo`.
 
 ### Rust projects
 

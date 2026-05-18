@@ -83,6 +83,30 @@ Autonomous hyperparameter and model optimization with parallel GPU researchers u
 
 Run `/autoresearch:autoresearch [path-to-autoresearch.yaml]` to start optimization.
 
+### PDF Design System
+
+Skill + command for converting markdown to PDF using a canonical editorial design (navy/gold/cream, Fraunces + Source Serif 4 + JetBrains Mono).
+
+**Features:**
+- Canonical stylesheet maintained inside the skill; no per-project setup required by default
+- pandoc + WeasyPrint pipeline with explicit invocation documented in the skill
+- `/pdf-design-system:init` scaffolds `docs/pdf-overrides.css` for per-project wordmark and palette tokens (opt-in)
+- Strict CSS scope: project overrides may only redeclare `:root` tokens
+
+### iCloud MCP
+
+Local Rust MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP), shipping prebuilt binaries via GitHub Releases.
+
+**Features:**
+- 10 tools: calendar list/list-events/get/search/create, mail list-folders/search/get-message/create-draft, and `auth_status` diagnostic
+- Read + create only by design: events can be created, mail can only be saved as drafts (no SMTP)
+- Connection-pooled IMAP session with NOOP-based health check across tool calls
+- macOS Keychain credential fallback; explicit timeouts on every network call; structured `URL_ELICITATION_REQUIRED` (-32042) error when unconfigured
+- 4-target prebuilt binaries (darwin arm64/x64, linux x64/arm64); no Rust toolchain required for plugin users
+- `/icloud-mcp:setup` interactive wizard for first-time credential capture
+
+**Requirements:** Apple ID with two-factor authentication enabled (needed to mint app-specific passwords).
+
 ## Installation
 
 ### Add Marketplace
@@ -111,6 +135,12 @@ Run `/autoresearch:autoresearch [path-to-autoresearch.yaml]` to start optimizati
 
 # Install Autoresearch
 /plugin install autoresearch@ai-engineering-skills
+
+# Install PDF Design System
+/plugin install pdf-design-system@ai-engineering-skills
+
+# Install iCloud MCP (prebuilt binary auto-fetched on first session)
+/plugin install icloud-mcp@ai-engineering-skills
 ```
 
 ## Usage
@@ -128,6 +158,10 @@ Once installed, plugins are automatically available in Claude Code.
 **PR Reviewer**: Run `/pr-reviewer:review-pr` to review the current branch's PR/MR. Supports `gh` (GitHub) and `glab` (GitLab, including self-hosted).
 
 **Autoresearch**: Run `/autoresearch:autoresearch` with an `autoresearch.yaml` config in your project root to launch parallel GPU optimization.
+
+**PDF Design System**: Ask Claude Code to convert a markdown document to PDF and the skill activates automatically. Run `/pdf-design-system:init` once per project if you want a custom wordmark or palette tokens.
+
+**iCloud MCP**: After install run `/icloud-mcp:setup` to capture your Apple ID and an app-specific password (stored in macOS Keychain or `.envrc` on Linux). Then ask "list my iCloud calendars", "search mail from <someone>", or "draft an email to <someone> about <topic>".
 
 ## Structure
 
@@ -164,5 +198,28 @@ claude-skills/
 │   │   └── scripts/              # Worktree setup, harvest, cleanup
 │   └── agents/
 │       └── researcher.md         # GPU researcher agent
+├── pdf-design-system/            # PDF Design System plugin
+│   ├── SKILL.md                  # Canonical stylesheet + pandoc/WeasyPrint flow
+│   ├── assets/                   # Fonts, baseline CSS
+│   ├── commands/
+│   │   └── init.md               # /pdf-design-system:init scaffolder
+│   ├── references/               # Override schema, design rationale
+│   └── examples/                 # Sample documents
+├── icloud-mcp/                   # iCloud MCP plugin (Rust binary)
+│   ├── Cargo.toml                # rmcp + libdav + async-imap deps
+│   ├── src/                      # main.rs, caldav.rs, imap_client.rs, config.rs, error.rs
+│   ├── scripts/
+│   │   ├── launch.sh             # Wrapper: ensures binary then exec
+│   │   └── install-binary.sh     # Downloads release tarball or cargo fallback
+│   ├── hooks/
+│   │   └── hooks.json            # SessionStart hook -> install-binary.sh
+│   ├── commands/
+│   │   └── setup.md              # /icloud-mcp:setup interactive wizard
+│   ├── tests/                    # CalDAV integration tests via httpmock
+│   └── .mcp.json                 # MCP server registration (-> launch.sh)
 └── README.md                     # This file
 ```
+
+## Release infrastructure
+
+`.github/workflows/release-icloud-mcp.yml` builds prebuilt icloud-mcp binaries for 4 targets (darwin arm64/x64, linux x64/arm64) on every `icloud-mcp-v*` tag push. All third-party actions are pinned to commit SHAs; Dependabot (`.github/dependabot.yml`) keeps them current via weekly PRs.

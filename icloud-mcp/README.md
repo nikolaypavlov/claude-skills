@@ -28,6 +28,103 @@ Prerequisites:
 - An Apple ID with two-factor authentication enabled (required to mint app-specific passwords).
 - macOS (arm64 or x64) or Linux (x64 or arm64). Other platforms fall back to building from source if `cargo` is in PATH.
 
+## Installing in Claude Desktop (macOS)
+
+Claude Desktop (the macOS app from claude.ai/download) does not have a plugin marketplace - MCP servers are added by editing `~/Library/Application Support/Claude/claude_desktop_config.json` directly. The five steps below get icloud-mcp running there without ever leaving the terminal.
+
+### 1. Download the binary
+
+Pick the archive that matches your CPU:
+
+```
+# Apple Silicon (M1-M4):
+curl -L -o /tmp/icloud-mcp.tar.gz \
+  https://github.com/nikolaypavlov/claude-skills/releases/download/icloud-mcp-v0.3.3/icloud-mcp-v0.3.3-aarch64-apple-darwin.tar.gz
+
+# Intel:
+curl -L -o /tmp/icloud-mcp.tar.gz \
+  https://github.com/nikolaypavlov/claude-skills/releases/download/icloud-mcp-v0.3.3/icloud-mcp-v0.3.3-x86_64-apple-darwin.tar.gz
+```
+
+Optional but recommended - verify the SHA256:
+
+```
+curl -sL https://github.com/nikolaypavlov/claude-skills/releases/download/icloud-mcp-v0.3.3/SHA256SUMS \
+  | grep apple-darwin
+shasum -a 256 /tmp/icloud-mcp.tar.gz
+```
+
+The two checksums for your target must match.
+
+### 2. Install and clear quarantine
+
+```
+mkdir -p ~/.local/bin
+tar -C ~/.local/bin -xzf /tmp/icloud-mcp.tar.gz
+chmod +x ~/.local/bin/icloud-mcp
+xattr -d com.apple.quarantine ~/.local/bin/icloud-mcp 2>/dev/null
+```
+
+The `xattr -d` step is required. The binary is not code-signed, so without it Launch Services blocks Claude Desktop from spawning the server.
+
+### 3. Generate an app-specific password and store it in Keychain
+
+1. Open https://account.apple.com/account/manage and sign in.
+2. Select the App-Specific Passwords tab.
+3. Click Generate password, name it `icloud-mcp`, copy the 16-character code (with dashes).
+4. Store it in Keychain via stdin so the password never appears in shell history:
+
+   ```
+   printf '%s' 'abcd-efgh-ijkl-mnop' | security add-generic-password \
+       -s icloud-mcp \
+       -a "you@icloud.com" \
+       -U \
+       -w
+   ```
+
+   Replace the password and `you@icloud.com` with your real values. `-U` updates the entry if it already exists.
+
+### 4. Wire it into Claude Desktop config
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`. If the file does not exist, create it. Add `icloud` under `mcpServers`:
+
+```
+{
+  "mcpServers": {
+    "icloud": {
+      "command": "/Users/<YOUR-USERNAME>/.local/bin/icloud-mcp",
+      "env": {
+        "APPLE_ID": "you@icloud.com"
+      }
+    }
+  }
+}
+```
+
+- `command` must be a fully-resolved path (no `~`). Run `echo "$HOME/.local/bin/icloud-mcp"` to get the exact string.
+- `APPLE_ID` is needed so the binary knows which Keychain entry to look up.
+- `APPLE_APP_PASSWORD` does NOT need to go in this JSON - the binary's macOS Keychain fallback reads it from the entry you created in step 3.
+
+Quick pre-flight before restarting the app:
+
+```
+APPLE_ID="you@icloud.com" ~/.local/bin/icloud-mcp --probe
+```
+
+A response with `"ok": true` and non-zero counts under `imap` and `caldav` confirms everything is set up.
+
+### 5. Restart Claude Desktop
+
+Use Cmd-Q (full quit, not just close window) and relaunch. The MCP server should connect on the next session. Try in chat: "list my iCloud calendars".
+
+### Troubleshooting
+
+- `AUTHENTICATIONFAILED`: the app-specific password is wrong or has been revoked. Regenerate it and re-run the `security add-generic-password` command (still with `-U`) to overwrite the Keychain entry.
+- Gatekeeper prompt or server fails to start: run `xattr -cr ~/.local/bin/icloud-mcp` to clear all extended attributes, then try again.
+- Logs: Help -> View Logs in Claude Desktop, or `tail -f ~/Library/Logs/Claude/mcp*.log` in a terminal.
+
+When Anthropic ships plugin-marketplace support in Claude Desktop, this whole flow collapses into a one-line install. For now this is the supported path.
+
 ## Architecture
 
 ```
