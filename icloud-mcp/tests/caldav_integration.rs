@@ -14,8 +14,8 @@ use icloud_mcp::config::{Config, CredentialSource};
 const FIND_CALENDARS: &str = include_str!("fixtures/find_calendars.xml");
 const PROPS_WORK: &str = include_str!("fixtures/properties_work.xml");
 const PROPS_PERSONAL: &str = include_str!("fixtures/properties_personal.xml");
-const LIST_RESOURCES: &str = include_str!("fixtures/list_resources.xml");
-const MULTIGET_EVENTS: &str = include_str!("fixtures/multiget_events.xml");
+const EXPANDED_EVENTS: &str = include_str!("fixtures/multiget_events.xml");
+const EXPANDED_RECURRING: &str = include_str!("fixtures/expanded_recurring.xml");
 const MULTIGET_EMPTY: &str = include_str!("fixtures/multiget_empty.xml");
 
 fn test_config() -> Config {
@@ -106,29 +106,22 @@ async fn list_calendars_returns_both_with_combined_propfind() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn list_events_filters_collection_and_returns_summaries() {
+async fn list_events_uses_calendar_query_with_expand() {
     let server = MockServer::start_async().await;
 
-    // GetCalendarResources is also a REPORT to the same path. Register the
-    // more specific (body-discriminated) matcher FIRST so httpmock picks it
-    // for the multiget call instead of falling back to the LIST response.
-    server.mock(|when, then| {
+    // list_events now issues a single REPORT carrying a `calendar-query` body
+    // with `<C:expand>`. The server returns one VEVENT per occurrence inside
+    // each response's calendar-data.
+    let expand_mock = server.mock(|when, then| {
         when.is_true(|req| {
             req.method_str() == "REPORT"
                 && req.uri().path() == "/1234/calendars/work/"
-                && body_contains(req, "calendar-multiget")
+                && body_contains(req, "calendar-query")
+                && body_contains(req, "<C:expand")
         });
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
-            .body(MULTIGET_EVENTS);
-    });
-    // ListCalendarResources (REPORT calendar-query) - fallback for the
-    // generic REPORT.
-    server.mock(|when, then| {
-        when.is_true(method_and_path("REPORT", "/1234/calendars/work/"));
-        then.status(207)
-            .header("Content-Type", "application/xml; charset=utf-8")
-            .body(LIST_RESOURCES);
+            .body(EXPANDED_EVENTS);
     });
 
     let client = build_client(&server.base_url());
@@ -138,12 +131,47 @@ async fn list_events_filters_collection_and_returns_summaries() {
         .await
         .expect("list_events");
 
-    // The collection self-row in LIST_RESOURCES must be filtered out by
-    // resource_type.is_collection; we expect exactly the two .ics resources.
+    assert_eq!(expand_mock.calls(), 1, "exactly one REPORT expected");
     assert_eq!(events.len(), 2);
     let titles: Vec<_> = events.iter().map(|e| e.summary.clone()).collect();
     assert!(titles.contains(&"Standup".to_string()));
     assert!(titles.contains(&"Design review".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_events_returns_one_summary_per_recurring_occurrence() {
+    let server = MockServer::start_async().await;
+
+    server.mock(|when, then| {
+        when.is_true(|req| {
+            req.method_str() == "REPORT" && req.uri().path() == "/1234/calendars/work/"
+        });
+        then.status(207)
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(EXPANDED_RECURRING);
+    });
+
+    let client = build_client(&server.base_url());
+    let (start, end) = parse_time_range("2026-05-14T00:00:00Z", "2026-06-01T00:00:00Z");
+    let events = client
+        .list_events("/1234/calendars/work/", start, end)
+        .await
+        .expect("list_events");
+
+    // Three expanded occurrences of one master "Weekly sync" event.
+    assert_eq!(events.len(), 3);
+    let starts: Vec<&str> = events.iter().map(|e| e.start.as_str()).collect();
+    assert!(starts.iter().any(|s| s.starts_with("2026-05-14T09:00:00")));
+    assert!(starts.iter().any(|s| s.starts_with("2026-05-21T09:00:00")));
+    assert!(starts.iter().any(|s| s.starts_with("2026-05-28T09:00:00")));
+    for e in &events {
+        assert_eq!(e.uid, "weekly-uid");
+        assert_eq!(e.href, "/1234/calendars/work/weekly.ics");
+        assert!(
+            e.instance_id.is_some(),
+            "expanded occurrence must carry RECURRENCE-ID"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -242,22 +270,14 @@ async fn search_events_runs_across_multiple_calendars_in_parallel() {
             .body(PROPS_PERSONAL);
     });
 
-    // 3) REPORT (list + multiget) on each calendar. Both fan out concurrently.
+    // 3) Single calendar-query REPORT per calendar (with <C:expand>).
     server.mock(|when, then| {
         when.is_true(|req| {
-            req.method_str() == "REPORT"
-                && req.uri().path() == "/1234/calendars/work/"
-                && body_contains(req, "calendar-multiget")
+            req.method_str() == "REPORT" && req.uri().path() == "/1234/calendars/work/"
         });
         then.status(207)
             .header("Content-Type", "application/xml; charset=utf-8")
-            .body(MULTIGET_EVENTS);
-    });
-    server.mock(|when, then| {
-        when.is_true(method_and_path("REPORT", "/1234/calendars/work/"));
-        then.status(207)
-            .header("Content-Type", "application/xml; charset=utf-8")
-            .body(LIST_RESOURCES);
+            .body(EXPANDED_EVENTS);
     });
     server.mock(|when, then| {
         when.is_true(method_and_path("REPORT", "/1234/calendars/personal/"));

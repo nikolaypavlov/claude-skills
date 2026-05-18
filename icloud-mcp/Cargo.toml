@@ -1,6 +1,6 @@
 [package]
 name = "icloud-mcp"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 description = "Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP)"
 license = "MIT"
@@ -46,7 +46,11 @@ http = "1"
 hyper = { version = "1", features = ["http1", "client"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "rustls-native-certs", "native-tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["auth"] }
+quick-xml = "0.37"
 icalendar = "0.17"
 
 # IMAP

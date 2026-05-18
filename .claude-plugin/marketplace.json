@@ -138,7 +138,7 @@
       "name": "icloud-mcp",
       "source": "./icloud-mcp",
       "description": "Local MCP server (Rust) for Apple iCloud Calendar (CalDAV) and Mail (IMAP). Read + create-only: list/search/create events, list folders, search/fetch messages, and APPEND drafts to the Drafts folder. No SMTP - user reviews drafts and sends manually in iCloud Mail.",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"

@@ -1,31 +1,36 @@
-//! CalDAV client wrapper around [`libdav`].
+//! CalDAV client wrapper around [`libdav`] plus a raw hyper path for the one
+//! request libdav cannot express - `calendar-query` with `<C:expand>`.
 //!
 //! Flow:
 //!     1. `Client::new` builds a hyper-rustls https client, wraps it with Basic auth
 //!        (tower_http), then bootstraps a [`CalDavClient`] via DNS service discovery.
 //!     2. `list_calendars` finds the principal -> calendar-home-set -> collections,
 //!        then queries displayname + colour for each (one combined PROPFIND each).
-//!     3. `list_events` does ListCalendarResources(time-range) then GetCalendarResources
-//!        (multiget) for the iCalendar data.
+//!     3. `list_events` issues a single `REPORT` with a `calendar-query` body
+//!        containing `<C:expand start=... end=.../>`. iCloud returns one VEVENT
+//!        per occurrence (RRULE stripped, EXDATE applied, RECURRENCE-ID overrides
+//!        substituted). We parse the multistatus with `quick-xml` and emit one
+//!        `EventSummary` per VEVENT, preserving RECURRENCE-ID in `instance_id`.
 //!     4. `search_events` fans out across calendars in parallel.
 //!     5. `create_event` builds a VEVENT with `icalendar` (full DTSTAMP+METHOD+
 //!        ATTENDEE params) and PUTs it.
 
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::future::join_all;
-use http::Uri;
+use http::{Request, Uri};
+use http_body_util::{BodyExt, Full};
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::{connect::HttpConnector, Client as HyperClient};
 use hyper_util::rt::TokioExecutor;
 use icalendar::{
     Calendar as ICalendar, CalendarComponent, Component, Event as ICalEvent, EventLike, Property,
 };
-use libdav::caldav::{
-    FindCalendarHomeSet, FindCalendars, GetCalendarResources, ListCalendarResources,
-};
+use libdav::caldav::{FindCalendarHomeSet, FindCalendars, GetCalendarResources};
 use libdav::dav::{GetProperties, PutResource, WebDavClient};
-use libdav::{names, CalDavClient, FetchedResource};
+use libdav::{names, CalDavClient};
 use tokio::sync::OnceCell;
+use tower::ServiceExt;
 use tower_http::auth::AddAuthorization;
 use uuid::Uuid;
 
@@ -35,6 +40,17 @@ use crate::timeout::{with_timeout, CALDAV_REQUEST};
 
 type AuthClient =
     AddAuthorization<HyperClient<hyper_rustls::HttpsConnector<HttpConnector>, String>>;
+
+/// Raw HTTP client used for the `calendar-query` REPORT with `<C:expand>`.
+///
+/// libdav's typed `ListCalendarResources` does not expose `<C:expand>` (it
+/// would return the master event with its RRULE intact - so callers would see
+/// the original DTSTART rather than each occurrence in their query window).
+/// We send the REPORT ourselves and let iCloud expand RRULE / apply EXDATE
+/// / fold RECURRENCE-ID overrides server-side, then parse the resulting
+/// multistatus.
+type RawClient =
+    AddAuthorization<HyperClient<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>>;
 
 fn build_webdav(base_url: Uri, config: &Config) -> Result<WebDavClient<AuthClient>, DomainError> {
     let connector = HttpsConnectorBuilder::new()
@@ -46,6 +62,22 @@ fn build_webdav(base_url: Uri, config: &Config) -> Result<WebDavClient<AuthClien
     let hyper_client = HyperClient::builder(TokioExecutor::new()).build(connector);
     let auth_client = AddAuthorization::basic(hyper_client, &config.apple_id, &config.app_password);
     Ok(WebDavClient::new(base_url, auth_client))
+}
+
+fn build_raw_client(config: &Config) -> Result<RawClient, DomainError> {
+    let connector = HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .map_err(|e| DomainError::permanent(format!("loading native TLS roots: {e}")))?
+        .https_or_http()
+        .enable_http1()
+        .build();
+    let hyper_client: HyperClient<_, Full<Bytes>> =
+        HyperClient::builder(TokioExecutor::new()).build(connector);
+    Ok(AddAuthorization::basic(
+        hyper_client,
+        &config.apple_id,
+        &config.app_password,
+    ))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -65,6 +97,12 @@ pub struct EventSummary {
     pub location: Option<String>,
     pub all_day: bool,
     pub etag: Option<String>,
+    /// For occurrences of a recurring event, the RECURRENCE-ID identifying
+    /// the specific instance returned by server-side `<C:expand>`. `None` for
+    /// single events and for entries returned via the legacy non-expanded
+    /// path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -97,6 +135,8 @@ pub struct CreateEventParams {
 
 pub struct Client {
     inner: CalDavClient<AuthClient>,
+    raw: RawClient,
+    base_url: Uri,
     home: OnceCell<String>,
 }
 
@@ -105,7 +145,8 @@ impl Client {
         let base_url: Uri = CALDAV_BASE.parse().map_err(|e: http::uri::InvalidUri| {
             DomainError::permanent(format!("CALDAV_BASE: {e}"))
         })?;
-        let webdav = build_webdav(base_url, config)?;
+        let webdav = build_webdav(base_url.clone(), config)?;
+        let raw = build_raw_client(config)?;
         let caldav = with_timeout("CalDAV service discovery", CALDAV_REQUEST, async {
             CalDavClient::bootstrap_via_service_discovery(webdav)
                 .await
@@ -114,6 +155,8 @@ impl Client {
         .await?;
         Ok(Self {
             inner: caldav,
+            raw,
+            base_url,
             home: OnceCell::new(),
         })
     }
@@ -122,9 +165,12 @@ impl Client {
     /// Used by integration tests against a local httpmock instance and by any
     /// caller that already knows the exact CalDAV root path.
     pub fn with_base_url_no_discovery(base_url: Uri, config: &Config) -> Result<Self, DomainError> {
-        let webdav = build_webdav(base_url, config)?;
+        let webdav = build_webdav(base_url.clone(), config)?;
+        let raw = build_raw_client(config)?;
         Ok(Self {
             inner: CalDavClient::new(webdav),
+            raw,
+            base_url,
             home: OnceCell::new(),
         })
     }
@@ -224,44 +270,43 @@ impl Client {
     ) -> Result<Vec<EventSummary>, DomainError> {
         let start_s = fmt_caldav_dt(start);
         let end_s = fmt_caldav_dt(end);
+        let body = build_calendar_query_xml(&start_s, &end_s);
 
-        let listing = with_timeout("ListCalendarResources", CALDAV_REQUEST, async {
-            self.inner
-                .request(
-                    ListCalendarResources::new(calendar_href)
-                        .with_component_and_time_range("VEVENT", Some(&start_s), Some(&end_s))
-                        .map_err(|e| DomainError::invalid(format!("invalid time-range: {e}")))?,
-                )
+        let url = build_calendar_url(&self.base_url, calendar_href)?;
+        let req = Request::builder()
+            .method("REPORT")
+            .uri(url)
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .header("Depth", "1")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| DomainError::permanent(format!("build REPORT: {e}")))?;
+
+        let resp = with_timeout("calendar-query expand REPORT", CALDAV_REQUEST, async {
+            self.raw
+                .clone()
+                .oneshot(req)
                 .await
-                .map_err(|e| DomainError::permanent(format!("ListCalendarResources: {e}")))
+                .map_err(|e| DomainError::transient(format!("REPORT: {e}")))
         })
         .await?;
 
-        let hrefs: Vec<String> = listing
-            .resources
-            .into_iter()
-            .filter(|r| !r.resource_type.is_collection)
-            .map(|r| r.href)
-            .collect();
-        if hrefs.is_empty() {
-            return Ok(Vec::new());
+        let status = resp.status();
+        if !status.is_success() && status.as_u16() != 207 {
+            return Err(DomainError::permanent(format!(
+                "calendar-query REPORT: status {status}"
+            )));
         }
 
-        let fetched = with_timeout("GetCalendarResources", CALDAV_REQUEST, async {
-            self.inner
-                .request(GetCalendarResources::new(calendar_href).with_hrefs(&hrefs))
-                .await
-                .map_err(|e| DomainError::permanent(format!("GetCalendarResources: {e}")))
-        })
-        .await?;
+        let body_bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| DomainError::transient(format!("read REPORT body: {e}")))?
+            .to_bytes();
+        let body_str = std::str::from_utf8(&body_bytes)
+            .map_err(|e| DomainError::permanent(format!("non-utf8 REPORT body: {e}")))?;
 
-        let mut out = Vec::with_capacity(fetched.resources.len());
-        for r in fetched.resources {
-            if let Some(s) = into_summary(&r) {
-                out.push(s);
-            }
-        }
-        Ok(out)
+        parse_multistatus_calendar_data(body_str)
     }
 
     pub async fn get_event(
@@ -370,6 +415,7 @@ impl Client {
             location: p.location,
             all_day: false,
             etag: resp.etag,
+            instance_id: None,
         })
     }
 }
@@ -392,41 +438,198 @@ fn href_for(calendar_href: &str, uid_or_href: &str) -> String {
     }
 }
 
-fn into_summary(r: &FetchedResource) -> Option<EventSummary> {
-    let content = r.content.as_ref().ok()?;
-    parse_event_summary(&content.data, &r.href, Some(content.etag.clone())).ok()
+/// Build the `<C:calendar-query>` REPORT body that asks iCloud to expand
+/// recurring events between [start, end]. The server returns one VEVENT per
+/// occurrence (with RECURRENCE-ID set, RRULE stripped); EXDATE and
+/// overridden instances are applied for us.
+fn build_calendar_query_xml(start: &str, end: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <D:getetag/>
+    <C:calendar-data>
+      <C:expand start="{start}" end="{end}"/>
+    </C:calendar-data>
+  </D:prop>
+  <C:filter>
+    <C:comp-filter name="VCALENDAR">
+      <C:comp-filter name="VEVENT">
+        <C:time-range start="{start}" end="{end}"/>
+      </C:comp-filter>
+    </C:comp-filter>
+  </C:filter>
+</C:calendar-query>"#
+    )
 }
 
-fn parse_event_summary(
-    data: &str,
-    href: &str,
-    etag: Option<String>,
-) -> Result<EventSummary, DomainError> {
-    let cal: ICalendar = data
+/// Compose the absolute URL for a CalDAV REPORT against `calendar_href`.
+/// libdav returns calendar hrefs as path-only strings; iCloud's regional
+/// CalDAV routing accepts requests against the base host.
+fn build_calendar_url(base: &Uri, calendar_href: &str) -> Result<Uri, DomainError> {
+    if calendar_href.starts_with("http://") || calendar_href.starts_with("https://") {
+        return calendar_href.parse().map_err(|e: http::uri::InvalidUri| {
+            DomainError::permanent(format!("invalid url: {e}"))
+        });
+    }
+    let scheme = base.scheme_str().unwrap_or("https");
+    let authority = base
+        .authority()
+        .ok_or_else(|| DomainError::permanent("CalDAV base URL missing authority"))?
+        .as_str();
+    let path = if calendar_href.starts_with('/') {
+        calendar_href.to_string()
+    } else {
+        format!("/{calendar_href}")
+    };
+    format!("{scheme}://{authority}{path}")
         .parse()
-        .map_err(|e: String| DomainError::permanent(format!("ical parse: {e}")))?;
-    let event = cal
-        .components
-        .iter()
-        .find_map(|c| match c {
-            CalendarComponent::Event(e) => Some(e),
-            _ => None,
+        .map_err(|e: http::uri::InvalidUri| {
+            DomainError::permanent(format!("invalid calendar URL: {e}"))
         })
-        .ok_or_else(|| DomainError::permanent("no VEVENT in calendar-data"))?;
+}
 
-    let (start, all_day) = dpt_to_string(event.get_start());
-    let (end, _) = dpt_to_string(event.get_end());
+/// Parse a CalDAV `<D:multistatus>` body produced by a `calendar-query`
+/// REPORT with `<C:expand>`. Each `<D:response>` carries one `<C:calendar-data>`
+/// chunk that may itself contain several VEVENT components (one per expanded
+/// occurrence). Emits one `EventSummary` per VEVENT, preserving RECURRENCE-ID
+/// in `instance_id` so callers can disambiguate occurrences of the same UID.
+fn parse_multistatus_calendar_data(xml: &str) -> Result<Vec<EventSummary>, DomainError> {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
 
-    Ok(EventSummary {
-        uid: event.get_uid().unwrap_or("").to_string(),
-        href: href.to_string(),
-        summary: event.get_summary().unwrap_or("").to_string(),
-        start,
-        end,
-        location: event.get_location().map(String::from),
-        all_day,
-        etag,
-    })
+    // Do NOT enable trim_text globally: it strips the trailing `\n` from the
+    // final `END:VCALENDAR\r\n` inside `<C:calendar-data>`, which the
+    // icalendar parser then rejects. We trim href/getetag values manually.
+    let mut reader = Reader::from_str(xml);
+
+    let mut summaries = Vec::new();
+    let mut current_href: Option<String> = None;
+    let mut current_etag: Option<String> = None;
+    let mut current_data: Option<String> = None;
+    let mut text_buf: Option<String> = None;
+    let mut in_response = false;
+    let mut capture: Capture = Capture::None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                let name = local_name(e.name().as_ref());
+                match name.as_str() {
+                    "response" => {
+                        in_response = true;
+                        current_href = None;
+                        current_etag = None;
+                        current_data = None;
+                    }
+                    "href" if in_response && capture == Capture::None => {
+                        capture = Capture::Href;
+                        text_buf = Some(String::new());
+                    }
+                    "getetag" if in_response => {
+                        capture = Capture::Etag;
+                        text_buf = Some(String::new());
+                    }
+                    "calendar-data" if in_response => {
+                        capture = Capture::Data;
+                        text_buf = Some(String::new());
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if let Some(buf) = &mut text_buf {
+                    buf.push_str(
+                        &t.unescape()
+                            .map_err(|e| DomainError::permanent(format!("xml unescape: {e}")))?,
+                    );
+                }
+            }
+            Ok(Event::CData(t)) => {
+                if let Some(buf) = &mut text_buf {
+                    buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let name = local_name(e.name().as_ref());
+                match name.as_str() {
+                    "href" if capture == Capture::Href => {
+                        current_href = text_buf.take();
+                        capture = Capture::None;
+                    }
+                    "getetag" if capture == Capture::Etag => {
+                        current_etag = text_buf.take();
+                        capture = Capture::None;
+                    }
+                    "calendar-data" if capture == Capture::Data => {
+                        current_data = text_buf.take();
+                        capture = Capture::None;
+                    }
+                    "response" if in_response => {
+                        in_response = false;
+                        if let (Some(href), Some(data)) = (current_href.take(), current_data.take())
+                        {
+                            let etag = current_etag.take();
+                            for s in parse_expanded_vcalendar(&data, &href, etag.as_deref()) {
+                                summaries.push(s);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(DomainError::permanent(format!("xml parse: {e}"))),
+            _ => {}
+        }
+    }
+
+    Ok(summaries)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Capture {
+    None,
+    Href,
+    Etag,
+    Data,
+}
+
+fn local_name(qname: &[u8]) -> String {
+    let s = std::str::from_utf8(qname).unwrap_or("");
+    match s.rfind(':') {
+        Some(idx) => s[idx + 1..].to_string(),
+        None => s.to_string(),
+    }
+}
+
+/// Walk every VEVENT in a (possibly multi-component) VCALENDAR and emit one
+/// `EventSummary` per event. Used after server-side `<C:expand>` where iCloud
+/// returns one VEVENT per occurrence.
+fn parse_expanded_vcalendar(data: &str, href: &str, etag: Option<&str>) -> Vec<EventSummary> {
+    let Ok(cal) = data.parse::<ICalendar>() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for component in &cal.components {
+        if let CalendarComponent::Event(event) = component {
+            let (start, all_day) = dpt_to_string(event.get_start());
+            let (end, _) = dpt_to_string(event.get_end());
+            let instance_id = event.property_value("RECURRENCE-ID").map(String::from);
+            out.push(EventSummary {
+                uid: event.get_uid().unwrap_or("").to_string(),
+                href: href.to_string(),
+                summary: event.get_summary().unwrap_or("").to_string(),
+                start,
+                end,
+                location: event.get_location().map(String::from),
+                all_day,
+                etag: etag.map(String::from),
+                instance_id,
+            });
+        }
+    }
+    out
 }
 
 fn parse_event_detail(
@@ -646,8 +849,9 @@ END:VCALENDAR\r
 
     #[test]
     fn parse_summary_extracts_basic_fields() {
-        let s =
-            parse_event_summary(SAMPLE_VEVENT, "/cal/abc-123.ics", Some("etag1".into())).unwrap();
+        let v = parse_expanded_vcalendar(SAMPLE_VEVENT, "/cal/abc-123.ics", Some("etag1"));
+        assert_eq!(v.len(), 1);
+        let s = &v[0];
         assert_eq!(s.uid, "abc-123");
         assert_eq!(s.summary, "Team sync");
         assert_eq!(s.location.as_deref(), Some("Room 1"));
@@ -656,6 +860,7 @@ END:VCALENDAR\r
         assert!(!s.all_day);
         assert!(s.start.starts_with("2026-05-14T09:00:00"));
         assert!(s.end.starts_with("2026-05-14T10:00:00"));
+        assert!(s.instance_id.is_none());
     }
 
     #[test]
@@ -672,9 +877,162 @@ END:VCALENDAR\r
     }
 
     #[test]
-    fn parse_rejects_non_vevent() {
+    fn parse_returns_empty_for_vcalendar_without_vevent() {
         let bad = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n";
-        assert!(parse_event_summary(bad, "/x.ics", None).is_err());
+        assert!(parse_expanded_vcalendar(bad, "/x.ics", None).is_empty());
+    }
+
+    const EXPANDED_RESPONSE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/weekly.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getetag>"e1"</D:getetag>
+        <C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//EN
+BEGIN:VEVENT
+UID:weekly-uid
+DTSTAMP:20260514T080000Z
+DTSTART:20260514T090000Z
+DTEND:20260514T100000Z
+RECURRENCE-ID:20260514T090000Z
+SUMMARY:Weekly sync
+END:VEVENT
+BEGIN:VEVENT
+UID:weekly-uid
+DTSTAMP:20260514T080000Z
+DTSTART:20260521T090000Z
+DTEND:20260521T100000Z
+RECURRENCE-ID:20260521T090000Z
+SUMMARY:Weekly sync
+END:VEVENT
+END:VCALENDAR</C:calendar-data>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>
+"#;
+
+    const FIXTURE_FORMAT_RESPONSE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <response>
+    <href>/cal/single.ics</href>
+    <propstat>
+      <prop>
+        <getetag>"x1"</getetag>
+        <C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//EN
+BEGIN:VEVENT
+UID:single-uid
+DTSTAMP:20260514T080000Z
+DTSTART:20260514T090000Z
+DTEND:20260514T100000Z
+SUMMARY:One-off
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>"#;
+
+    #[test]
+    fn multistatus_handles_default_namespace_without_prefix() {
+        let v = parse_multistatus_calendar_data(FIXTURE_FORMAT_RESPONSE).unwrap();
+        assert_eq!(
+            v.len(),
+            1,
+            "fixture-shaped multistatus should yield 1 event"
+        );
+        assert_eq!(v[0].uid, "single-uid");
+        assert_eq!(v[0].summary, "One-off");
+    }
+
+    /// Mirrors `tests/fixtures/multiget_events.xml`: default DAV: namespace
+    /// (no `D:` prefix), `&#13;` carriage-return entities inside calendar-data.
+    /// Production iCloud responses use the same shape.
+    const FIXTURE_WITH_CR_ENTITIES: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <response>
+    <href>/1234/calendars/work/event-1.ics</href>
+    <propstat>
+      <prop>
+        <getetag>"e-1"</getetag>
+        <C:calendar-data>BEGIN:VCALENDAR&#13;
+VERSION:2.0&#13;
+PRODID:-//test//EN&#13;
+BEGIN:VEVENT&#13;
+UID:event-1&#13;
+DTSTAMP:20260514T080000Z&#13;
+DTSTART:20260514T090000Z&#13;
+DTEND:20260514T100000Z&#13;
+SUMMARY:Standup&#13;
+LOCATION:Zoom&#13;
+END:VEVENT&#13;
+END:VCALENDAR&#13;
+</C:calendar-data>
+      </prop>
+      <status>HTTP/1.1 200 OK</status>
+    </propstat>
+  </response>
+</multistatus>"#;
+
+    #[test]
+    fn multistatus_handles_cr_entities_in_calendar_data() {
+        let v = parse_multistatus_calendar_data(FIXTURE_WITH_CR_ENTITIES).unwrap();
+        assert_eq!(
+            v.len(),
+            1,
+            "&#13; entities inside calendar-data must round-trip into a parseable VCALENDAR"
+        );
+        assert_eq!(v[0].uid, "event-1");
+        assert_eq!(v[0].summary, "Standup");
+    }
+
+    #[test]
+    fn multistatus_emits_one_summary_per_expanded_instance() {
+        let v = parse_multistatus_calendar_data(EXPANDED_RESPONSE).unwrap();
+        assert_eq!(v.len(), 2, "two expanded occurrences expected");
+        assert_eq!(v[0].uid, "weekly-uid");
+        assert_eq!(v[1].uid, "weekly-uid");
+        assert_eq!(v[0].href, "/cal/weekly.ics");
+        assert_eq!(v[1].href, "/cal/weekly.ics");
+        assert_eq!(v[0].etag.as_deref(), Some("\"e1\""));
+        assert!(v[0].start.starts_with("2026-05-14T09:00:00"));
+        assert!(v[1].start.starts_with("2026-05-21T09:00:00"));
+        assert!(v[0].instance_id.as_deref().is_some());
+        assert!(v[1].instance_id.as_deref().is_some());
+    }
+
+    #[test]
+    fn build_calendar_url_appends_path_to_base() {
+        let base: Uri = "https://caldav.icloud.com".parse().unwrap();
+        let u = build_calendar_url(&base, "/123/calendars/abc/").unwrap();
+        assert_eq!(
+            u.to_string(),
+            "https://caldav.icloud.com/123/calendars/abc/"
+        );
+    }
+
+    #[test]
+    fn build_calendar_url_passes_absolute_through() {
+        let base: Uri = "https://caldav.icloud.com".parse().unwrap();
+        let abs = "https://p01-caldav.icloud.com/123/calendars/abc/";
+        let u = build_calendar_url(&base, abs).unwrap();
+        assert_eq!(u.to_string(), abs);
+    }
+
+    #[test]
+    fn build_calendar_query_xml_includes_expand_and_time_range() {
+        let xml = build_calendar_query_xml("20260514T000000Z", "20260615T000000Z");
+        assert!(xml.contains("<C:expand start=\"20260514T000000Z\" end=\"20260615T000000Z\"/>"));
+        assert!(xml.contains("<C:time-range start=\"20260514T000000Z\" end=\"20260615T000000Z\"/>"));
+        assert!(xml.contains("<C:comp-filter name=\"VEVENT\">"));
     }
 
     fn sample_create_params(attendees: Vec<&str>) -> CreateEventParams {
