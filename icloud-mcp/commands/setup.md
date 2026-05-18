@@ -105,6 +105,14 @@ printf '%s' "<password>" | security add-generic-password \
 
 The `-U` flag updates if the entry already exists. The password is read from stdin (the trailing `-w` with no value).
 
+Immediately verify the entry stored a non-empty value - the pipe form can silently store empty if the `<password>` substitution is missing. Run:
+
+```bash
+security find-generic-password -s icloud-mcp -a "$APPLE_ID" -w | wc -c
+```
+
+Expect `19` (16 chars + 3 dashes) or `20` (with a trailing newline on some `security` versions). If you see `0` or `1`, the entry is empty - re-prompt the user for the password (Phase 3) and re-run this storage step. Do NOT proceed to Phase 6 with an empty entry; the probe will report `auth failed` without surfacing the real cause.
+
 ### launchctl setenv
 
 ```bash
@@ -148,8 +156,8 @@ APPLE_ID="<email>" APPLE_APP_PASSWORD="<password>" \
 Parse the JSON. Report based on `ok`:
 
 - `ok: true`: "Probe OK. Found N folders, M calendars." (use values from `imap.folders` and `caldav.calendars`).
-- `ok: false` with `imap.ok: false` and error matching `AUTHENTICATIONFAILED`:
-  "Apple rejected the password. It may have been mistyped or revoked. Generate a new one at https://account.apple.com/account/manage (App-Specific Passwords tab) and re-run /icloud-mcp:setup."
+- `ok: false` with `imap.ok: false` and error matching `AUTHENTICATIONFAILED` or `auth failed`:
+  First, if storage target was Keychain, re-run the wc -c check from Phase 5. If it reports `0` or `1`, the issue is an empty Keychain entry, not a wrong password - re-prompt for the password and re-store before declaring failure. Only if the entry length is correct (`19`/`20`) say: "Apple rejected the password. It may have been mistyped or revoked. Generate a new one at https://account.apple.com/account/manage (App-Specific Passwords tab) and re-run /icloud-mcp:setup."
 - `ok: false` with other errors: show the full JSON, suggest the user check connectivity.
 
 If the probe failed, stop. Do not declare success.

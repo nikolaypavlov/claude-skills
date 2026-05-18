@@ -72,17 +72,21 @@ The `xattr -d` step is required. The binary is not code-signed, so without it La
 1. Open https://account.apple.com/account/manage and sign in.
 2. Select the App-Specific Passwords tab.
 3. Click Generate password, name it `icloud-mcp`, copy the 16-character code (with dashes).
-4. Store it in Keychain via stdin so the password never appears in shell history:
+4. Store it in Keychain. `-w` with no value prompts twice and never echoes the password to the terminal or shell history:
 
    ```
-   printf '%s' 'abcd-efgh-ijkl-mnop' | security add-generic-password \
-       -s icloud-mcp \
-       -a "you@icloud.com" \
-       -U \
-       -w
+   security add-generic-password -s icloud-mcp -a "you@icloud.com" -U -w
    ```
 
-   Replace the password and `you@icloud.com` with your real values. `-U` updates the entry if it already exists.
+   Replace `you@icloud.com` with your Apple ID. `-U` updates the entry if it already exists. Paste the 16-character password when prompted (twice).
+
+5. Verify the password actually landed. Expected length is `19` (16 chars + 3 dashes); some `security` versions append a trailing newline, giving `20`:
+
+   ```
+   security find-generic-password -s icloud-mcp -a "you@icloud.com" -w | wc -c
+   ```
+
+   `0` or `1` means the entry is empty - re-run step 4. Avoid `printf '...' | security ... -w` for this: if the placeholder is not replaced or the piped value is empty, the entry stores silently and the next step fails with an auth error that does not point at the Keychain.
 
 ### 4. Wire it into Claude Desktop config
 
@@ -119,7 +123,8 @@ Use Cmd-Q (full quit, not just close window) and relaunch. The MCP server should
 
 ### Troubleshooting
 
-- `AUTHENTICATIONFAILED`: the app-specific password is wrong or has been revoked. Regenerate it and re-run the `security add-generic-password` command (still with `-U`) to overwrite the Keychain entry.
+- `AUTHENTICATIONFAILED` / `auth failed`: either the app-specific password is wrong/revoked, OR the Keychain entry is empty. First check the entry length with `security find-generic-password -s icloud-mcp -a "$APPLE_ID" -w | wc -c`. If you see `0` or `1`, re-run the `security add-generic-password ... -U -w` interactive command from step 4. If you see `19`/`20`, regenerate the password at account.apple.com and overwrite the entry.
+- Custom-domain Apple ID with IMAP failing: iCloud IMAP only serves mailboxes that exist. If your Apple ID is on a custom domain not enrolled in iCloud+ Custom Email Domain, log into icloud.com/mail to confirm the address is listed as a Send From address. If it is not, switch the Keychain entry to your `@icloud.com` address.
 - Gatekeeper prompt or server fails to start: run `xattr -cr ~/.local/bin/icloud-mcp` to clear all extended attributes, then try again.
 - Logs: Help -> View Logs in Claude Desktop, or `tail -f ~/Library/Logs/Claude/mcp*.log` in a terminal.
 
@@ -234,11 +239,14 @@ export APPLE_APP_PASSWORD="abcd-efgh-ijkl-mnop"
 macOS Keychain (preferred on Mac, all processes see it):
 
 ```
-printf '%s' "abcd-efgh-ijkl-mnop" | security add-generic-password \
-    -s icloud-mcp -a "$APPLE_ID" -U -w
+security add-generic-password -s icloud-mcp -a "$APPLE_ID" -U -w
 ```
 
-The trailing `-w` with no argument reads the password from stdin, so it does not end up in shell history. `-U` updates the entry if it already exists.
+`-w` with no value prompts twice for the password - it never appears in shell history or command args. `-U` updates the entry if it already exists. Then verify the entry is non-empty (expected `19`, or `20` if your `security` appends a newline):
+
+```
+security find-generic-password -s icloud-mcp -a "$APPLE_ID" -w | wc -c
+```
 
 The server reads `APPLE_APP_PASSWORD` from the env first; if absent it queries the `icloud-mcp` service in the Keychain using `APPLE_ID` as the account.
 
