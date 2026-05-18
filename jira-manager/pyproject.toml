@@ -1,6 +1,6 @@
 [project]
 name = "jira-manager"
-version = "1.0.0"
+version = "1.0.1"
 description = "Jira ticket generation and API integration tool"
 authors = [
     {name = "Mykola Pavlov", email = "me@nikolaypavlov.com"}

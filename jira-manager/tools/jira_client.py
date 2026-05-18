@@ -29,8 +29,40 @@ class JiraManager:
             # Jira Server uses PAT token authentication (original logic)
             self.client = JIRA(server=self.server_url, token_auth=pat)
 
-        # OLD LOGIC (kept for reference - can revert if needed):
-        # self.client = JIRA(server=self.server_url, token_auth=pat)
+        # Lazy-resolved customfield IDs (depend on per-instance configuration).
+        # Populated on first call to _resolve_customfields().
+        self._cf_cache: Optional[dict[str, str]] = None
+        self._epic_name_field: Optional[str] = None
+        self._epic_link_field: Optional[str] = None
+
+    def _resolve_customfields(self) -> None:
+        """Discover and cache Jira customfield IDs by their human-readable names.
+
+        Jira Server with classic Epics exposes Epic Name and Epic Link as
+        customfields whose IDs (e.g. customfield_10103) are NOT portable across
+        instances. This method calls jira.fields() once per JiraManager instance
+        and maps lowercased field names to IDs so callers do not need to know
+        the per-instance customfield numbers.
+
+        Sets self._epic_name_field and self._epic_link_field to the resolved
+        customfield IDs, or leaves them None if the instance does not expose
+        those fields (e.g. Jira Cloud Next-Gen / Team-Managed, where Epic Link
+        is replaced by the native parent field).
+        """
+        if self._cf_cache is not None:
+            return
+
+        cache: dict[str, str] = {}
+        for f in self.client.fields():
+            if f.get("custom"):
+                name = f.get("name")
+                field_id = f.get("id")
+                if name and field_id:
+                    cache[name.lower()] = field_id
+
+        self._cf_cache = cache
+        self._epic_name_field = cache.get("epic name")
+        self._epic_link_field = cache.get("epic link")
 
     def test_connection(self) -> tuple[bool, str]:
         """Test connection to Jira server
@@ -109,7 +141,16 @@ class JiraManager:
             Tuple of (success: bool, message: str, issue_key: Optional[str])
         """
         if epic_key:
-            additional_fields["parent"] = {"key": epic_key}
+            # Jira Server with classic Epics links stories via the Epic Link
+            # customfield (e.g. customfield_10101). The `parent` field is
+            # reserved for Sub-tasks there and gets silently dropped if used.
+            # On Jira Cloud Next-Gen / Team-Managed projects, Epic Link does
+            # not exist and `parent` is the correct mechanism.
+            self._resolve_customfields()
+            if self._epic_link_field:
+                additional_fields[self._epic_link_field] = epic_key
+            else:
+                additional_fields["parent"] = {"key": epic_key}
 
         return self._create_issue("Story", summary, description, priority, **additional_fields)
 
@@ -131,11 +172,14 @@ class JiraManager:
         Returns:
             Tuple of (success: bool, message: str, issue_key: Optional[str])
         """
-        # Note: Epic name field varies by Jira configuration
-        # It might be customfield_10011, customfield_10003, etc.
-        if epic_name and "customfield_epic_name" in additional_fields:
-            field_id = additional_fields.pop("customfield_epic_name")
-            additional_fields[field_id] = epic_name
+        # Epic Name is a per-instance customfield (e.g. customfield_10103 on
+        # Jira Server with classic Epics). Discover its ID at runtime so
+        # callers do not need to know the numeric customfield key. Jira Cloud
+        # Next-Gen / Team-Managed projects do not expose Epic Name at all -
+        # there the Epic's summary doubles as the name.
+        self._resolve_customfields()
+        if self._epic_name_field:
+            additional_fields[self._epic_name_field] = epic_name or summary
 
         return self._create_issue("Epic", summary, description, None, **additional_fields)
 
