@@ -148,6 +148,21 @@
       "repository": "https://github.com/nikolaypavlov/claude-skills.git",
       "license": "MIT",
       "strict": false
+    },
+    {
+      "name": "monobank-mcp",
+      "source": "./monobank-mcp",
+      "description": "Local MCP server + CLI (Rust) for Monobank Personal API. Slim ingest: pulls statements into a shared SQLite store and exposes ensure_synced / get_sync_status / list_mono_accounts tools. Query, reports, and categorisation are handled by the personal-finance plugin.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["monobank", "mcp", "ingest", "sqlite", "personal-finance", "rust"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false
     }
   ]
 }

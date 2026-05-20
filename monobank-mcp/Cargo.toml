@@ -1,0 +1,77 @@
+[package]
+name = "monobank-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Local MCP server + CLI for Monobank Personal API (slim ingest)"
+license = "MIT"
+authors = ["Mykola Pavlov <me@nikolaypavlov.com>"]
+
+[[bin]]
+name = "monobank-mcp"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+
+[dependencies]
+# MCP SDK
+rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
+tokio = { version = "1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "io-std",
+    "io-util",
+    "net",
+    "time",
+    "sync",
+] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# DB
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Serde / schemas
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1", features = ["chrono04"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Crypto helper for hashes (Privat-style fallback id) and probe sanity
+sha2 = "0.10"
+
+# Configuration file
+toml = "0.8"
+
+# Credential storage on macOS via Keychain (cross-platform shim).
+keyring = "3"
+
+# Errors
+anyhow = "1"
+thiserror = "1"
+
+# Logging (stderr; stdout reserved for MCP)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+httpmock = "0.8"
+tempfile = "3"
+tokio = { version = "1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "test-util",
+] }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
