@@ -55,6 +55,9 @@ toml = "0.8"
 # Credential storage on macOS via Keychain (cross-platform shim).
 keyring = "3"
 
+# Read passwords without echoing them to the terminal.
+rpassword = "7"
+
 # Errors
 anyhow = "1"
 thiserror = "1"

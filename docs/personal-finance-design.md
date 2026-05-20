@@ -1064,7 +1064,8 @@ ln -s "$PWD/target/release/monobank-mcp" /usr/local/bin/monobank-mcp
 - Не робить query / report (це personal-finance).
 - Не приймає webhook (pull-only).
 - Не утримує daemon (lifecycle = Claude session чи CLI invocation).
-- Не запускає DB migrations (personal-finance owns schema).
+- Не торкається таблиць інших плагінів (`privat_*`, `pf_*`). Свої `mono_*`
+  таблиці monobank-mcp мігрує самостійно (див. §2.3, §3.1).
 
 ## 6. privat24-skill
 

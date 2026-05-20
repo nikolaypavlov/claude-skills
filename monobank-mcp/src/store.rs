@@ -55,14 +55,14 @@ impl Store {
         Self::init(conn)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(mut conn: Connection) -> Result<Self> {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
              PRAGMA busy_timeout=5000;",
         )
         .context("apply PRAGMA defaults")?;
-        ensure_mono_schema(&conn)?;
+        ensure_mono_schema(&mut conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -181,17 +181,12 @@ impl Store {
             for st in items {
                 let id = format!("mono_{}", st.id);
                 // op_amount/op_currency are only meaningful when the original
-                // currency differs from the account currency.
-                let op_amount = if st.currency_code == 0 || st.operation_amount == st.amount {
-                    None
-                } else {
-                    Some(st.operation_amount)
-                };
-                let op_currency = if st.currency_code == 0 {
-                    None
-                } else {
-                    Some(st.currency_code)
-                };
+                // currency differs from the account currency. Both columns
+                // must be gated on the same condition so downstream queries
+                // can rely on the pair being jointly NULL for domestic txns.
+                let is_fx = st.currency_code != 0 && st.operation_amount != st.amount;
+                let op_amount = is_fx.then_some(st.operation_amount);
+                let op_currency = is_fx.then_some(st.currency_code);
                 let counterparty = best_counterparty(st);
                 let raw_json = serde_json::to_string(st)
                     .unwrap_or_else(|_| json!({"id": st.id, "fallback": true}).to_string());
@@ -397,5 +392,54 @@ mod tests {
             .unwrap();
         let st = s.get_sync_state("acc1").await.unwrap().unwrap();
         assert_eq!(st.last_completed_ts, 2000);
+    }
+
+    #[tokio::test]
+    async fn op_amount_and_op_currency_are_jointly_null_for_domestic() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_account(&MonoAccount {
+            id: "acc1".into(),
+            iban: None,
+            r#type: Some("card".into()),
+            currency_code: 980,
+            masked_pan: None,
+            balance: None,
+            label: None,
+        })
+        .await
+        .unwrap();
+        let run = s.start_import_run(RunSource::Sync).await.unwrap();
+        // Domestic UAH/UAH: operation_amount == amount.
+        let dom = mk_st("dom", 1000, -500);
+        // FX EUR/UAH: operation_amount != amount.
+        let mut fx = mk_st("fx", 1100, -2000);
+        fx.operation_amount = -50; // 50 cents EUR
+        fx.currency_code = 978; // EUR
+        s.insert_statement_chunk(run, "acc1", &[dom, fx], 1200, 9)
+            .await
+            .unwrap();
+
+        let conn_arc = s.conn.clone();
+        let conn = conn_arc.lock().await;
+        // Domestic row: both columns NULL.
+        let (op_a_dom, op_c_dom): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT op_amount_minor, op_currency_code FROM mono_transactions WHERE id = ?1",
+                ["mono_dom"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(op_a_dom, None);
+        assert_eq!(op_c_dom, None);
+        // FX row: both columns Some.
+        let (op_a_fx, op_c_fx): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT op_amount_minor, op_currency_code FROM mono_transactions WHERE id = ?1",
+                ["mono_fx"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(op_a_fx, Some(-50));
+        assert_eq!(op_c_fx, Some(978));
     }
 }

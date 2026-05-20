@@ -15,11 +15,6 @@ use serde::de::DeserializeOwned;
 use crate::error::DomainError;
 use crate::types::{ClientInfo, MonoStatement};
 
-/// Max items the API returns per statement call. The server may also truncate
-/// the time range; we chunk to 31 days client-side which keeps us under both
-/// limits in practice (rare exceptions trigger a `RateLimited` retry).
-pub const STATEMENT_MAX_ITEMS: usize = 500;
-
 #[derive(Clone)]
 pub struct MonobankApi {
     client: Client,
@@ -109,12 +104,25 @@ fn map_reqwest_send_err(e: reqwest::Error) -> DomainError {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
+/// Byte-bounded truncation that respects UTF-8 char boundaries.
+///
+/// Monobank error bodies are Ukrainian and routinely contain Cyrillic
+/// multi-byte sequences; raw `&s[..max]` would panic when `max` lands
+/// inside a codepoint.
+fn truncate(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
     }
+    // Walk char_indices until we either pass max_bytes or run out of
+    // input. The last index that still fits becomes the cut point.
+    let mut cut = 0usize;
+    for (i, _) in s.char_indices() {
+        if i > max_bytes {
+            break;
+        }
+        cut = i;
+    }
+    format!("{}...", &s[..cut])
 }
 
 #[cfg(test)]
@@ -137,5 +145,33 @@ mod tests {
     fn map_status_classifies_500_as_transient() {
         let e = map_status(StatusCode::INTERNAL_SERVER_ERROR, "oops");
         assert!(matches!(e, DomainError::Transient(_)));
+    }
+
+    #[test]
+    fn truncate_handles_utf8_boundary() {
+        // 3 Cyrillic chars + ASCII tail = 6 bytes Cyrillic + 5 ASCII.
+        // Cutting at byte 5 lands mid-codepoint; truncate must back up.
+        let s = "абвxyz";
+        let out = truncate(s, 5);
+        assert!(out.ends_with("..."), "got: {out}");
+        // Only complete codepoints should remain before the ellipsis.
+        let body = out.trim_end_matches("...");
+        assert!(body.is_char_boundary(body.len()));
+    }
+
+    #[test]
+    fn truncate_passes_through_short_strings() {
+        assert_eq!(truncate("hi", 16), "hi");
+    }
+
+    #[test]
+    fn truncate_handles_cyrillic_at_exact_boundary() {
+        // 256-byte boundary cutting through Cyrillic - the scenario from
+        // the bug report. We just need it to not panic and to produce
+        // valid UTF-8.
+        let s = "а".repeat(200); // 400 bytes
+        let out = truncate(&s, 256);
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        assert!(out.ends_with("..."));
     }
 }

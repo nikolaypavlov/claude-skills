@@ -25,7 +25,6 @@ use monobank_mcp::config::{Config, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE};
 use monobank_mcp::mcp::MonobankServer;
 use monobank_mcp::store::Store;
 use monobank_mcp::sync::SyncEngine;
-use monobank_mcp::types::RunSource;
 use monobank_mcp::util::ratelimit::RateLimiter;
 use monobank_mcp::util::time::{now_unix, parse_date_unix};
 
@@ -126,7 +125,14 @@ async fn run_init(read_stdin: bool) -> Result<()> {
         std::io::stdin().read_to_string(&mut buf)?;
         buf.trim().to_string()
     } else {
-        rpassword_prompt("Paste your Monobank Personal API token (input hidden, no newline): ")?
+        // rpassword disables terminal echo so the token is not visible.
+        // On a non-TTY (CI, piped stdin) rpassword falls back to a normal
+        // line read - users running outside a terminal should prefer
+        // `--stdin` and feed the token over a pipe.
+        rpassword::prompt_password("Paste your Monobank Personal API token (input hidden): ")
+            .context("read token from terminal")?
+            .trim()
+            .to_string()
     };
     if token.is_empty() {
         anyhow::bail!("empty token");
@@ -171,96 +177,132 @@ fn write_default_config(token_in_keychain: bool) -> Result<()> {
     Ok(())
 }
 
-fn rpassword_prompt(label: &str) -> Result<String> {
-    // Avoid a `rpassword` dep: prompt to stderr, read the line from stdin.
-    use std::io::{BufRead, Write};
-    eprint!("{label}");
-    std::io::stderr().flush().ok();
-    let stdin = std::io::stdin();
-    let mut buf = String::new();
-    stdin.lock().read_line(&mut buf)?;
-    Ok(buf.trim().to_string())
+/// Shared wiring for every CLI subcommand that talks to the API and the
+/// store. Centralising avoids the "forgot to pass cfg.api_base" / "wrong
+/// RateLimiter interval" drift across three near-identical setups.
+struct CliRuntime {
+    cfg: Config,
+    store: Store,
+    api: MonobankApi,
+    limiter: RateLimiter,
 }
 
-async fn run_accounts() -> Result<()> {
+fn load_runtime() -> Result<CliRuntime> {
     let cfg = Config::load().context("load config (token missing? run /monobank-mcp:setup)")?;
     let store = Store::open(&cfg.db_path)?;
     let api = MonobankApi::new(cfg.api_base.clone(), cfg.token.clone())
         .map_err(|e| anyhow::anyhow!("api init: {e}"))?;
-    let info = api.client_info().await.map_err(anyhow::Error::from)?;
+    let limiter = RateLimiter::new(Duration::from_secs(cfg.api_min_interval_seconds));
+    Ok(CliRuntime {
+        cfg,
+        store,
+        api,
+        limiter,
+    })
+}
+
+async fn run_accounts() -> Result<()> {
+    let rt = load_runtime()?;
+    let info = rt.api.client_info().await.map_err(anyhow::Error::from)?;
     for acc in &info.accounts {
-        store.upsert_account(acc).await?;
+        rt.store.upsert_account(acc).await?;
     }
-    let rows = store.list_accounts().await?;
+    let rows = rt.store.list_accounts().await?;
     println!("{}", serde_json::to_string_pretty(&rows)?);
     Ok(())
 }
 
 async fn run_backfill(from: Option<&str>, account: Option<String>) -> Result<()> {
-    let cfg = Config::load().context("load config (token missing? run /monobank-mcp:setup)")?;
-    let store = Store::open(&cfg.db_path)?;
-    let api = MonobankApi::new(cfg.api_base.clone(), cfg.token.clone())
-        .map_err(|e| anyhow::anyhow!("api init: {e}"))?;
-    let limiter = RateLimiter::new(Duration::from_secs(cfg.api_min_interval_seconds));
+    let rt = load_runtime()?;
     let from_ts = match from {
         Some(s) => Some(parse_date_unix(s).map_err(anyhow::Error::msg)?),
         None => None,
     };
     let targets: Vec<String> = account.into_iter().collect();
-    let engine = BackfillEngine {
-        api,
-        store,
-        limiter,
-        interval: Duration::from_secs(cfg.api_min_interval_seconds),
-    };
+    let engine = BackfillEngine::new(
+        rt.api,
+        rt.store,
+        rt.limiter,
+        Duration::from_secs(rt.cfg.api_min_interval_seconds),
+    );
     let outcome = engine.run(targets, from_ts).await?;
     println!("{}", serde_json::to_string_pretty(&outcome)?);
+    bail_if_any_account_errored(&outcome)?;
     Ok(())
 }
 
 async fn run_sync(account: Option<String>) -> Result<()> {
-    let cfg = Config::load().context("load config (token missing? run /monobank-mcp:setup)")?;
-    let store = Store::open(&cfg.db_path)?;
-    let api = MonobankApi::new(cfg.api_base.clone(), cfg.token.clone())
-        .map_err(|e| anyhow::anyhow!("api init: {e}"))?;
-    let limiter = RateLimiter::new(Duration::from_secs(cfg.api_min_interval_seconds));
+    let rt = load_runtime()?;
     let targets: Vec<String> = if let Some(id) = account {
         vec![id]
     } else {
-        store
+        rt.store
             .list_accounts()
             .await?
             .into_iter()
             .map(|a| a.account_id)
             .collect()
     };
-    let engine = SyncEngine {
-        api,
-        store,
-        limiter,
-        deadline: None,
-        interval: Duration::from_secs(cfg.api_min_interval_seconds),
-        freshness_skip_seconds: cfg.sync_freshness_skip_seconds,
-        source: RunSource::Sync,
-    };
+    let engine = SyncEngine::for_sync(
+        rt.api,
+        rt.store,
+        rt.limiter,
+        Duration::from_secs(rt.cfg.api_min_interval_seconds),
+        rt.cfg.sync_freshness_skip_seconds,
+    );
     let outcome = engine.run(&targets).await?;
     println!("{}", serde_json::to_string_pretty(&outcome)?);
+    bail_if_any_account_errored(&outcome)?;
     Ok(())
+}
+
+/// Exit non-zero when any account reported a chunk error. cron jobs and CI
+/// scripts otherwise see exit 0 even when every account 401'd or hit a
+/// transient failure - the JSON payload still carries the detail.
+fn bail_if_any_account_errored(outcome: &monobank_mcp::sync::SyncOutcome) -> Result<()> {
+    let errored: Vec<&str> = outcome
+        .per_account
+        .iter()
+        .filter_map(|a| a.error.as_deref().map(|_| a.account_id.as_str()))
+        .collect();
+    if errored.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{} account(s) reported errors: {}",
+        errored.len(),
+        errored.join(", ")
+    );
 }
 
 /// `monobank-mcp --probe` (or `probe` subcommand): exercises the token by
 /// calling /personal/client-info, writes a single JSON object to stdout.
+///
+/// Exit code matches the `ok` field: 0 on success, 1 on any failure. Shell
+/// wrappers (the `/monobank-mcp:setup` slash command among them) rely on
+/// `$?` rather than re-parsing JSON; surfacing failure only in the JSON
+/// payload would silently report success.
 async fn run_probe() -> Result<()> {
+    let (out, ok) = build_probe_result().await;
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    if !ok {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn build_probe_result() -> (serde_json::Value, bool) {
     let cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            let out = serde_json::json!({
-                "ok": false,
-                "stage": "config",
-                "error": format!("{e:#}"),
-            });
-            println!("{}", serde_json::to_string_pretty(&out)?);
-            return Ok(());
+            return (
+                serde_json::json!({
+                    "ok": false,
+                    "stage": "config",
+                    "error": format!("{e:#}"),
+                }),
+                false,
+            );
         }
     };
     let api = MonobankApi::new(cfg.api_base.clone(), cfg.token.clone());
@@ -268,20 +310,24 @@ async fn run_probe() -> Result<()> {
         Ok(api) => api.client_info().await,
         Err(e) => Err(e),
     };
-    let out = match info_result {
-        Ok(info) => serde_json::json!({
-            "ok": true,
-            "credential_source": cfg.token_source,
-            "client_id": info.client_id,
-            "accounts_count": info.accounts.len(),
-            "now": now_unix(),
-        }),
-        Err(e) => serde_json::json!({
-            "ok": false,
-            "credential_source": cfg.token_source,
-            "error": e.to_string(),
-        }),
-    };
-    println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(())
+    match info_result {
+        Ok(info) => (
+            serde_json::json!({
+                "ok": true,
+                "credential_source": cfg.token_source,
+                "client_id": info.client_id,
+                "accounts_count": info.accounts.len(),
+                "now": now_unix(),
+            }),
+            true,
+        ),
+        Err(e) => (
+            serde_json::json!({
+                "ok": false,
+                "credential_source": cfg.token_source,
+                "error": e.to_string(),
+            }),
+            false,
+        ),
+    }
 }

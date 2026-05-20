@@ -4,11 +4,16 @@
 //! the binary is self-contained at runtime. We track the highest applied
 //! version in `mono_schema_version` and apply pending files in order.
 //!
-//! Idempotency:
+//! Atomicity:
 //!   - `mono_schema_version` is created via CREATE TABLE IF NOT EXISTS so
 //!     the first run never short-circuits on a missing tracker.
-//!   - Each migration is wrapped in a single `execute_batch` (one SQLite tx),
-//!     so a partially-applied schema bump is impossible.
+//!   - Each pending migration runs inside an explicit rusqlite transaction:
+//!     `BEGIN` -> `execute_batch(<file>)` -> `COMMIT`. A crash mid-apply
+//!     rolls back automatically and leaves the schema at the previous
+//!     version, so a partially-applied schema bump is impossible.
+//!   - PRAGMAs that cannot be changed inside a transaction (e.g.
+//!     `journal_mode`) are set once on the connection in `Store::init()`
+//!     BEFORE migrations run.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -18,7 +23,7 @@ const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../schema/mono_001_initia
 
 pub const EXPECTED_MONO_SCHEMA_VERSION: i64 = 1;
 
-pub fn ensure_mono_schema(conn: &Connection) -> Result<()> {
+pub fn ensure_mono_schema(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS mono_schema_version (
              version    INTEGER PRIMARY KEY,
@@ -39,8 +44,13 @@ pub fn ensure_mono_schema(conn: &Connection) -> Result<()> {
         if *version <= applied {
             continue;
         }
-        conn.execute_batch(sql)
+        let tx = conn
+            .transaction()
+            .with_context(|| format!("begin mono migration v{version}"))?;
+        tx.execute_batch(sql)
             .with_context(|| format!("apply mono migration v{version}"))?;
+        tx.commit()
+            .with_context(|| format!("commit mono migration v{version}"))?;
     }
 
     Ok(())
@@ -51,16 +61,13 @@ mod tests {
     use super::*;
 
     fn in_memory() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        // The migration sets WAL/foreign_keys; in-memory ignores journal_mode
-        // change silently which is fine for tests.
-        conn
+        Connection::open_in_memory().unwrap()
     }
 
     #[test]
     fn fresh_db_applies_initial_migration() {
-        let conn = in_memory();
-        ensure_mono_schema(&conn).unwrap();
+        let mut conn = in_memory();
+        ensure_mono_schema(&mut conn).unwrap();
         let v: i64 = conn
             .query_row("SELECT MAX(version) FROM mono_schema_version", [], |r| {
                 r.get(0)
@@ -80,9 +87,9 @@ mod tests {
 
     #[test]
     fn rerun_is_idempotent() {
-        let conn = in_memory();
-        ensure_mono_schema(&conn).unwrap();
-        ensure_mono_schema(&conn).unwrap();
+        let mut conn = in_memory();
+        ensure_mono_schema(&mut conn).unwrap();
+        ensure_mono_schema(&mut conn).unwrap();
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM mono_schema_version", [], |r| r.get(0))
             .unwrap();

@@ -8,7 +8,13 @@
 
 use rmcp::ErrorData as McpError;
 
+/// Errors classified by recoverability so the MCP / CLI layer can map
+/// them to the right user-facing surface (e.g. retry-able vs ask-user-
+/// to-reconfigure). Marked `#[non_exhaustive]` so future variants
+/// (Maintenance, QuotaExceeded, etc.) don't break downstream
+/// `match`/`matches!` callers.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DomainError {
     /// Resource (account id, range) does not exist.
     NotFound(String),

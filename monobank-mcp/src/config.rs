@@ -25,30 +25,37 @@ pub enum CredentialSource {
     Keychain,
 }
 
-/// On-disk `config.toml` shape. All fields optional; defaults applied at load.
+/// On-disk `config.toml` shape. Internal: this is a deserialisation
+/// intermediate, not a public API. All callers go through `Config::load()`.
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct ConfigToml {
+pub(crate) struct ConfigToml {
     #[serde(default)]
-    pub data_dir: Option<PathBuf>,
+    pub(crate) data_dir: Option<PathBuf>,
     /// Override base URL (for testing or self-hosted proxies).
     #[serde(default)]
-    pub api_base: Option<String>,
+    pub(crate) api_base: Option<String>,
     /// Minimum seconds between two API requests. Default 61.
     #[serde(default)]
-    pub api_min_interval_seconds: Option<u64>,
+    pub(crate) api_min_interval_seconds: Option<u64>,
     /// ensure_synced default budget (seconds).
     #[serde(default)]
-    pub ensure_synced_default_budget: Option<u64>,
+    pub(crate) ensure_synced_default_budget: Option<u64>,
     /// Skip sync when last_sync_at age (seconds) is below this. Default 300.
     #[serde(default)]
-    pub sync_freshness_skip_seconds: Option<i64>,
+    pub(crate) sync_freshness_skip_seconds: Option<i64>,
     /// Token was stashed in Keychain at init time. Diagnostic flag only;
-    /// the env var still takes precedence at runtime.
+    /// the env var still takes precedence at runtime. We keep the field
+    /// so `monobank-mcp init` can write it for humans reading config.toml
+    /// later, even though no code path reads it back.
     #[serde(default)]
-    pub token_in_keychain: bool,
+    #[allow(dead_code)]
+    pub(crate) token_in_keychain: bool,
 }
 
-#[derive(Debug, Clone)]
+// `Config` carries a raw API token. We deliberately do NOT derive `Clone`
+// or `Copy` so callers cannot accidentally duplicate the secret - the only
+// path that escapes ownership is `Arc<Config>` (see `mcp/tools.rs`).
+#[derive(Debug)]
 pub struct Config {
     pub data_dir: PathBuf,
     pub db_path: PathBuf,

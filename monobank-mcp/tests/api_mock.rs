@@ -61,3 +61,72 @@ async fn statement_429_maps_to_rate_limited() {
     let s = format!("{err}");
     assert!(s.contains("rate limited") || s.contains("429"), "got: {s}");
 }
+
+// Drives `SyncEngine::pull_and_store` through its retry loop: every call
+// returns 429, so after 3 attempts the engine surfaces the error in
+// `AccountSyncOutcome.error` and stops the loop. We override
+// `retry_backoff` to ZERO so the test finishes in milliseconds; production
+// uses `DEFAULT_RETRY_BACKOFF` (90s).
+#[tokio::test]
+async fn sync_engine_retries_rate_limited_three_times_then_gives_up() {
+    use std::time::Duration;
+
+    use monobank_mcp::store::Store;
+    use monobank_mcp::sync::SyncEngine;
+    use monobank_mcp::types::{MonoAccount, RunSource};
+    use monobank_mcp::util::ratelimit::RateLimiter;
+    use monobank_mcp::util::time::{now_unix, CHUNK_SECONDS};
+
+    let server = httpmock::MockServer::start_async().await;
+    let m_429 = server.mock(|when, then| {
+        when.method(httpmock::Method::GET)
+            .path_prefix("/personal/statement/");
+        then.status(429).body("{}");
+    });
+
+    let api = MonobankApi::new(server.base_url(), "test-token").unwrap();
+    let store = Store::open_in_memory().unwrap();
+    store
+        .upsert_account(&MonoAccount {
+            id: "acc1".into(),
+            iban: None,
+            r#type: Some("black".into()),
+            currency_code: 980,
+            masked_pan: None,
+            balance: None,
+            label: None,
+        })
+        .await
+        .unwrap();
+    let now = now_unix();
+    // Single-chunk window so the engine attempts exactly one chunk and
+    // we can count attempts via the mock hits.
+    store
+        .seed_sync_state("acc1", now - CHUNK_SECONDS / 2)
+        .await
+        .unwrap();
+
+    let engine = SyncEngine::__for_test(
+        api,
+        store.clone(),
+        RateLimiter::new(Duration::from_millis(0)),
+        None,
+        Duration::from_millis(0),
+        0,
+        RunSource::Sync,
+        Duration::ZERO,
+    );
+    let outcome = engine.run(&["acc1".into()]).await.unwrap();
+    assert_eq!(
+        m_429.calls(),
+        3,
+        "expected exactly 3 attempts, got {}",
+        m_429.calls()
+    );
+    let acc = &outcome.per_account[0];
+    assert!(
+        acc.error.is_some(),
+        "per-account error must surface after retries exhaust; got {acc:?}"
+    );
+    assert_eq!(acc.remaining_chunks, 1, "chunk stays unfinished");
+}

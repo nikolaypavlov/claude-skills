@@ -20,8 +20,8 @@ fn fresh_file_db_applies_schema() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("data.db");
     {
-        let conn = open(&db);
-        ensure_mono_schema(&conn).unwrap();
+        let mut conn = open(&db);
+        ensure_mono_schema(&mut conn).unwrap();
         let v: i64 = conn
             .query_row("SELECT MAX(version) FROM mono_schema_version", [], |r| {
                 r.get(0)
@@ -57,10 +57,10 @@ fn fresh_file_db_applies_schema() {
 fn rerun_does_not_duplicate_version_row() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("data.db");
-    let conn = open(&db);
-    ensure_mono_schema(&conn).unwrap();
-    ensure_mono_schema(&conn).unwrap();
-    ensure_mono_schema(&conn).unwrap();
+    let mut conn = open(&db);
+    ensure_mono_schema(&mut conn).unwrap();
+    ensure_mono_schema(&mut conn).unwrap();
+    ensure_mono_schema(&mut conn).unwrap();
     let n: i64 = conn
         .query_row("SELECT COUNT(*) FROM mono_schema_version", [], |r| r.get(0))
         .unwrap();

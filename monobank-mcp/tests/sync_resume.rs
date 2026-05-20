@@ -41,15 +41,16 @@ async fn deadline_produces_partial_then_resumes() {
 
     // Interval = 0 so we don't actually sleep, but deadline = now means
     // `time_exhausted()` returns true before the first chunk runs.
-    let engine = SyncEngine {
+    let engine = SyncEngine::__for_test(
         api,
-        store: store.clone(),
-        limiter: RateLimiter::new(Duration::from_millis(0)),
-        deadline: Some(Instant::now() - Duration::from_secs(1)),
-        interval: Duration::from_secs(60),
-        freshness_skip_seconds: 0,
-        source: RunSource::Sync,
-    };
+        store.clone(),
+        RateLimiter::new(Duration::from_millis(0)),
+        Some(Instant::now() - Duration::from_secs(1)),
+        Duration::from_secs(60),
+        0,
+        RunSource::Sync,
+        Duration::ZERO,
+    );
     let out = engine
         .run(&[common::FIXTURE_ACCOUNT_ID.into()])
         .await
@@ -58,15 +59,16 @@ async fn deadline_produces_partial_then_resumes() {
     assert_eq!(out.per_account[0].remaining_chunks, 3);
 
     // Resume: no deadline, interval = 0 -> all chunks finish.
-    let engine = SyncEngine {
-        api: MonobankApi::new(server.base_url(), "test-token").unwrap(),
-        store: store.clone(),
-        limiter: RateLimiter::new(Duration::from_millis(0)),
-        deadline: None,
-        interval: Duration::from_millis(0),
-        freshness_skip_seconds: 0,
-        source: RunSource::Sync,
-    };
+    let engine = SyncEngine::__for_test(
+        MonobankApi::new(server.base_url(), "test-token").unwrap(),
+        store.clone(),
+        RateLimiter::new(Duration::from_millis(0)),
+        None,
+        Duration::from_millis(0),
+        0,
+        RunSource::Sync,
+        Duration::ZERO,
+    );
     let out2 = engine
         .run(&[common::FIXTURE_ACCOUNT_ID.into()])
         .await

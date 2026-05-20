@@ -9,13 +9,14 @@
 //!   - No wall-clock budget; resumable on Ctrl-C because every chunk is
 //!     atomic.
 
+use std::time::Duration;
+
 use anyhow::Result;
 use tracing::info;
 
 use crate::api::MonobankApi;
 use crate::store::Store;
 use crate::sync::{SyncEngine, SyncOutcome};
-use crate::types::RunSource;
 use crate::util::ratelimit::RateLimiter;
 use crate::util::time::now_unix;
 
@@ -23,13 +24,22 @@ const FALLBACK_LOOKBACK_SECONDS: i64 = 365 * 24 * 60 * 60;
 
 #[derive(Clone)]
 pub struct BackfillEngine {
-    pub api: MonobankApi,
-    pub store: Store,
-    pub limiter: RateLimiter,
-    pub interval: std::time::Duration,
+    api: MonobankApi,
+    store: Store,
+    limiter: RateLimiter,
+    interval: Duration,
 }
 
 impl BackfillEngine {
+    pub fn new(api: MonobankApi, store: Store, limiter: RateLimiter, interval: Duration) -> Self {
+        Self {
+            api,
+            store,
+            limiter,
+            interval,
+        }
+    }
+
     /// Pull every account from `from_ts` (or default) to "now", inclusive.
     /// If `account_ids` is empty, sync the entire `mono_accounts` table.
     pub async fn run(&self, account_ids: Vec<String>, from_ts: Option<i64>) -> Result<SyncOutcome> {
@@ -53,15 +63,12 @@ impl BackfillEngine {
         }
         // 3) Reuse the sync engine without a deadline. Backfill marks runs
         // as `Backfill` so audit reports can tell them apart from sync runs.
-        let engine = SyncEngine {
-            api: self.api.clone(),
-            store: self.store.clone(),
-            limiter: self.limiter.clone(),
-            deadline: None,
-            interval: self.interval,
-            freshness_skip_seconds: 0,
-            source: RunSource::Backfill,
-        };
+        let engine = SyncEngine::for_backfill(
+            self.api.clone(),
+            self.store.clone(),
+            self.limiter.clone(),
+            self.interval,
+        );
         engine.run(&targets).await
     }
 }

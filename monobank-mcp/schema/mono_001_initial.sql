@@ -1,11 +1,11 @@
 -- mono_* schema, owned by monobank-mcp.
--- This file is applied verbatim by src/migrations.rs when the
--- mono_schema_version table reports a version below 1.
+-- This file is applied inside a single rusqlite transaction by
+-- src/migrations.rs when mono_schema_version reports a version below 1.
+-- PRAGMA statements (journal_mode, foreign_keys, busy_timeout) are set
+-- once per connection in Store::init() - putting them here would fail
+-- because journal_mode cannot be changed inside a transaction.
 --
 -- Convention contract: docs/transactions-schema.md (v1.0).
-
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS mono_schema_version (
     version    INTEGER PRIMARY KEY,

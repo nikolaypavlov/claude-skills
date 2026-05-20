@@ -59,22 +59,123 @@ impl SyncOutcome {
     }
 }
 
+/// Engine state for sync / backfill. Construct via the typed builders
+/// (`for_backfill`, `for_sync`, `for_mcp`) rather than struct literals -
+/// the field invariants (e.g. `freshness_skip_seconds = 0` for backfill)
+/// are easy to get wrong otherwise.
 #[derive(Clone)]
 pub struct SyncEngine {
-    pub api: MonobankApi,
-    pub store: Store,
-    pub limiter: RateLimiter,
+    api: MonobankApi,
+    store: Store,
+    limiter: RateLimiter,
     /// `None` means CLI-style: no deadline.
-    pub deadline: Option<Instant>,
+    deadline: Option<Instant>,
     /// Per-API call interval (the limiter enforces it; we use this for
     /// budgeting "is there time for one more call?").
-    pub interval: Duration,
+    interval: Duration,
     /// Skip sync when `now - last_sync_at < freshness_skip_seconds`.
-    pub freshness_skip_seconds: i64,
-    pub source: RunSource,
+    freshness_skip_seconds: i64,
+    source: RunSource,
+    /// Backoff between retry attempts when the API surfaces a transient
+    /// failure (429 or 5xx). Production uses `DEFAULT_RETRY_BACKOFF`.
+    retry_backoff: Duration,
 }
 
+/// Production default for the retry backoff. Monobank publishes 1 req/60s
+/// per token; bumping to 90s on a 429 leaves head-room for clock skew on
+/// the API side.
+pub const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_secs(90);
+
 impl SyncEngine {
+    /// Engine wired for cold-start backfill: no deadline, no freshness
+    /// skip (we want every chunk between `--from` and now).
+    pub fn for_backfill(
+        api: MonobankApi,
+        store: Store,
+        limiter: RateLimiter,
+        interval: Duration,
+    ) -> Self {
+        Self {
+            api,
+            store,
+            limiter,
+            deadline: None,
+            interval,
+            freshness_skip_seconds: 0,
+            source: RunSource::Backfill,
+            retry_backoff: DEFAULT_RETRY_BACKOFF,
+        }
+    }
+
+    /// Engine wired for CLI `sync`: no deadline; freshness skip honoured.
+    pub fn for_sync(
+        api: MonobankApi,
+        store: Store,
+        limiter: RateLimiter,
+        interval: Duration,
+        freshness_skip_seconds: i64,
+    ) -> Self {
+        Self {
+            api,
+            store,
+            limiter,
+            deadline: None,
+            interval,
+            freshness_skip_seconds,
+            source: RunSource::Sync,
+            retry_backoff: DEFAULT_RETRY_BACKOFF,
+        }
+    }
+
+    /// Engine wired for the MCP `ensure_synced` tool: hard wall-clock
+    /// deadline so the call returns before Claude's tool timeout.
+    pub fn for_mcp(
+        api: MonobankApi,
+        store: Store,
+        limiter: RateLimiter,
+        interval: Duration,
+        freshness_skip_seconds: i64,
+        deadline: Instant,
+    ) -> Self {
+        Self {
+            api,
+            store,
+            limiter,
+            deadline: Some(deadline),
+            interval,
+            freshness_skip_seconds,
+            source: RunSource::Sync,
+            retry_backoff: DEFAULT_RETRY_BACKOFF,
+        }
+    }
+
+    /// Failure-injection escape hatch: lets tests override every knob,
+    /// notably `retry_backoff = ZERO` to keep the retry loop fast.
+    /// Not part of the stable API - the `__` prefix signals "do not use".
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn __for_test(
+        api: MonobankApi,
+        store: Store,
+        limiter: RateLimiter,
+        deadline: Option<Instant>,
+        interval: Duration,
+        freshness_skip_seconds: i64,
+        source: RunSource,
+        retry_backoff: Duration,
+    ) -> Self {
+        Self {
+            api,
+            store,
+            limiter,
+            deadline,
+            interval,
+            freshness_skip_seconds,
+            source,
+            retry_backoff,
+        }
+    }
+
     /// Process the given account ids in order. Stops cleanly at the deadline.
     pub async fn run(&self, account_ids: &[String]) -> Result<SyncOutcome> {
         let mut out = SyncOutcome {
@@ -211,8 +312,12 @@ impl SyncEngine {
                     return Ok((outcome.rows_inserted, outcome.rows_skipped));
                 }
                 Err(DomainError::RateLimited(msg)) if attempt < 3 => {
-                    warn!(attempt, "rate limited: {msg}; backing off 90s");
-                    tokio::time::sleep(Duration::from_secs(90)).await;
+                    warn!(
+                        attempt,
+                        backoff_ms = self.retry_backoff.as_millis() as u64,
+                        "rate limited: {msg}; backing off",
+                    );
+                    tokio::time::sleep(self.retry_backoff).await;
                     continue;
                 }
                 Err(DomainError::Transient(msg)) if attempt < 3 => {

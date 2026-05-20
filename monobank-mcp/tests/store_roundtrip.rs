@@ -74,6 +74,36 @@ async fn insert_then_query_roundtrip() {
 }
 
 #[tokio::test]
+async fn insert_chunk_failure_rolls_back_cursor_update() {
+    // Atomicity invariant from design §5.6: "INSERTs and the sync_state
+    // update are in one SQLite transaction so a kill mid-chunk never
+    // leaves the cursor ahead of the data."
+    //
+    // We force the INSERTs to fail by referencing an account_id that has
+    // no row in mono_accounts. With foreign_keys=ON SQLite aborts the
+    // statement before committing - if the cursor UPSERT were outside the
+    // transaction it would still land in mono_sync_state. We assert it
+    // doesn't.
+    let s = Store::open_in_memory().unwrap();
+    let run = s.start_import_run(RunSource::Sync).await.unwrap();
+    let items = synth_statements(1_500_000, 2);
+    let r = s
+        .insert_statement_chunk(run, "no_such_account", &items, 1_502_000, 9_999_999)
+        .await;
+    assert!(
+        r.is_err(),
+        "expected FK violation, got {:?}",
+        r.as_ref().map(|_| "Ok").unwrap_or("Err")
+    );
+    let cursor = s.get_sync_state("no_such_account").await.unwrap();
+    assert!(
+        cursor.is_none(),
+        "cursor must not advance when the chunk insert failed; got {cursor:?}"
+    );
+    assert_eq!(s.count_transactions().await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn duplicate_insert_is_idempotent() {
     let s = Store::open_in_memory().unwrap();
     s.upsert_account(&synth_account()).await.unwrap();

@@ -26,7 +26,6 @@ use crate::config::Config;
 use crate::error::to_mcp;
 use crate::store::Store;
 use crate::sync::SyncEngine;
-use crate::types::RunSource;
 use crate::util::ratelimit::RateLimiter;
 use crate::util::time::now_unix;
 
@@ -119,21 +118,21 @@ impl MonobankServer {
             .map_err(|e| anyhow::anyhow!("api init: {e}"))?;
         let limiter = RateLimiter::new(Duration::from_secs(config.api_min_interval_seconds));
         let config = Arc::new(config);
-        Ok(Self::with_state(Some(ConfiguredState {
-            config,
-            api,
-            store,
-            limiter,
-        })))
+        Ok(Self {
+            state: Arc::new(ServerState {
+                configured: Some(ConfiguredState {
+                    config,
+                    api,
+                    store,
+                    limiter,
+                }),
+            }),
+        })
     }
 
     pub fn unconfigured() -> Self {
-        Self::with_state(None)
-    }
-
-    fn with_state(configured: Option<ConfiguredState>) -> Self {
         Self {
-            state: Arc::new(ServerState { configured }),
+            state: Arc::new(ServerState { configured: None }),
         }
     }
 
@@ -162,15 +161,14 @@ impl MonobankServer {
             .await
             .map_err(|e| to_mcp("ensure_synced", e))?;
 
-        let engine = SyncEngine {
-            api: s.api.clone(),
-            store: s.store.clone(),
-            limiter: s.limiter.clone(),
-            deadline: Some(deadline),
+        let engine = SyncEngine::for_mcp(
+            s.api.clone(),
+            s.store.clone(),
+            s.limiter.clone(),
             interval,
-            freshness_skip_seconds: s.config.sync_freshness_skip_seconds,
-            source: RunSource::Sync,
-        };
+            s.config.sync_freshness_skip_seconds,
+            deadline,
+        );
         let outcome = engine
             .run(&targets)
             .await
