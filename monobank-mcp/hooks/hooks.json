@@ -1,0 +1,16 @@
+{
+  "description": "Auto-install monobank-mcp binary on Claude Code session start.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-binary.sh",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

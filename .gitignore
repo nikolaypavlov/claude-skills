@@ -54,3 +54,5 @@ ENV/
 # Temporary files
 *.tmp
 *.temp
+
+samples/
