@@ -1,0 +1,46 @@
+[project]
+name = "pf-server"
+version = "0.1.0"
+description = "Personal finance MCP umbrella server - cross-bank query/report over the shared ~/finances/data.db"
+authors = [
+    { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0",
+    "pyyaml>=6",
+    # zoneinfo (stdlib) consults the IANA tz database. On Linux/macOS
+    # that's the OS tzdata; on Windows / slim Linux containers it's
+    # absent, so tzdata gives us a deterministic fallback for any
+    # report that converts unix seconds back to Europe/Kyiv for display.
+    "tzdata>=2024.1",
+]
+license = { text = "MIT" }
+readme = "README.md"
+keywords = ["personal-finance", "mcp", "sqlite", "monobank", "privat24"]
+
+[project.urls]
+Homepage = "https://github.com/nikolaypavlov/claude-skills"
+Repository = "https://github.com/nikolaypavlov/claude-skills.git"
+
+[project.scripts]
+pf-server = "pf_server.__main__:main"
+pf-cli = "pf_server.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Migration SQL files travel with the package so importlib.resources can
+# find them in both source-tree and installed-wheel layouts.
+[tool.setuptools.package-data]
+"pf_server.schema" = ["*.sql"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]

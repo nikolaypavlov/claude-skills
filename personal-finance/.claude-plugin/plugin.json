@@ -1,0 +1,12 @@
+{
+  "name": "personal-finance",
+  "description": "Umbrella MCP server for personal finance queries over the shared ~/finances/data.db SQLite store. Auto-discovers <bank>_transactions tables (mono_*, privat_*) via sqlite_master and projects them to a common Transaction shape. Owns pf_* tables (categorization rules, manual overrides). Categorization, reports, and rule management arrive in PR#4.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Mykola Pavlov",
+    "email": "me@nikolaypavlov.com"
+  },
+  "homepage": "https://github.com/nikolaypavlov/claude-skills",
+  "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+  "license": "MIT"
+}

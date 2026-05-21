@@ -165,6 +165,27 @@
       "strict": false
     },
     {
+      "name": "personal-finance",
+      "source": "./personal-finance",
+      "description": "Umbrella MCP server for cross-bank personal finance queries over the shared ~/finances/data.db SQLite store. Auto-discovers <bank>_transactions tables (mono_*, privat_*, future banks) via sqlite_master and projects them through a UNION ALL view. Owns pf_* tables for categorization rules and manual overrides. Read-path tools (list_accounts / get_transactions / summarize_spending / data_sources) ship in 0.1.0; categorization + reporting in PR#4.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["personal-finance", "mcp", "sqlite", "monobank", "privat24", "umbrella", "python"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./skills/personal-finance"
+      ],
+      "commands": [
+        "./commands"
+      ]
+    },
+    {
       "name": "privat24-skill",
       "source": "./privat24-skill",
       "description": "Import Privat24 web-cabinet statement exports (XLSX) into the shared ~/finances/data.db SQLite store. Owns the privat_* tables. Standalone; companion to monobank-mcp and personal-finance plugins.",
