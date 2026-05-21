@@ -25,11 +25,33 @@ This is the **ingest plugin only**. It owns the `mono_*` tables in the shared st
                                 mono_schema_version
 ```
 
+## Getting a Personal API token
+
+Monobank issues per-user "personal" API tokens through a QR-code flow that
+requires the Monobank mobile app. There is no email/password login or
+self-service web form.
+
+1. Open <https://api.monobank.ua/> in any browser.
+2. Click **"Get a token"**. The page shows a QR code.
+3. Open the Monobank mobile app, scan the QR, and approve the access
+   request inside the app. Monobank may prompt you to confirm the
+   permissions granted (`personal-finance` read).
+4. The browser flips to a success page showing the token (a string that
+   begins with `u`, ~44 chars). Copy it - this is the only time it is
+   displayed.
+
+The token is single-purpose: it grants read-only access to your
+statements and `/personal/client-info`. It can be revoked at any time
+from the same page; minting a new one invalidates the old.
+
+For full Monobank API documentation see
+[`https://api.monobank.ua/docs/`](https://api.monobank.ua/docs/).
+
 ## Quick start
 
 1. Install the plugin (via `/plugin install monobank-mcp@ai-engineering-skills` or marketplace UI). Prebuilt binaries auto-download on first session for `darwin arm64/x64` and `linux x64/arm64`; other targets fall back to a local `cargo build` which needs a Rust toolchain from <https://rustup.rs>.
 2. Run `/monobank-mcp:setup` in a Claude Code session. The wizard:
-   - prompts for a token from <https://api.monobank.ua/>,
+   - walks you through the token-minting flow above,
    - stores it (macOS Keychain, `launchctl`, project `.envrc`, or pasted exports),
    - probes the connection with one `/personal/client-info` call (exit-coded so shell wrappers can detect failure without parsing JSON).
 3. After setup, run a one-time backfill from a terminal:

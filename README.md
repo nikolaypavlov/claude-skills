@@ -120,7 +120,7 @@ Local Rust MCP server + CLI that pulls Monobank Personal API statements into the
 - 4-target prebuilt binaries (darwin arm64/x64, linux x64/arm64); cargo fallback if no prebuilt matches the host
 - `/monobank-mcp:setup` interactive wizard with `--probe` JSON diagnostic (non-zero exit on auth failure)
 
-**Requirements:** Personal Monobank account; one-time token from <https://api.monobank.ua/>.
+**Requirements:** Personal Monobank account with the mobile app installed (used to scan the token QR at <https://api.monobank.ua/> - see [Getting a Personal API token](./monobank-mcp/README.md#getting-a-personal-api-token)).
 
 ### Privat24 Skill
 
@@ -199,7 +199,7 @@ Once installed, plugins are automatically available in Claude Code.
 
 **iCloud MCP**: After install run `/icloud-mcp:setup` to capture your Apple ID and an app-specific password (stored in macOS Keychain or `.envrc` on Linux). Then ask "list my iCloud calendars", "search mail from <someone>", or "draft an email to <someone> about <topic>".
 
-**Monobank MCP**: After install run `/monobank-mcp:setup` to mint a Personal API token at <https://api.monobank.ua/> and stash it (Keychain on macOS, `.envrc` / env var on Linux). Then run `monobank-mcp backfill --from 2024-01-01` once from a terminal (respects the 1 req/60s rate limit), and afterwards ask Claude "sync mono" or "show last week" - the `ensure_synced` tool fires inline.
+**Monobank MCP**: After install run `/monobank-mcp:setup`. The wizard walks you through the QR-code flow at <https://api.monobank.ua/> (open the page, click "Get a token", scan the QR with your Monobank mobile app, approve in-app) and stashes the resulting token in Keychain on macOS or `.envrc` / env var on Linux. Then run `monobank-mcp backfill --from 2024-01-01` once from a terminal (respects the 1 req/60s rate limit), and afterwards ask Claude "sync mono" or "show last week" - the `ensure_synced` tool fires inline.
 
 **Privat24 Skill**: Export an XLSX statement from <https://privat24.ua/statement>, drop it into `~/finances/inbox/`, and tell Claude "import privat". The skill runs `privat24-import import-inbox`, dedupes against prior runs by SHA, parses the file, and archives the source under `~/finances/archive/YYYY-MM-DD/`.
 
