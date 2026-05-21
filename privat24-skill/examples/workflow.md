@@ -3,10 +3,15 @@
 End-to-end from "I just exported a statement" to "data is in `~/finances/data.db`".
 
 ```text
-1. User: opens privat24.ua/statement
-   - picks the card
-   - sets the date range (the longer the safer; we dedupe by natural key)
-   - chooses "Excel" as the format
+1. User: opens privat24.ua, logs in
+   - navigates to "Гаманець" (Wallet)
+   - clicks the card to export from the left list
+   - stays on the "Історія" tab
+   - optionally sets a date range via "Період" (wider = safer; we
+     dedupe by natural key, so overlapping re-exports don't duplicate)
+   - clicks the small document icon (between the search field and
+     the "Фільтр" button)
+   - picks "Excel" from the format pop-up
    - downloads e.g. "vyp_05_2026.xlsx"
    - drops the file into ~/finances/inbox/
 

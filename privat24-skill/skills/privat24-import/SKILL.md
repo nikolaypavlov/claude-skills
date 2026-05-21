@@ -10,7 +10,9 @@ This skill imports Privat24 web-cabinet statement exports (XLSX) into the shared
 
 ## When invoked
 
-The user just exported a statement from <https://privat24.ua/statement> and dropped it (or several) into `~/finances/inbox/`, OR pointed at a specific file path.
+The user just exported a statement from Privat24 and dropped it (or several) into `~/finances/inbox/`, OR pointed at a specific file path.
+
+If they don't yet have an XLSX on disk and ask how to get one, the export flow is per-card via the Privat24 web cabinet (no `/statement` URL or API): log in at <https://privat24.ua/>, open **Гаманець**, click the card, stay on the **Історія** tab, click the small document/download icon between the search field and the **Фільтр** button, choose **Excel**, save the resulting file. Each XLSX covers exactly one card.
 
 ## Steps
 
