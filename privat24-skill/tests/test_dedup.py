@@ -35,6 +35,21 @@ def test_twin_rows_get_distinct_ids() -> None:
     assert len(set(ids)) == 3, f"expected 3 distinct ids, got {ids}"
 
 
+def test_twin_counter_is_stable_across_independent_calls() -> None:
+    """Counter resets per call, so the same twin sequence yields the
+    same id list every time. This is what makes overlapping re-exports
+    of files containing twin transactions dedupe correctly."""
+    twin = {
+        "ts": 1_700_000_000,
+        "amount_minor": -100,
+        "description": "twin",
+        "account_id": "a",
+    }
+    ids1 = assign_ids([twin, twin])
+    ids2 = assign_ids([twin, twin])
+    assert ids1 == ids2
+
+
 def test_unrelated_rows_have_distinct_ids() -> None:
     rows = [
         {"ts": 1, "amount_minor": -1, "description": "a", "account_id": "x"},

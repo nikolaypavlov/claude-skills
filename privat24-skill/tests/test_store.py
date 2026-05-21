@@ -1,4 +1,5 @@
-"""Store smoke tests: schema bring-up, FK enforcement, idempotent inserts."""
+"""Store smoke tests: schema bring-up, FK enforcement, idempotent inserts,
+atomic account+tx upsert, executescript-style atomic migrations."""
 
 from __future__ import annotations
 
@@ -6,16 +7,29 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+
 from privat24_import.core.store import (
+    AccountSpec,
     InsertOutcome,
     Tx,
     already_imported,
+    ensure_privat_schema,
     finish_import_run,
     insert_transactions,
     open_db,
     start_import_run,
-    upsert_account,
+    upsert_account_standalone,
 )
+
+
+def _acc(account_id: str = "acc1") -> AccountSpec:
+    return AccountSpec(
+        account_id=account_id,
+        iban=None,
+        account_type=None,
+        currency_code=980,
+        masked_pan="4111 **** **** 0000",
+    )
 
 
 def _tx(idx: int, *, account_id: str = "acc1") -> Tx:
@@ -55,17 +69,13 @@ def test_open_db_brings_up_schema(tmp_path: Path) -> None:
 
 def test_insert_then_repeat_is_idempotent(tmp_path: Path) -> None:
     conn = open_db(tmp_path / "data.db")
-    upsert_account(
-        conn,
-        account_id="acc1",
-        iban=None,
-        account_type=None,
-        currency_code=980,
-        masked_pan="4111 **** **** 0000",
-    )
     run = start_import_run(conn, source="xlsx", file_path="t.xlsx", file_sha256="abc")
-    out1 = insert_transactions(conn, run_id=run, txs=[_tx(0), _tx(1), _tx(2)])
-    out2 = insert_transactions(conn, run_id=run, txs=[_tx(0), _tx(1), _tx(2)])
+    out1 = insert_transactions(
+        conn, run_id=run, txs=[_tx(0), _tx(1), _tx(2)], account=_acc()
+    )
+    out2 = insert_transactions(
+        conn, run_id=run, txs=[_tx(0), _tx(1), _tx(2)], account=_acc()
+    )
     finish_import_run(
         conn, run, rows_inserted=out1.rows_inserted, rows_skipped=out1.rows_skipped
     )
@@ -77,23 +87,44 @@ def test_insert_then_repeat_is_idempotent(tmp_path: Path) -> None:
 
 def test_insert_rolls_back_on_fk_violation(tmp_path: Path) -> None:
     """If any row in a batch references an unknown account, the entire
-    transaction rolls back and the cursor (here import_run) sees zero
-    inserts. Mirrors the monobank-mcp atomicity invariant."""
+    transaction rolls back and zero inserts persist. Mirrors the
+    monobank-mcp atomicity invariant."""
     conn = open_db(tmp_path / "data.db")
-    upsert_account(
-        conn,
-        account_id="acc1",
-        iban=None,
-        account_type=None,
-        currency_code=980,
-        masked_pan="4111 **** **** 0000",
-    )
+    upsert_account_standalone(conn, _acc())
     run = start_import_run(conn, source="xlsx", file_path="t.xlsx", file_sha256="abc")
     txs = [_tx(0, account_id="acc1"), _tx(1, account_id="ghost")]
     with pytest.raises(sqlite3.IntegrityError):
         insert_transactions(conn, run_id=run, txs=txs)
     count = conn.execute("SELECT COUNT(*) FROM privat_transactions").fetchone()[0]
     assert count == 0
+
+
+def test_atomic_account_and_tx_rollback_on_fk_failure(tmp_path: Path) -> None:
+    """When the caller passes ``account=`` and the inserts then fail mid-
+    batch, both the account upsert AND the txs must roll back together.
+    This proves the fix for the "dangling account row" review finding.
+
+    We trigger failure via an unknown FK on the second tx; the first tx
+    cites a fresh account that should not survive the rollback."""
+    conn = open_db(tmp_path / "data.db")
+    run = start_import_run(conn, source="xlsx", file_path="t.xlsx", file_sha256="abc")
+    fresh_account = AccountSpec(
+        account_id="fresh_acc",
+        iban=None,
+        account_type=None,
+        currency_code=980,
+        masked_pan="4111 **** **** 9999",
+    )
+    txs = [_tx(0, account_id="fresh_acc"), _tx(1, account_id="ghost")]
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_transactions(conn, run_id=run, txs=txs, account=fresh_account)
+    # Both must be absent: dangling account would be a regression.
+    tx_count = conn.execute("SELECT COUNT(*) FROM privat_transactions").fetchone()[0]
+    acc_count = conn.execute(
+        "SELECT COUNT(*) FROM privat_accounts WHERE account_id = 'fresh_acc'"
+    ).fetchone()[0]
+    assert tx_count == 0
+    assert acc_count == 0
 
 
 def test_already_imported_returns_run_id(tmp_path: Path) -> None:
@@ -104,3 +135,39 @@ def test_already_imported_returns_run_id(tmp_path: Path) -> None:
     finish_import_run(conn, run, rows_inserted=0, rows_skipped=0)
     assert already_imported(conn, "deadbeef") == run
     assert already_imported(conn, "no-such-sha") is None
+
+
+def test_migration_is_atomic_on_failure(tmp_path: Path) -> None:
+    """Inject a faulty migration to prove the BEGIN/COMMIT envelope
+    rolls back on error. Before the fix, ``executescript`` would issue
+    an implicit COMMIT before the script ran and partial DDL would
+    leak. After the fix, the connection rejects all of it.
+    """
+    import privat24_import.core.store as store
+
+    # Empty DB; raw connection bypasses open_db so we control migrations.
+    conn = sqlite3.connect(tmp_path / "data.db")
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        # Patch the migrations list with a broken second statement.
+        original = store._MIGRATION_FILES
+        store._MIGRATION_FILES = [(1, "_test_bad.sql")]
+        store._load_migration_sql = lambda _name: (  # type: ignore[assignment]
+            "CREATE TABLE privat_test_a (id INTEGER);"
+            "CREATE TABLE privat_test_b (id INTEGER);"
+            "THIS IS NOT VALID SQL;"
+            "INSERT INTO privat_schema_version VALUES (1, 0);"
+        )
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                ensure_privat_schema(conn)
+            # Neither table from the failed migration must exist.
+            n = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE name IN ('privat_test_a', 'privat_test_b')"
+            ).fetchone()[0]
+            assert n == 0, "partial DDL leaked - atomicity broken"
+        finally:
+            store._MIGRATION_FILES = original
+    finally:
+        conn.close()

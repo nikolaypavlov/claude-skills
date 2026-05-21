@@ -1,6 +1,6 @@
 [project]
 name = "privat24-import"
-version = "0.1.0"
+version = "0.2.0"
 description = "Privat24 statement (XLSX) import skill - writes privat_* tables in ~/finances/data.db"
 authors = [
     { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },
@@ -26,6 +26,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Migration SQL files travel with the package so importlib.resources can
+# find them in both source-tree and installed-wheel layouts.
+[tool.setuptools.package-data]
+"privat24_import.schema" = ["*.sql"]
 
 [dependency-groups]
 dev = [
