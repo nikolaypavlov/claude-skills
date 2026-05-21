@@ -27,27 +27,20 @@ This is one of three plugins in the personal-finance design (`docs/personal-fina
 
 ## Exporting a statement
 
-There is no `/statement` URL or self-service download API; the export
-button lives inside the Privat24 web cabinet, per-card:
-
 1. Log in at <https://privat24.ua/> in any browser.
-2. Open **"Гаманець"** (Wallet) - the section that lists all your cards
-   under "Активні".
+2. Open **"Гаманець"** (Wallet).
 3. Click the card you want to export from the left-hand list.
-4. On the right pane switch to (or stay on) the **"Історія"** (History)
-   tab. The "Розрахунковий лист" (Statement) tab is a different report
-   that this skill does NOT parse.
+4. On the right pane stay on the **"Історія"** (History) tab.
 5. Optionally set a date range via the **"Період"** picker. Wider ranges
    are fine - the importer dedupes by natural key so overlapping
-   re-exports do NOT create duplicate rows.
+   re-exports do not create duplicate rows.
 6. Click the small **document icon** (sheet with a download arrow)
-   between the search field and the **"Фільтр"** button. A pop-up offers
-   the export format - choose **Excel** to get an `.xlsx` file.
+   between the search field and the **"Фільтр"** button, then choose
+   **Excel** in the pop-up.
 7. Save the downloaded file (Privat24 names it something like
    `vyp_<date_range>.xlsx`).
 
-Repeat per card. Each XLSX covers exactly one card; the importer
-enforces that and rejects multi-card files.
+Repeat per card - each XLSX covers exactly one card.
 
 ## What the importer does
 
