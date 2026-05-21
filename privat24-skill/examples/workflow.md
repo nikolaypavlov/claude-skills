@@ -3,8 +3,7 @@
 End-to-end from "I just exported a statement" to "data is in `~/finances/data.db`".
 
 ```text
-1. User: opens privat24.ua, logs in
-   - navigates to "Гаманець" (Wallet)
+1. User: opens https://next.privat24.ua/wallet
    - clicks the card to export from the left list
    - stays on the "Історія" tab
    - optionally sets a date range via "Період" (wider = safer; we

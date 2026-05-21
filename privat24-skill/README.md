@@ -27,17 +27,16 @@ This is one of three plugins in the personal-finance design (`docs/personal-fina
 
 ## Exporting a statement
 
-1. Log in at <https://privat24.ua/> in any browser.
-2. Open **"Гаманець"** (Wallet).
-3. Click the card you want to export from the left-hand list.
-4. On the right pane stay on the **"Історія"** (History) tab.
-5. Optionally set a date range via the **"Період"** picker. Wider ranges
+1. Open <https://next.privat24.ua/wallet> in any browser and sign in.
+2. Click the card you want to export from the left-hand list.
+3. On the right pane stay on the **"Історія"** (History) tab.
+4. Optionally set a date range via the **"Період"** picker. Wider ranges
    are fine - the importer dedupes by natural key so overlapping
    re-exports do not create duplicate rows.
-6. Click the small **document icon** (sheet with a download arrow)
+5. Click the small **document icon** (sheet with a download arrow)
    between the search field and the **"Фільтр"** button, then choose
    **Excel** in the pop-up.
-7. Save the downloaded file (Privat24 names it something like
+6. Save the downloaded file (Privat24 names it something like
    `vyp_<date_range>.xlsx`).
 
 Repeat per card - each XLSX covers exactly one card.
