@@ -1,8 +1,26 @@
 # Personal Finance: дизайн-документ
 
-Версія: 2.1
-Дата: 2026-05-20
+Версія: 3.0
+Дата: 2026-05-21
 Статус: для імплементації після ревʼю
+
+Changelog v3.0 (від v2.1):
+- **personal-finance перетворено з Python MCP-сервера на Skill з Python-скриптами.**
+  Жодного long-running `pf-server` процесу. Skill активується тригер-фразами
+  ("звіт за квітень", "категоризуй транзакції"); Claude викликає Python
+  entry-points через Bash, скрипт виводить JSON на stdout, Claude парсить.
+- 10 MCP tools згорнуто у 4 окремі CLI-скрипти (`pf-report`, `pf-categorize`,
+  `pf-query`, `pf-rules`), кожен зі своїм argparse-subcommand dispatch.
+- ensure_synced залишається monobank-mcp MCP tool (без змін). SKILL.md
+  інструктує Claude викликати ensure_synced перед reports.
+- Common Transaction view (UNION ALL з runtime discovery) переїздить з
+  MCP-сервера у shared module `src/pf_skill/common/view.py`. Логіка та сама.
+- Структура personal-finance слідує privat24-skill pattern (uv-managed
+  Python з src/ layout + `skills/personal-finance/SKILL.md` + schema у package
+  з `importlib.resources`). Жодного `.mcp.json` у personal-finance.
+- pyproject.toml deps: pyyaml + tzdata. mcp SDK прибрано.
+- PR#3 (`personal-finance skeleton`) і PR#4 (`tools fleshed out`) переписані
+  під skill-структуру.
 
 Changelog v2.1 (від v2.0):
 - **Виправлено напрямок залежностей** (Dependency Inversion). Кожен ingest-плагін
@@ -36,11 +54,11 @@ Changelog v2.0 (від v1.0):
 
 Три плагіни в репо claude-skills для збору і аналізу персональних фінансів локально:
 
-- **personal-finance** (umbrella) - Python MCP-сервер з query/report tools і категоризатором. Володіє ТІЛЬКИ `pf_*` таблицями (правила і категоризація). Читає `<bank>_transactions` таблиці інших плагінів через UNION ALL з auto-detection.
+- **personal-finance** (umbrella) - Skill з Python-скриптами для query/report/categorization. Володіє ТІЛЬКИ `pf_*` таблицями (правила і категоризація). Читає `<bank>_transactions` таблиці інших плагінів через UNION ALL з auto-detection. Активується тригер-фразами; жодного long-running процесу.
 - **monobank-mcp** - Rust MCP, тонкий ingest шар. Володіє `mono_*` таблицями. CLI для backfill, MCP для incremental sync і status (3 tools).
-- **privat24-skill** - skill для ручного імпорту CSV з web-кабінету Privat24. Володіє `privat_*` таблицями.
+- **privat24-skill** - skill для ручного імпорту XLSX з web-кабінету Privat24. Володіє `privat_*` таблицями.
 
-Спільне SQLite-сховище `~/finances/data.db`. **Кожен плагін мігрує тільки свої таблиці**. Cross-plugin shape - convention у `docs/transactions-schema.md`. Жодних webhook, daemon чи Cloudflare Tunnel. Користувач задає Claude питання у звичайній conversation; Claude через MCP читає БД, при потребі тригерить inline sync, генерує narrative-звіт.
+Спільне SQLite-сховище `~/finances/data.db`. **Кожен плагін мігрує тільки свої таблиці**. Cross-plugin shape - convention у `docs/transactions-schema.md`. Жодних webhook, daemon чи Cloudflare Tunnel. Користувач задає Claude питання у звичайній conversation; Claude через monobank-mcp MCP читає sync-статус і тригерить inline sync; через personal-finance skill викликає Python-скрипти що читають БД і повертають JSON; Claude парсить bundle і генерує narrative-звіт.
 
 ## 1. Цілі та антицілі
 
@@ -70,33 +88,27 @@ Changelog v2.0 (від v1.0):
                        |  Claude Desktop       |
                        +-----+-----------+-----+
                              |           |
-                  MCP stdio  |           |  MCP stdio
+                  MCP stdio  |           |  Skill activation:
+                             |           |  Bash -> uv run pf-*
                              v           v
               +--------------+--+     +--+--------------------+
               | monobank-mcp    |     | personal-finance      |
-              | (Rust)          |     | (Python MCP server)   |
-              | owns mono_*     |     | owns pf_* (rules,     |
-              |                 |     |   tx_category)        |
-              | tools (3):      |     |                       |
-              | - ensure_synced |     | reads mono_* and      |
-              | - get_sync_     |     | privat_* via UNION    |
-              |   status        |     | ALL with runtime      |
-              | - list_mono_    |     | auto-detection        |
-              |   accounts      |     |                       |
-              |                 |     | tools (10):           |
-              | CLI:            |     | - list_accounts       |
-              | - backfill      |     | - get_transactions    |
-              | - sync          |     | - summarize_spending  |
-              | - init          |     | - find_transaction    |
-              | - accounts      |     | - get_report_bundle   |
-              +--------+--------+     | - set_category        |
-                       |              | - add_rule            |
-                       |              | - reload_rules        |
-                       |              | - apply_rules_        |
-                       |              |   retroactively       |
-                       |              | - categorize_         |
-                       |              |   uncategorized       |
-                       |              +-----+----------+------+
+              | (Rust MCP)      |     | (Skill + Python       |
+              | owns mono_*     |     |  scripts, uv project) |
+              |                 |     | owns pf_* (rules,     |
+              | tools (3):      |     |   tx_category)        |
+              | - ensure_synced |     |                       |
+              | - get_sync_     |     | reads mono_* and      |
+              |   status        |     | privat_* via UNION    |
+              | - list_mono_    |     | ALL with runtime      |
+              |   accounts      |     | auto-detection        |
+              |                 |     |                       |
+              | CLI:            |     | scripts (4):          |
+              | - backfill      |     | - pf-report           |
+              | - sync          |     | - pf-categorize       |
+              | - init          |     | - pf-query <verb>     |
+              | - accounts      |     | - pf-rules <verb>     |
+              +--------+--------+     +-----+----------+------+
                        |                    |          ^
                        | writes mono_*      | reads    | writes pf_*
                        v                    v          v
@@ -145,9 +157,9 @@ Dependency arrows (важливо):
 
 | Компонент          | Тех                  | Запуск                          | Відповідальність                              |
 |--------------------|----------------------|----------------------------------|-----------------------------------------------|
-| personal-finance   | Python (mcp SDK)     | spawned by Claude (stdio)        | pf_* tables, query/report tools, categorizer  |
+| personal-finance   | Skill + Python (uv)  | Skill activation -> Bash         | pf_* tables, query/report/categorize scripts  |
 | monobank-mcp       | Rust (rmcp 1.x)      | spawned by Claude (stdio) + CLI  | mono_* tables, Monobank API ingest            |
-| privat24-skill     | Markdown + Python    | invoked by Claude on request     | privat_* tables, Privat24 CSV ingest          |
+| privat24-skill     | Markdown + Python    | invoked by Claude on request     | privat_* tables, Privat24 XLSX ingest         |
 | SQLite store       | sqlite3 file (WAL)   | -                                | Shared file, per-plugin table groups          |
 
 ### 2.3 Schema ownership (Dependency Inversion)
@@ -255,20 +267,27 @@ Privat24 monthly import:
               -> move file to ~/finances/archive/YYYY-MM-DD/
 
 Categorization (on demand):
-  user runs `/personal-finance:categorize` or CLI `pf-cli categorize`
-    -> personal-finance auto-detects available <bank>_transactions tables
+  user runs `/personal-finance:categorize` or каже "категоризуй транзакції"
+    -> Claude loads personal-finance skill (triggered)
+    -> Claude runs `uv run pf-categorize --scope all` via Bash
+       (або `--scope last-n-days --n 30`)
+    -> Script auto-detects available <bank>_transactions tables
     -> for tx where id not in tx_category and id not in category_overrides:
        try categorization_rules by priority, first match wins
        INSERT INTO tx_category (tx_id, category, set_at)
+    -> Script outputs {categorized_count, remaining_count} JSON
 
 Report generation (Claude conversation):
   user: "звіт за квітень"
-    -> Claude calls ensure_synced (via monobank-mcp) - inline incremental
-    -> Claude calls get_report_bundle(from, to) - via personal-finance MCP
-       (auto-discovers mono_transactions + privat_transactions, builds UNION)
-    -> Claude generates narrative report with per-currency sections
+    -> Claude loads personal-finance skill (triggered by phrase)
+    -> Claude calls ensure_synced (via monobank-mcp MCP) - inline incremental
+    -> Claude runs `uv run pf-report --from <ts> --to <ts>` via Bash
+       (auto-discovers mono_transactions + privat_transactions, builds UNION,
+        outputs JSON bundle to stdout)
+    -> Claude parses bundle and generates narrative report with per-currency sections
     -> Claude interactively suggests categories for uncategorized
-    -> on user approval: set_category and/or add_rule via MCP tools
+    -> on user approval: Claude runs `uv run pf-rules set-category ...`
+       or `uv run pf-rules add --pattern ... --category ...` (preview-then-apply)
 ```
 
 ### 2.5 Шляхи і конфіги
@@ -540,7 +559,7 @@ view_sql = "
 
 Те ж саме для `<bank>_accounts` -> common accounts view.
 
-## 4. personal-finance (umbrella plugin, Python)
+## 4. personal-finance (umbrella plugin, Skill + Python scripts)
 
 ### 4.1 Структура
 
@@ -548,85 +567,114 @@ view_sql = "
 personal-finance/
   .claude-plugin/
     plugin.json
-  .mcp.json                              spawns Python MCP via uv
-  schema/
+  pyproject.toml                         uv-managed; deps: pyyaml, tzdata
+  schema/                                (committed at root for convenience;
+                                          installed scripts read SQL via
+                                          importlib.resources from package)
     pf_001_initial.sql                   ONLY pf_* tables (categorization)
   rules/
     mcc.json                             generated, committed
-    description.yaml
+    description.yaml                     generic global brands only
   scripts/
-    build_mcc_map.py
-  server/
-    pyproject.toml
-    src/
-      pf_server/
+    build_mcc_map.py                     generates rules/mcc.json
+  src/
+    pf_skill/
+      __init__.py
+      schema/
+        pf_001_initial.sql               in-package copy, loaded via
+                                         importlib.resources
+      common/
         __init__.py
-        __main__.py                      entry point for `uv run pf-server`
-        store.py                         open_db, migrate_pf, table discovery
-        tools.py                         MCP tool definitions
+        store.py                         open_db, migrate_pf, PRAGMAs
+        view.py                          runtime UNION ALL discovery
+        rules.py                         rule loading + matching shared logic
         categorizer.py                   apply_rules() shared function
-        rules.py                         rule loading + matching
-        reports.py                       get_report_bundle bundling
-        view.py                          dynamic UNION ALL view builder
+        currencies.py                    ISO 4217 numeric <-> code helpers
         types.py                         TypedDict / dataclass schemas
-  commands/
-    categorize.md                        /personal-finance:categorize
+      report.py                          entry: pf-report
+      categorize.py                      entry: pf-categorize
+      query.py                           entry: pf-query (subcommands)
+      rules_cli.py                       entry: pf-rules (subcommands)
   skills/
     personal-finance/
-      SKILL.md                           monthly review entry point
+      SKILL.md                           triggers + invocation cookbook
+  commands/
+    categorize.md                        /personal-finance:categorize thin wrapper
   tests/
     test_store.py
     test_view_builder.py                 detection + UNION generation
     test_categorizer.py
     test_report_bundle.py
+    test_rules.py
+    test_query_cli.py                    end-to-end stdin/stdout per script
     fixtures/
       synthetic_mono_tx.json
       synthetic_privat_tx.json
 ```
 
-Important: `personal-finance/schema/` contains **only** `pf_*` migrations. monobank-mcp і privat24-skill повністю незалежно мігрують свої таблиці у власних плагінах. personal-finance НЕ створює `mono_transactions` ані `privat_transactions`.
+Важливо:
+- `personal-finance/schema/` містить **тільки** `pf_*` міграції. monobank-mcp і
+  privat24-skill повністю незалежно мігрують свої таблиці у власних плагінах.
+- Жодного `.mcp.json` у personal-finance. Активація - тільки через Skill mechanism;
+  Claude викликає скрипти через Bash.
+- Слідує privat24-skill pattern (uv-managed, `src/` layout, schema у package).
+- 4 entry-points замість 10 MCP tools. Кожен з власним argparse-subcommand
+  dispatch, JSON stdout, JSON-error stderr + exit 1.
 
 ### 4.2 Залежності (pyproject.toml)
 
 ```toml
 [project]
-name = "pf-server"
+name = "pf-skill"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-  "mcp>=1.0",                    # official Python MCP SDK
   "pyyaml>=6",
-  "tomli; python_version < '3.11'",
+  "tzdata>=2024.1",       # Europe/Kyiv on slim Linux / Windows
 ]
 
 [project.scripts]
-pf-server = "pf_server.__main__:main"
-pf-cli = "pf_server.cli:main"
+pf-report     = "pf_skill.report:main"
+pf-categorize = "pf_skill.categorize:main"
+pf-query      = "pf_skill.query:main"
+pf-rules      = "pf_skill.rules_cli:main"
 
 [tool.uv]
 managed = true
+
+[tool.setuptools.package-data]
+pf_skill = ["schema/*.sql"]
 ```
 
-Stdlib для решти (sqlite3, re, json, dataclasses).
+Stdlib для решти (sqlite3, re, json, argparse, dataclasses, importlib.resources).
 
-### 4.3 MCP tools (10)
+### 4.3 CLI surface (4 entry-points, 12 verbs)
 
-| Tool                          | Args                                                                        | Returns                                                       |
-|-------------------------------|-----------------------------------------------------------------------------|---------------------------------------------------------------|
-| list_accounts                 | -                                                                           | array of {bank, account_id, label, currency, last_balance}    |
-| get_transactions              | from_ts, to_ts, account_id?, bank?, category?, currency?, limit?, offset?   | array of Tx                                                   |
-| summarize_spending            | from_ts, to_ts, group_by, account_id?, bank?, currency?                     | array of {key, total_minor, count, currency}                  |
-| find_transaction              | query, limit?                                                               | array of Tx (description LIKE)                                |
-| get_report_bundle             | from_ts, to_ts, account_id?, bank?, comparison?                             | bundle (see 4.4)                                              |
-| set_category                  | tx_id, category, note?                                                      | success                                                       |
-| add_rule                      | match_field, pattern, category, priority?, source?                          | {rule_id, would_affect_count} (preview, not applied yet)      |
-| reload_rules                  | -                                                                           | {rules_count}                                                 |
-| apply_rules_retroactively     | rule_id, dry_run?                                                           | {affected_count, sample}                                      |
-| categorize_uncategorized      | scope? ('all' or 'last_n_days')                                             | {categorized_count, remaining_count}                          |
+| Script         | Subcommand    | Args                                                                       | Returns                                                       |
+|----------------|---------------|----------------------------------------------------------------------------|---------------------------------------------------------------|
+| pf-query       | accounts      | -                                                                          | array of {bank, account_id, label, currency, last_balance}    |
+| pf-query       | list          | --from --to [--account] [--bank] [--category] [--currency] [--limit] [--offset] | array of Tx                                              |
+| pf-query       | summarize     | --from --to --group-by [--account] [--bank] [--currency]                   | array of {key, total_minor, count, currency}                  |
+| pf-query       | find          | --query [--limit]                                                          | array of Tx (description LIKE)                                |
+| pf-report      | (no verb)     | --from --to [--account] [--bank] [--comparison]                            | bundle (see 4.4)                                              |
+| pf-categorize  | (no verb)     | --scope all\|last-n-days [--n N]                                           | {categorized_count, remaining_count}                          |
+| pf-rules       | add           | --match-field --pattern --category [--priority N] [--source S] [--apply]   | {rule_id, would_affect_count, sample} (preview unless --apply) |
+| pf-rules       | apply         | --rule-id [--dry-run]                                                      | {affected_count, sample}                                      |
+| pf-rules       | set-category  | --tx-id --category [--note]                                                | {ok: true}                                                    |
+| pf-rules       | set-override  | --tx-id --category [--note]                                                | {ok: true}                                                    |
+| pf-rules       | reload        | -                                                                          | {rules_count}                                                 |
+| pf-rules       | list          | [--enabled-only]                                                           | array of rules                                                |
 
-Group_by values: `'category' | 'mcc' | 'counterparty' | 'currency' | 'account'`.
+`--group-by` values: `'category' | 'mcc' | 'counterparty' | 'currency' | 'account'`.
 
-### 4.4 get_report_bundle
+Контракт error-output (як у privat24-skill `ImportResult`):
+- успіх -> JSON payload на stdout, exit 0
+- input validation, IO, permission -> `{"ok": false, "error": "...", "type": "..."}` на stderr, exit 1
+- крах (uncaught) -> traceback на stderr, exit 2
+
+Claude парсить stdout як JSON. Якщо exit != 0 - читає stderr і повертає користувачу зрозуміле повідомлення.
+
+### 4.4 pf-report
 
 Без 28-day обмеження. Прийняти будь-який період. Обмеження по обʼєму:
 
@@ -685,7 +733,7 @@ Claude отримує bundle і генерує narrative-звіт. Структ�
 4. **Top контрагенти**.
 5. **Recurring**: щомісячні платежі, нові підписки, зниклі.
 6. **Anomalies**: великі відхилення, нові merchants у "великих" категоріях, підозрілі дублі.
-7. **Uncategorized review**: інтерактивно, з пропозиціями. На user OK -> Claude викликає set_category / add_rule.
+7. **Uncategorized review**: інтерактивно, з пропозиціями. На user OK -> Claude викликає `pf-rules set-category` / `pf-rules add`.
 8. **Insights**: free-form prose.
 
 ### 4.6 Категоризація
@@ -732,7 +780,7 @@ Rules:
 - `priority` ASC: lower number checked first.
 - Перший match - перемагає, INSERT у `tx_category` з rule_id reference і `set_by='rule'`.
 - `category_overrides` має пріоритет над `tx_category` при query (manual user decision wins).
-- При query (e.g., get_transactions) category resolution:
+- При query (e.g., `pf-query list`) category resolution:
   `COALESCE(category_overrides.category, tx_category.category, NULL)`.
 
 Джерела правил:
@@ -746,29 +794,76 @@ Rules:
 
 `build_mcc_map.py` parses PrivatBank MCC PDF за default; з `--source mcc.in.ua` оновлює з web. Output - committed `rules/mcc.json` (50-150 кодів покривають 95% побутових категорій).
 
-### 4.7 add_rule з preview
+### 4.7 pf-rules add з preview
 
-Коли Claude через `add_rule` пропонує нове правило, tool НЕ застосовує одразу. Повертає:
+Коли Claude викликає `pf-rules add ...` без `--apply` - rule пишеться в БД як `enabled=1` для майбутніх імпортів, але retroactive застосування НЕ робиться. Скрипт повертає:
 
 ```json
 {
   "rule_id": 42,
   "would_affect_count": 18,
   "sample": [
-    { "id": "tx1", "description": "...", "ts": ... },
-    ... // up to 5
+    { "id": "tx1", "description": "...", "ts": ... }
   ],
   "applied": false
 }
 ```
 
-Claude показує користувачу: "правило торкнеться 18 транзакцій. Приклади. Застосувати ретроактивно?" Якщо user-yes - Claude викликає `apply_rules_retroactively(rule_id=42, dry_run=false)`. Якщо ні - rule залишається в БД для майбутніх імпортів, але старі рядки не torkanyi.
+Claude показує користувачу: "правило торкнеться 18 транзакцій. Приклади. Застосувати ретроактивно?" Якщо user-yes - Claude викликає `pf-rules apply --rule-id 42`. Якщо ні - rule залишається для майбутніх імпортів, старі рядки незмінні.
 
-### 4.8 Тести
+`pf-rules add --apply` - shortcut який в одній транзакції додає правило і застосовує. Skill SKILL.md рекомендує preview-then-apply, але `--apply` доступний для batch-сценаріїв (seed rules при cold start).
+
+### 4.8 SKILL.md (skeleton)
+
+```markdown
+---
+name: personal-finance
+description: |
+  Use this skill when the user asks for a financial report, spending
+  summary, category breakdown, or transaction lookup over their personal
+  finance data (Monobank + Privat24). Triggers: "звіт за <період>",
+  "скільки витратив", "покажи транзакції", "категоризуй", "розбий по
+  категоріях", "знайди транзакцію", "report", "spending summary". Reads
+  ~/finances/data.db; requires monobank-mcp (for inline sync) and at
+  least one ingest plugin installed.
+allowed-tools: Bash, Read
+---
+
+# Personal finance: query and categorize
+
+## Pre-flight
+- Перед repor-том ВИКЛИКАЙ `mcp__monobank__ensure_synced` з `max_wait_seconds=90`
+  щоб mono-дані були свіжі. Якщо `partial: true` - попередь користувача і
+  запропонуй продовжити.
+- Privat24 sync не існує - дані оновлюються тільки ручним XLSX-імпортом.
+
+## Common invocations
+- Account list: `uv run pf-query accounts`
+- Filtered transactions: `uv run pf-query list --from <unix-ts> --to <unix-ts> [--bank mono|privat] [--currency 980] [--category Food]`
+- Group spend: `uv run pf-query summarize --from <ts> --to <ts> --group-by category`
+- Full report bundle: `uv run pf-report --from <ts> --to <ts> --comparison previous-period`
+- Categorize uncategorized: `uv run pf-categorize --scope last-n-days --n 30`
+- Set explicit category: `uv run pf-rules set-category --tx-id mono_abc --category Food/Delivery`
+- Propose a rule: `uv run pf-rules add --match-field counterparty --pattern "GLOVO" --category Food/Delivery`
+  (preview-only; ask user before `pf-rules apply --rule-id <id>`)
+
+## Output contract
+Кожен скрипт виводить JSON на stdout. Помилка - JSON `{"ok": false, ...}` на stderr + exit 1. Парсь stdout; якщо exit != 0 - читай stderr і поясни користувачу.
+
+## What NOT to do
+- Не пиши SQL напряму. Завжди через `pf-*` скрипти.
+- Не торкайся `mono_*` чи `privat_*` таблиць напряму - тільки read через pf-query/pf-report.
+- Не auto-apply нові правила без preview і user-confirmation (крім seed cold-start).
+```
+
+### 4.9 Тести
 
 - `test_store.py`: open in-memory, migrate, schema_version reads correctly.
-- `test_categorizer.py`: synthetic transactions, kожне правило по черзі, override precedence.
+- `test_view_builder.py`: detection через `sqlite_master` + UNION ALL SQL generation за різних комбінацій присутніх таблиць.
+- `test_categorizer.py`: synthetic transactions, кожне правило по черзі, override precedence.
 - `test_report_bundle.py`: full mode vs bucketed mode auto-switch, comparison correctness, per-currency split.
+- `test_rules.py`: add (preview), apply (retroactive), set-category, set-override, COALESCE precedence.
+- `test_query_cli.py`: end-to-end - запускає кожен entry-point через `subprocess.run`, парсить stdout/stderr, перевіряє exit code і JSON shape. Аналог privat24-skill `tests/test_integration.py`.
 - pytest, без external deps.
 
 ## 5. monobank-mcp (Rust, slim ingest)
@@ -1237,50 +1332,52 @@ Acceptance: pytest зелений. Manual test: fresh empty DB, drop generated s
 
 Before PR #2 starts: попрошу real sample headers (без даних) і edge case examples (FX rows, refunds, holds).
 
-### PR #3: personal-finance skeleton
+### PR #3: personal-finance skill scaffold + read path
 
-Goal: scaffold umbrella plugin, table discovery, MCP server skeleton.
+Goal: scaffold the skill, table discovery, and read-only `pf-query` + `pf-report` end-to-end. No mutations.
 
 - `.claude-plugin/plugin.json`
+- `pyproject.toml` (uv-managed; deps: pyyaml, tzdata)
 - `schema/pf_001_initial.sql` (categorization_rules, tx_category, category_overrides, pf_schema_version)
-- `server/pyproject.toml` (uv-managed, mcp SDK, pyyaml)
-- `server/src/pf_server/`:
-  - `__main__.py` - stdio MCP entry
-  - `store.py` - open_db, migrate_pf (own tables only)
-  - `view.py` - discovers `<bank>_transactions` via sqlite_master, builds UNION ALL SQL
-  - `tools.py` - skeleton з list_accounts, get_transactions працюючими через dynamic view
+- `src/pf_skill/schema/pf_001_initial.sql` (in-package copy; loaded via `importlib.resources`)
+- `src/pf_skill/common/`:
+  - `store.py` - open_db, migrate_pf (own tables only), PRAGMA defensives
+  - `view.py` - discovers `<bank>_transactions` via `sqlite_master`, builds UNION ALL SQL, projects to common shape
+  - `currencies.py` - ISO 4217 numeric <-> code (shared with future scripts)
   - `types.py`
-- `.mcp.json` що spawn-ить `uv run pf-server`
-- `commands/categorize.md` - stub
-- `skills/personal-finance/SKILL.md` - stub з тригерами
-- `tests/test_store.py`, `test_view_builder.py`
-- marketplace.json: додати entry
+- `src/pf_skill/query.py` - entry `pf-query` з subcommands `accounts`, `list`, `summarize`, `find`
+- `src/pf_skill/report.py` - entry `pf-report` з bundle output (full + bucketed mode auto-switch)
+- `skills/personal-finance/SKILL.md` - повний (з триг-фразами, invocation cookbook, error contract)
+- `commands/categorize.md` - stub (буде filled out у PR#4)
+- `tests/test_store.py`, `test_view_builder.py`, `test_query_cli.py`, `test_report_bundle.py`
+- marketplace.json: додати entry (`type: "skill"`)
 - README
 
-Acceptance: 
-- `uv run pf-server` стартує
-- На empty DB - friendly warning "no transaction sources detected"
-- На DB де є тільки `mono_transactions` (з PR#1) - list_accounts повертає mono акаунти; get_transactions повертає тільки mono рядки
+Acceptance:
+- `uv sync && uv run pytest -q` зелений
+- На empty DB - `pf-query accounts` повертає `[]` з warning в stderr `{"ok": true, "warning": "no transaction sources detected"}`
+- На DB де є тільки `mono_transactions` (з PR#1) - `pf-query accounts` повертає mono акаунти; `pf-query list` повертає тільки mono рядки
 - На DB де є тільки `privat_transactions` - аналогічно
-- На DB з обома - UNION ALL працює коректно
+- На DB з обома - UNION ALL працює коректно; `pf-report --from <ts> --to <ts>` повертає коректний bundle JSON
+- Помилка (bad --from) -> `{"ok": false, "error": "...", "type": "..."}` на stderr, exit 1
 
-### PR #4: personal-finance tools fleshed out
+### PR #4: personal-finance categorization + rules
 
-Goal: complete MCP tool surface, categorizer, mcc-map generator.
+Goal: complete pf-categorize і pf-rules + mcc-map generator. Mutations to pf_* tables.
 
-- `server/src/pf_server/`:
-  - `categorizer.py` - apply_rules() writing to tx_category
-  - `rules.py` - load + match logic, local override yaml loader
-  - `reports.py` - build_report_bundle() (full + bucketed, per-currency)
-  - `tools.py` - all 10 tools implemented
+- `src/pf_skill/common/`:
+  - `categorizer.py` - apply_rules() писання у `tx_category`
+  - `rules.py` - load + match logic (mcc.json + description.yaml + local overrides)
+- `src/pf_skill/categorize.py` - entry `pf-categorize` з `--scope all|last-n-days [--n N]`
+- `src/pf_skill/rules_cli.py` - entry `pf-rules` з subcommands `add`, `apply`, `set-category`, `set-override`, `reload`, `list`
 - `scripts/build_mcc_map.py` (parse PrivatBank PDF або mcc.in.ua HTML)
 - `rules/mcc.json` (generated, committed)
 - `rules/description.yaml` (seed з 20-30 global brands)
-- `commands/categorize.md` - filled out
-- `tests/test_categorizer.py`, `test_report_bundle.py`, `test_rules.py`
-- CI integration test: spin up clean DB, apply mono migrations (PR#1), apply privat migrations (PR#2), apply pf migrations, run categorize, assert tx_category populated. Validates cross-plugin shape convention.
+- `commands/categorize.md` - filled out (instructs Claude to run `pf-categorize` + propose rules for remaining)
+- `tests/test_categorizer.py`, `test_rules.py` - end-to-end CLI стиль
+- CI integration test: spin up clean DB, apply mono migrations (PR#1), apply privat migrations (PR#2), apply pf migrations, insert 50 synthetic tx, run `pf-categorize`, assert `tx_category` populated. Validates cross-plugin shape convention.
 
-Acceptance: end-to-end synthetic test: insert 50 transactions across mono+privat, categorize, generate report bundle, validate per-currency split.
+Acceptance: end-to-end synthetic test: 50 transactions across mono+privat, `pf-categorize --scope all`, `pf-report` повертає bundle з populated categories, `pf-rules add --pattern GLOVO --apply` показує `would_affect_count > 0`.
 
 ### PR #5: polish
 
@@ -1299,7 +1396,8 @@ Acceptance: end-to-end synthetic test: insert 50 transactions across mono+privat
 - **Privat24 змінить web CSV формат**: mitigation - registry of parsers, new file per version.
 - **Monobank rate limit жорсткіший за документований**: mitigation - configurable interval в config.toml, exponential backoff.
 - **Inline ensure_synced упирається у Claude Desktop tool timeout**: mitigation - max_wait_seconds default 90s (safely within typical limits), partial response заохочує Claude питати користувача чи продовжити.
-- **macOS Keychain GUI prompt блокує MCP startup**: mitigation - env-var primary path, Keychain опціональна.
+- **macOS Keychain GUI prompt блокує monobank-mcp startup**: mitigation - env-var primary path, Keychain опціональна. personal-finance скрипти credentials не потребують - тільки read/write `~/finances/data.db`.
+- **pf-* скрипт стартує повільніше за MCP-tool call**: cold-start `uv run pf-*` = ~200-400ms на macOS після перших inv-ків (cached venv). Acceptable bo Claude-conversation latency вже секунди. Mitigation - тримати `uv.lock` стабільним; уникати важких import (matplotlib, pandas) у hot path.
 - **Multi-currency без cross-currency aggregation робить total spending дивним**: за дизайном; per-currency сектори чесніші ніж conversion noise.
 - **Cross-plugin shape drift**: ingest-плагіни добровільно слідують `docs/transactions-schema.md` convention. Якщо один з них додасть/видалить required column - personal-finance проєкція може зламатися. Mitigation:
   - CI integration test (PR#4) запускає всі міграції разом + assertion на проєкцію.
