@@ -4,9 +4,10 @@ PR#3 lands the three read-path tools (``list_accounts``,
 ``get_transactions``, ``summarize_spending``) plus a diagnostic
 (``data_sources``). The remaining tools from the design (`find_*`,
 `get_report_bundle`, `set_category`, `add_rule`, `reload_rules`,
-`apply_rules_retroactively`, `categorize_uncategorized`) ship in PR#4
-and are registered here as no-op stubs from a metadata table so the
-schema shape is visible to discovery clients without 7x boilerplate.
+`apply_rules_retroactively`, `categorize_uncategorized`) ship in PR#4.
+They are registered today with their real PR#4 signatures so discovery
+clients see the parameter schemas, and each body delegates to a shared
+``_pr4_stub()`` that raises a clean ``ToolError``.
 
 Tool errors are raised as ``mcp.server.fastmcp.exceptions.ToolError``
 so FastMCP serialises them into a structured tool-error response on the
