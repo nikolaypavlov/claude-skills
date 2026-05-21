@@ -33,7 +33,6 @@ from .core import store as store_mod
 from .parsers import detect as detect_mod
 from .parsers import web_xlsx as web_xlsx_mod
 
-
 # Result schema. Stable across status values; missing fields are filled
 # with the defaults in ``_result``.
 ImportStatus = Literal["imported", "skipped", "unsupported", "error"]
@@ -120,7 +119,16 @@ def import_one(
     except OSError as exc:
         return _result(file, "error", error=f"cannot read file: {exc}")
 
-    conn = store_mod.open_db(data_dir / "data.db")
+    # The same JSON-on-stdout contract has to survive an `open_db`
+    # failure too: permission denied creating `~/finances`, a corrupt
+    # SQLite file, or a missing package resource for migrations would
+    # otherwise propagate as a Python traceback. Broad catch is
+    # intentional - we want any failure converted into the standard
+    # error result rather than a traceback escaping to stdout.
+    try:
+        conn = store_mod.open_db(data_dir / "data.db")
+    except Exception as exc:  # noqa: BLE001 - intentional, see above
+        return _result(file, "error", error=f"cannot open database: {exc}")
     try:
         prior = store_mod.already_imported(conn, sha)
         if prior is not None:
@@ -214,9 +222,7 @@ def _do_import(
         currency_code=parsed.account_currency_code,
         masked_pan=parsed.masked_pan,
     )
-    return store_mod.insert_transactions(
-        conn, run_id=run_id, txs=txs, account=account
-    )
+    return store_mod.insert_transactions(conn, run_id=run_id, txs=txs, account=account)
 
 
 def cmd_import(args: argparse.Namespace) -> int:

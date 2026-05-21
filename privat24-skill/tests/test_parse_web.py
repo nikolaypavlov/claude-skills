@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from openpyxl import Workbook
-
 from privat24_import.parsers.detect import WEB_XLSX_HEADERS
 from privat24_import.parsers.web_xlsx import KYIV_TZ, parse
 
@@ -51,10 +50,13 @@ def test_parse_domestic_rows_have_null_op_columns(sample_xlsx: Path) -> None:
 
 def test_parse_amounts_are_minor_units(sample_xlsx: Path) -> None:
     statement = parse(sample_xlsx)
-    # Every amount should be a non-zero integer (rounded to minor units).
+    # All amounts are integer minor units. Zero is permitted - it can
+    # legitimately appear for commission reversals (see FX_ROWS in the
+    # fixture). Non-zero amounts should sit above the 0.50 UAH floor.
     for row in statement.rows:
         assert isinstance(row.amount_minor, int)
-        assert abs(row.amount_minor) >= 50  # fixture floor of 0.50 UAH
+        if row.amount_minor != 0:
+            assert abs(row.amount_minor) >= 50
 
 
 def _make_xlsx(tmp_path: Path, body: list[tuple], *, name: str = "case.xlsx") -> Path:

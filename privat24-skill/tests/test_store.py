@@ -7,7 +7,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from privat24_import.core.store import (
     AccountSpec,
     InsertOutcome,
@@ -18,7 +17,6 @@ from privat24_import.core.store import (
     insert_transactions,
     open_db,
     start_import_run,
-    upsert_account_standalone,
 )
 
 
@@ -90,7 +88,11 @@ def test_insert_rolls_back_on_fk_violation(tmp_path: Path) -> None:
     transaction rolls back and zero inserts persist. Mirrors the
     monobank-mcp atomicity invariant."""
     conn = open_db(tmp_path / "data.db")
-    upsert_account_standalone(conn, _acc())
+    # Seed acc1 via the normal ingest path with an empty tx batch.
+    seed_run = start_import_run(
+        conn, source="xlsx", file_path="seed.xlsx", file_sha256="seed"
+    )
+    insert_transactions(conn, run_id=seed_run, txs=[], account=_acc())
     run = start_import_run(conn, source="xlsx", file_path="t.xlsx", file_sha256="abc")
     txs = [_tx(0, account_id="acc1"), _tx(1, account_id="ghost")]
     with pytest.raises(sqlite3.IntegrityError):
@@ -149,10 +151,15 @@ def test_migration_is_atomic_on_failure(tmp_path: Path) -> None:
     conn = sqlite3.connect(tmp_path / "data.db")
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        # Patch the migrations list with a broken second statement.
-        original = store._MIGRATION_FILES
+        # Patch the migrations list with a broken script. The script
+        # also CREATEs privat_schema_version so we can verify the entire
+        # bootstrap - including the version-tracker table - rolls back.
+        original_files = store._MIGRATION_FILES
+        original_loader = store._load_migration_sql
         store._MIGRATION_FILES = [(1, "_test_bad.sql")]
         store._load_migration_sql = lambda _name: (  # type: ignore[assignment]
+            "CREATE TABLE privat_schema_version ("
+            "  version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);"
             "CREATE TABLE privat_test_a (id INTEGER);"
             "CREATE TABLE privat_test_b (id INTEGER);"
             "THIS IS NOT VALID SQL;"
@@ -161,13 +168,16 @@ def test_migration_is_atomic_on_failure(tmp_path: Path) -> None:
         try:
             with pytest.raises(sqlite3.OperationalError):
                 ensure_privat_schema(conn)
-            # Neither table from the failed migration must exist.
+            # None of the tables from the failed migration may exist -
+            # including privat_schema_version itself, which proves the
+            # bootstrap is no longer outside the transaction.
             n = conn.execute(
                 "SELECT COUNT(*) FROM sqlite_master "
-                "WHERE name IN ('privat_test_a', 'privat_test_b')"
+                "WHERE name IN ('privat_test_a', 'privat_test_b', 'privat_schema_version')"
             ).fetchone()[0]
             assert n == 0, "partial DDL leaked - atomicity broken"
         finally:
-            store._MIGRATION_FILES = original
+            store._MIGRATION_FILES = original_files
+            store._load_migration_sql = original_loader  # type: ignore[assignment]
     finally:
         conn.close()

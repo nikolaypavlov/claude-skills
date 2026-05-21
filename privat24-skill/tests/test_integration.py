@@ -78,7 +78,6 @@ def test_import_error_path_records_run_with_error_column(tmp_path: Path) -> None
     correct header sniff but a body that fails downstream parsing -
     here, two distinct cards in one file (multi-card rejection)."""
     from openpyxl import Workbook
-
     from privat24_import.parsers.detect import WEB_XLSX_HEADERS
 
     out = tmp_path / "bad.xlsx"
@@ -94,7 +93,12 @@ def test_import_error_path_records_run_with_error_column(tmp_path: Path) -> None
             "Магазини",
             "5168 **** **** 1111",
             "card A",
-            -100.0, "UAH", 100.0, "UAH", 1000.0, "UAH",
+            -100.0,
+            "UAH",
+            100.0,
+            "UAH",
+            1000.0,
+            "UAH",
         )
     )
     ws.append(
@@ -103,7 +107,12 @@ def test_import_error_path_records_run_with_error_column(tmp_path: Path) -> None
             "Магазини",
             "5168 **** **** 2222",
             "card B",
-            -50.0, "UAH", 50.0, "UAH", 950.0, "UAH",
+            -50.0,
+            "UAH",
+            50.0,
+            "UAH",
+            950.0,
+            "UAH",
         )
     )
     wb.save(out)
@@ -125,12 +134,26 @@ def test_import_error_path_records_run_with_error_column(tmp_path: Path) -> None
         assert error_col and "one card" in error_col
         assert finished_at is not None
         # And no rows leaked through despite the run row being recorded.
-        tx_count = conn.execute(
-            "SELECT COUNT(*) FROM privat_transactions"
-        ).fetchone()[0]
+        tx_count = conn.execute("SELECT COUNT(*) FROM privat_transactions").fetchone()[
+            0
+        ]
         assert tx_count == 0
     finally:
         conn.close()
+
+
+def test_open_db_failure_returns_clean_error(tmp_path: Path, sample_xlsx: Path) -> None:
+    """If ``open_db`` raises - e.g. because the data dir is not writable -
+    the failure must surface as ``status: error`` JSON instead of a
+    traceback escaping the JSON-on-stdout contract."""
+    # Point the data dir at an existing FILE so creating data.db's
+    # parent directory will fail with NotADirectoryError (subclass of
+    # OSError).
+    bogus = tmp_path / "not_a_dir"
+    bogus.write_text("blocker")
+    result = import_one(sample_xlsx, data_dir=bogus, do_archive=False)
+    assert result["status"] == "error", result
+    assert result["error"] and "cannot open database" in result["error"]
 
 
 def test_unsupported_file_does_not_crash(tmp_path: Path) -> None:

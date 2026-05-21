@@ -94,19 +94,26 @@ def open_db(path: str | Path) -> sqlite3.Connection:
 def ensure_privat_schema(conn: sqlite3.Connection) -> None:
     """Apply pending privat_* migrations atomically.
 
-    Each pending migration runs inside an explicit transaction built
-    from individual ``conn.execute`` calls so a crash mid-apply rolls
-    back cleanly. Idempotent: applied versions are skipped.
+    The entire migration runs inside a single ``BEGIN`` / ``COMMIT`` -
+    including the ``privat_schema_version`` table bootstrap. A crash
+    mid-apply rolls back EVERY DDL statement, so a half-applied schema
+    is impossible.
+
+    Idempotent: the version tracker is read first (catching
+    ``OperationalError`` when the table doesn't exist yet, signalling
+    a fresh DB), and any migration whose version is already applied
+    is skipped.
     """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS privat_schema_version ("
-        "    version INTEGER PRIMARY KEY,"
-        "    applied_at INTEGER NOT NULL"
-        ")"
-    )
-    applied = conn.execute(
-        "SELECT COALESCE(MAX(version), 0) FROM privat_schema_version"
-    ).fetchone()[0]
+    try:
+        applied = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM privat_schema_version"
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet - this is a fresh DB. The migration
+        # SQL itself creates `privat_schema_version` (with
+        # `CREATE TABLE IF NOT EXISTS`) and inserts the version row, so
+        # the bootstrap is part of the same atomic transaction.
+        applied = 0
     for version, filename in _MIGRATION_FILES:
         if version <= applied:
             continue
@@ -135,8 +142,12 @@ def _split_statements(sql: str) -> list[str]:
     """Split a SQL script into individual statements on top-level ``;``.
 
     Our migration files never embed ``;`` inside string literals or
-    comments, so the naive split is correct. If that assumption ever
-    breaks, swap this for sqlite3's `Connection.iterdump`-style parser.
+    comments, so the naive split is correct. If a future migration adds
+    string-literal semicolons, swap this for ``sqlparse.split(sql)`` or
+    ``sqlglot.parse(sql, "sqlite")`` - both ship as PyPI packages and
+    handle quoted content properly. Don't reach for
+    ``sqlite3.Connection.iterdump`` here - that DUMPS an existing
+    schema, it does not parse arbitrary SQL.
     """
     return [s.strip() for s in sql.split(";") if s.strip()]
 
@@ -186,6 +197,30 @@ def finish_import_run(
     conn.commit()
 
 
+_UPSERT_ACCOUNT_SQL = (
+    "INSERT INTO privat_accounts "
+    "    (account_id, iban, type, currency_code, masked_pan, label, opened_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, NULL) "
+    "ON CONFLICT(account_id) DO UPDATE SET "
+    "    iban = COALESCE(excluded.iban, privat_accounts.iban), "
+    "    type = COALESCE(excluded.type, privat_accounts.type), "
+    "    currency_code = excluded.currency_code, "
+    "    masked_pan = COALESCE(excluded.masked_pan, privat_accounts.masked_pan), "
+    "    label = COALESCE(excluded.label, privat_accounts.label)"
+)
+
+
+def _upsert_account_params(account: AccountSpec) -> tuple:
+    return (
+        account.account_id,
+        account.iban,
+        account.account_type,
+        account.currency_code,
+        account.masked_pan,
+        account.label,
+    )
+
+
 def insert_transactions(
     conn: sqlite3.Connection,
     *,
@@ -200,6 +235,10 @@ def insert_transactions(
     Atomicity guarantee: a failure inside this call rolls back the
     account upsert AND every tx insert. A kill between the BEGIN and
     COMMIT leaves no half-applied state.
+
+    Pass ``txs=()`` with an ``account`` to upsert an account standalone
+    without seeding transactions - used by tests that need to set up
+    referenced accounts before exercising other store paths.
     """
     rows_inserted = 0
     rows_skipped = 0
@@ -207,25 +246,7 @@ def insert_transactions(
     conn.execute("BEGIN")
     try:
         if account is not None:
-            conn.execute(
-                "INSERT INTO privat_accounts "
-                "    (account_id, iban, type, currency_code, masked_pan, label, opened_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, NULL) "
-                "ON CONFLICT(account_id) DO UPDATE SET "
-                "    iban = COALESCE(excluded.iban, privat_accounts.iban), "
-                "    type = COALESCE(excluded.type, privat_accounts.type), "
-                "    currency_code = excluded.currency_code, "
-                "    masked_pan = COALESCE(excluded.masked_pan, privat_accounts.masked_pan), "
-                "    label = COALESCE(excluded.label, privat_accounts.label)",
-                (
-                    account.account_id,
-                    account.iban,
-                    account.account_type,
-                    account.currency_code,
-                    account.masked_pan,
-                    account.label,
-                ),
-            )
+            conn.execute(_UPSERT_ACCOUNT_SQL, _upsert_account_params(account))
         for tx in txs:
             raw_json = json.dumps(tx.raw, ensure_ascii=False, default=str)
             cur = conn.execute(
@@ -264,41 +285,3 @@ def insert_transactions(
 
 def count_transactions(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) FROM privat_transactions").fetchone()[0]
-
-
-def upsert_account_standalone(
-    conn: sqlite3.Connection,
-    account: AccountSpec,
-) -> None:
-    """Upsert an account row in its own transaction.
-
-    Convenience wrapper around the upsert step embedded in
-    ``insert_transactions``. Useful for callers (e.g. tests) that want
-    to seed accounts independently. The atomic ingest path goes through
-    ``insert_transactions(account=AccountSpec(...))`` instead.
-    """
-    conn.execute("BEGIN")
-    try:
-        conn.execute(
-            "INSERT INTO privat_accounts "
-            "    (account_id, iban, type, currency_code, masked_pan, label, opened_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, NULL) "
-            "ON CONFLICT(account_id) DO UPDATE SET "
-            "    iban = COALESCE(excluded.iban, privat_accounts.iban), "
-            "    type = COALESCE(excluded.type, privat_accounts.type), "
-            "    currency_code = excluded.currency_code, "
-            "    masked_pan = COALESCE(excluded.masked_pan, privat_accounts.masked_pan), "
-            "    label = COALESCE(excluded.label, privat_accounts.label)",
-            (
-                account.account_id,
-                account.iban,
-                account.account_type,
-                account.currency_code,
-                account.masked_pan,
-                account.label,
-            ),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
