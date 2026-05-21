@@ -163,6 +163,24 @@
       "repository": "https://github.com/nikolaypavlov/claude-skills.git",
       "license": "MIT",
       "strict": false
+    },
+    {
+      "name": "privat24-skill",
+      "source": "./privat24-skill",
+      "description": "Import Privat24 web-cabinet statement exports (XLSX) into the shared ~/finances/data.db SQLite store. Owns the privat_* tables. Standalone; companion to monobank-mcp and personal-finance plugins.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["privat24", "personal-finance", "xlsx", "import", "sqlite", "python"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./skills/privat24-import"
+      ]
     }
   ]
 }
