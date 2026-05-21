@@ -12,7 +12,7 @@ This skill imports Privat24 web-cabinet statement exports (XLSX) into the shared
 
 The user just exported a statement from Privat24 and dropped it (or several) into `~/finances/inbox/`, OR pointed at a specific file path.
 
-If they don't yet have an XLSX on disk and ask how to get one: open <https://next.privat24.ua/wallet>, click the card, stay on the **Історія** tab, click the **"Експорт у XLS"** button (Excel-style green icon) between the search field and the **Фільтр** button, save the resulting file. Each XLSX covers exactly one card.
+If they don't yet have an XLSX on disk and ask how to get one: open <https://next.privat24.ua/wallet>, click the card, stay on the **Історія** tab, click the **"Експорт у XLS"** icon (Excel-style green sheet) between the search field and the **Фільтр** button, save the resulting file. Each XLSX covers exactly one card.
 
 ## Steps
 
