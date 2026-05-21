@@ -82,3 +82,71 @@ async fn deadline_produces_partial_then_resumes() {
         .unwrap();
     assert!(cursor.last_completed_ts >= now - 60);
 }
+
+// When `sync` runs against an account that has never been backfilled,
+// the engine seeds the cursor at "now" and returns a clean outcome instead
+// of erroring. Subsequent syncs then operate normally. The historical
+// window is intentionally NOT pulled - users who want history run
+// `backfill --from <date>` explicitly.
+#[tokio::test]
+async fn sync_auto_seeds_missing_state_to_now() {
+    let server = httpmock::MockServer::start_async().await;
+    // Mount the statement endpoint just in case the engine still calls it -
+    // returning empty proves at most that the call happened with `from=now`.
+    common::mount_statement_prefix_empty(&server, common::FIXTURE_ACCOUNT_ID);
+
+    let api = MonobankApi::new(server.base_url(), "test-token").unwrap();
+    let store = Store::open_in_memory().unwrap();
+    store
+        .upsert_account(&MonoAccount {
+            id: common::FIXTURE_ACCOUNT_ID.into(),
+            iban: None,
+            r#type: Some("black".into()),
+            currency_code: 980,
+            masked_pan: None,
+            balance: None,
+            label: None,
+        })
+        .await
+        .unwrap();
+    // No seed_sync_state - this is the "fresh account" scenario.
+    assert!(store
+        .get_sync_state(common::FIXTURE_ACCOUNT_ID)
+        .await
+        .unwrap()
+        .is_none());
+
+    let engine = SyncEngine::__for_test(
+        api,
+        store.clone(),
+        RateLimiter::new(Duration::from_millis(0)),
+        None,
+        Duration::from_millis(0),
+        0,
+        RunSource::Sync,
+        Duration::ZERO,
+    );
+    let now_before = now_unix();
+    let out = engine
+        .run(&[common::FIXTURE_ACCOUNT_ID.into()])
+        .await
+        .unwrap();
+
+    let acc = &out.per_account[0];
+    assert!(
+        acc.error.is_none(),
+        "fresh account should not surface an error; got {acc:?}"
+    );
+    assert_eq!(acc.rows_added, 0);
+    assert_eq!(acc.remaining_chunks, 0);
+    assert!(acc.last_completed_ts >= now_before);
+
+    // The sync_state row must exist after the run so subsequent syncs
+    // don't repeat the auto-seed branch.
+    let cursor = store
+        .get_sync_state(common::FIXTURE_ACCOUNT_ID)
+        .await
+        .unwrap()
+        .expect("sync_state row should be persisted");
+    assert!(cursor.last_completed_ts >= now_before);
+}
