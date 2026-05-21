@@ -189,13 +189,21 @@ impl SyncEngine {
             let last_completed_ts = match &state {
                 Some(s) => s.last_completed_ts,
                 None => {
+                    // No sync_state row yet means this account was discovered by
+                    // `accounts` / `client-info` but never backfilled. Rather
+                    // than surfacing an error - which would break `monobank-mcp
+                    // sync` cron jobs every time the user opens a new Monobank
+                    // product - we seed the cursor at "now" and return a clean
+                    // outcome for this run. Users who want historical rows run
+                    // `backfill --from <date> --account <id>` explicitly.
+                    self.store.seed_sync_state(acc, now).await?;
                     out.per_account.push(AccountSyncOutcome {
                         account_id: acc.clone(),
                         rows_added: 0,
                         rows_skipped: 0,
-                        last_completed_ts: 0,
+                        last_completed_ts: now,
                         remaining_chunks: 0,
-                        error: Some("no backfill yet, run `monobank-mcp backfill` first".into()),
+                        error: None,
                     });
                     continue;
                 }
@@ -203,10 +211,24 @@ impl SyncEngine {
 
             // Freshness skip: only meaningful for incremental sync, not for
             // explicit backfill. Backfill ignores this guard by construction
-            // because it overrides `last_completed_ts` upstream.
+            // because it overrides `last_completed_ts` upstream (and uses
+            // `freshness_skip_seconds = 0`).
+            //
+            // Both conditions must hold:
+            //   1. `last_sync_at` is recent enough that re-pulling now would
+            //      duplicate the previous run's work.
+            //   2. `last_completed_ts` is also recent - guards against the
+            //      "we last synced 10s ago BUT the cursor is 30 days behind
+            //      (partial)" case, where the partial chunks still need
+            //      fetching.
+            // We use the same window for both so a freshly auto-seeded
+            // account (cursor = now-at-seed) is skipped on the next sync
+            // run within the configured freshness window, not just within
+            // a 5-second tolerance.
             if let Some(state) = &state {
                 let age = now - state.last_sync_at;
-                if age < self.freshness_skip_seconds && last_completed_ts >= now - 5 {
+                let cursor_age = now - last_completed_ts;
+                if age < self.freshness_skip_seconds && cursor_age < self.freshness_skip_seconds {
                     debug!(account = acc, age_s = age, "freshness skip");
                     out.per_account.push(AccountSyncOutcome {
                         account_id: acc.clone(),
