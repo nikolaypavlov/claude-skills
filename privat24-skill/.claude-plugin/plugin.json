@@ -1,7 +1,7 @@
 {
   "name": "privat24-skill",
   "description": "Skill that imports Privat24 statement exports (XLSX from privat24.ua) into the shared ~/finances/data.db SQLite store. Owns the privat_* tables. Standalone - does not require personal-finance or monobank-mcp.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "author": {
     "name": "Mykola Pavlov",
     "email": "me@nikolaypavlov.com"

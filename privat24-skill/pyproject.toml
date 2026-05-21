@@ -1,6 +1,6 @@
 [project]
 name = "privat24-import"
-version = "0.2.0"
+version = "0.3.0"
 description = "Privat24 statement (XLSX) import skill - writes privat_* tables in ~/finances/data.db"
 authors = [
     { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },
@@ -8,6 +8,12 @@ authors = [
 requires-python = ">=3.10"
 dependencies = [
     "openpyxl>=3.1",
+    # zoneinfo (stdlib in 3.9+) consults the IANA tz database. On Linux
+    # and macOS that's /usr/share/zoneinfo; on Windows and slim
+    # container images it's missing. Vendoring tzdata via PyPI gives us
+    # a deterministic fallback so `ZoneInfo("Europe/Kyiv")` never raises
+    # at module import.
+    "tzdata>=2024.1",
 ]
 license = { text = "MIT" }
 readme = "README.md"

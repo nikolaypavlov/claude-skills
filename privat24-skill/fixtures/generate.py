@@ -36,7 +36,11 @@ MERCHANTS_UAH = [
     ("Фонди та організації", "Автоплатіж. Отримувач Тестовий фонд. Коментар: внесок"),
 ]
 
-# A handful of FX rows (account UAH, txn USD/EUR) to exercise the FX branch.
+# A handful of FX rows (account UAH, txn USD/EUR) to exercise the FX
+# branch. The zero-amount entry covers the "commission reversal /
+# free conversion" edge case where the account side nets out exactly to
+# zero - the parser must store ``op_amount_minor = 0`` rather than
+# defaulting to a positive sign.
 FX_ROWS = [
     (
         "Магазини",
@@ -46,6 +50,7 @@ FX_ROWS = [
         -1_50_00,
     ),  # -USD 1.50 charged as -UAH 50.00
     ("Перекази", "EUR transfer test", -200_00, "EUR", -5_00_00),
+    ("Сервіси", "FREE FX TEST", 0, "USD", 1_00_00),  # zero-amount FX
 ]
 
 TITLE_FMT = "Історія операцій за період {start} - {end}"
@@ -68,6 +73,10 @@ DEFAULT_SEED = 42
 
 def generate(out_path: Path, *, seed: int = DEFAULT_SEED, rows: int = 30) -> Path:
     """Write a synthetic XLSX. Returns the output path."""
+    if rows < len(FX_ROWS):
+        raise ValueError(
+            f"need at least {len(FX_ROWS)} rows to cover all FX_ROWS, got rows={rows}"
+        )
     rng = random.Random(seed)
     wb = Workbook()
     ws = wb.active

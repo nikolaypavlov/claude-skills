@@ -10,10 +10,13 @@ imported twice never even hits the parser.
 
 Twin-transaction tie-break: if two rows in the SAME logical input share
 (ts, amount, description, account), we append a within-group counter so
-they get distinct ids. The counter is assigned in row order, which is
-deterministic for a given file. The same twin pair re-exported in a
-later file will land at the same counter positions (re-exports preserve
-row order within a date), so dedupe still works across re-imports.
+they get distinct ids. The counter resets at the start of every
+``assign_ids`` call, so the same input sequence always produces the
+same id list - that's what ``test_twin_counter_is_stable_across_independent_calls``
+verifies. Cross-file dedupe of twin pairs depends additionally on
+Privat24 exporting the same rows in the same relative order within
+re-exported date ranges, which we observe in practice but cannot
+guarantee from this module alone.
 
 The id format is ``privat_h_<16-hex-chars>``. 16 hex chars = 64 bits of
 entropy - one-in-a-billion collisions need ~5e9 rows, far beyond any

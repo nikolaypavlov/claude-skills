@@ -168,7 +168,7 @@
       "name": "privat24-skill",
       "source": "./privat24-skill",
       "description": "Import Privat24 web-cabinet statement exports (XLSX) into the shared ~/finances/data.db SQLite store. Owns the privat_* tables. Standalone; companion to monobank-mcp and personal-finance plugins.",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"
