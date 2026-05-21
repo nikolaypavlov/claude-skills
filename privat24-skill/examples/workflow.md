@@ -8,9 +8,8 @@ End-to-end from "I just exported a statement" to "data is in `~/finances/data.db
    - stays on the "Історія" tab
    - optionally sets a date range via "Період" (wider = safer; we
      dedupe by natural key, so overlapping re-exports don't duplicate)
-   - clicks the small document icon (between the search field and
-     the "Фільтр" button)
-   - picks "Excel" from the format pop-up
+   - clicks the "Експорт у XLS" button (Excel-style green icon,
+     between the search field and the "Фільтр" button)
    - downloads e.g. "vyp_05_2026.xlsx"
    - drops the file into ~/finances/inbox/
 

@@ -33,9 +33,8 @@ This is one of three plugins in the personal-finance design (`docs/personal-fina
 4. Optionally set a date range via the **"Період"** picker. Wider ranges
    are fine - the importer dedupes by natural key so overlapping
    re-exports do not create duplicate rows.
-5. Click the small **document icon** (sheet with a download arrow)
-   between the search field and the **"Фільтр"** button, then choose
-   **Excel** in the pop-up.
+5. Click the **"Експорт у XLS"** button between the search field and
+   the **"Фільтр"** button - it's an Excel-style green-sheet icon.
 6. Save the downloaded file (Privat24 names it something like
    `vyp_<date_range>.xlsx`).
 
