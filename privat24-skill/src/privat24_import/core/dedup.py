@@ -55,7 +55,7 @@ def assign_ids(rows: Iterable[TxKey]) -> list[str]:
         key = (r["ts"], r["amount_minor"], r["description"] or "", r["account_id"])
         n = seen.get(key, 0)
         seen[key] = n + 1
-        payload = "|".join([str(p) for p in key]) + f"|{n}"
+        payload = "|".join(str(p) for p in key) + f"|{n}"
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
         ids.append(f"privat_h_{digest}")
     return ids

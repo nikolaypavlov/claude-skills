@@ -91,12 +91,9 @@ def generate(out_path: Path, *, seed: int = DEFAULT_SEED, rows: int = 30) -> Pat
     balance = Decimal("10000.00")
     cur_ts = start
     body: list[tuple] = []
-    # Mix domestic and FX rows.
-    plan: list[str] = []
-    for _ in range(rows - len(FX_ROWS)):
-        plan.append("DOM")
-    for _ in range(len(FX_ROWS)):
-        plan.append("FX")
+    # Mix domestic and FX rows. The shuffled plan ensures FX rows can
+    # land anywhere in the timeline, not just at the end.
+    plan = ["DOM"] * (rows - len(FX_ROWS)) + ["FX"] * len(FX_ROWS)
     rng.shuffle(plan)
     fx_iter = iter(FX_ROWS)
     for kind in plan:
@@ -106,21 +103,8 @@ def generate(out_path: Path, *, seed: int = DEFAULT_SEED, rows: int = 30) -> Pat
             # Skew toward outflow (negative) but allow some inflows.
             sign = -1 if rng.random() < 0.8 else 1
             amount_uah = Decimal(rng.randint(50, 200000)) / Decimal(100) * sign
-            balance = balance + amount_uah
-            body.append(
-                (
-                    cur_ts.strftime("%d.%m.%Y %H:%M:%S"),
-                    category,
-                    DEFAULT_CARD,
-                    desc,
-                    float(amount_uah),
-                    "UAH",
-                    float(abs(amount_uah)),
-                    "UAH",
-                    float(balance),
-                    "UAH",
-                )
-            )
+            op_amount_for_file = float(abs(amount_uah))
+            op_ccy = "UAH"
         else:
             category, desc, amount_uah_minor, op_ccy, op_amount_uah_minor = next(
                 fx_iter
@@ -130,24 +114,26 @@ def generate(out_path: Path, *, seed: int = DEFAULT_SEED, rows: int = 30) -> Pat
             # source convention); we encode an unsigned absolute amount in
             # the file. Use a small fixed conversion - we just need the
             # numbers to be self-consistent.
-            op_amount_unsigned = abs(
-                Decimal(op_amount_uah_minor) / Decimal(100) / Decimal(35)
-            )
-            balance = balance + amount_uah
-            body.append(
-                (
-                    cur_ts.strftime("%d.%m.%Y %H:%M:%S"),
-                    category,
-                    DEFAULT_CARD,
-                    desc,
-                    float(amount_uah),
-                    "UAH",
-                    float(op_amount_unsigned.quantize(Decimal("0.01"))),
-                    op_ccy,
-                    float(balance),
-                    "UAH",
+            op_amount_for_file = float(
+                abs(Decimal(op_amount_uah_minor) / Decimal(100) / Decimal(35)).quantize(
+                    Decimal("0.01")
                 )
             )
+        balance = balance + amount_uah
+        body.append(
+            (
+                cur_ts.strftime("%d.%m.%Y %H:%M:%S"),
+                category,
+                DEFAULT_CARD,
+                desc,
+                float(amount_uah),
+                "UAH",
+                op_amount_for_file,
+                op_ccy,
+                float(balance),
+                "UAH",
+            )
+        )
 
     # Privat24 sorts newest first.
     body.sort(key=lambda r: r[0], reverse=True)

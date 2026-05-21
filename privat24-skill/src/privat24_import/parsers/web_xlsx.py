@@ -24,16 +24,19 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Iterator
+from zoneinfo import ZoneInfo
 
 from ..core.currencies import to_numeric
 
-# Privat24 web exports use Europe/Kyiv local time. We anchor to UTC for
-# storage; users can shift back to Kyiv at query time.
-KYIV_TZ = timezone.utc  # placeholder; see _to_unix_utc() comment
+# Privat24 web exports use Europe/Kyiv local time (cells are naive). We
+# attach ZoneInfo("Europe/Kyiv") at parse time so the resulting unix
+# timestamp is true UTC seconds - downstream consumers can shift back to
+# any timezone at query time.
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 
 @dataclass(frozen=True)
@@ -41,7 +44,7 @@ class ParsedRow:
     """One statement row after parsing. Stays close to the source so the
     caller can still build the natural-key hash."""
 
-    ts: int  # unix seconds (UTC)
+    ts: int  # unix seconds, true UTC
     category: str
     masked_pan: str
     description: str
@@ -51,7 +54,7 @@ class ParsedRow:
     op_currency_code: int | None
     balance_minor: int | None
     balance_currency_code: int | None
-    raw: dict  # source row for raw_json storage
+    raw: dict[str, object]  # source row for raw_json storage
 
 
 @dataclass(frozen=True)
@@ -70,19 +73,16 @@ _PAN_SANITISER = re.compile(r"[^0-9*]")
 
 
 def _to_unix_utc(value) -> int:
-    """Convert the Privat24 date cell to unix seconds.
+    """Convert a Privat24 date cell to a true UTC unix timestamp.
 
-    Cells come through openpyxl as either a `datetime` (when the column
-    is correctly typed) or a string in DD.MM.YYYY HH:MM:SS form. Both are
-    treated as **Europe/Kyiv local time** per the export convention; we
-    convert via a fixed +2h offset assumption ONLY for parsing.
+    Cells come through openpyxl as either a ``datetime`` (when the
+    column is correctly typed) or a string in ``DD.MM.YYYY HH:MM:SS``
+    form. Per the export convention they represent Europe/Kyiv local
+    time, so we attach ``KYIV_TZ`` to the naive value and let
+    ``datetime.timestamp()`` produce true UTC seconds (this also handles
+    DST correctly via zoneinfo's historical tz data).
 
-    We deliberately don't drag in zoneinfo / pytz: Kyiv DST shifts twice
-    a year and we'd need historical TZ data. The downstream design stores
-    timestamps as "wall-clock unix" - users see the timestamp shifted by
-    their local TZ at query time, which is what they expect. So we treat
-    the cell as a naive datetime and call ``replace(tzinfo=UTC).timestamp()``,
-    producing a wall-clock unix value.
+    If the cell is already tz-aware we trust the embedded offset.
     """
     if isinstance(value, datetime):
         dt = value
@@ -92,8 +92,9 @@ def _to_unix_utc(value) -> int:
         raise ValueError(
             f"unsupported date cell type {type(value).__name__}: {value!r}"
         )
-    # Treat as UTC for storage; see docstring.
-    return int(dt.replace(tzinfo=timezone.utc).timestamp())
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KYIV_TZ)
+    return int(dt.timestamp())
 
 
 def _to_minor(value) -> int:
@@ -189,12 +190,17 @@ def _yield_rows(ws) -> Iterator[ParsedRow]:
         currency_code = to_numeric(currency or "")
         # Operation amount in the source is unsigned. Re-derive the sign
         # from the account amount so the cross-plugin convention
-        # (negative = outflow) holds for both columns.
+        # (negative = outflow) holds for both columns. A zero account
+        # amount means we cannot derive a sign at all - store the op
+        # amount as zero too so the pair stays internally consistent.
         op_currency_code = to_numeric(op_currency) if op_currency else None
         if op_currency_code is not None and op_currency_code != currency_code:
             op_amount_unsigned = abs(_to_minor(op_amount))
-            sign = -1 if amount_minor < 0 else 1
-            op_amount_minor: int | None = sign * op_amount_unsigned
+            if amount_minor == 0:
+                op_amount_minor: int | None = 0
+            else:
+                sign = -1 if amount_minor < 0 else 1
+                op_amount_minor = sign * op_amount_unsigned
         else:
             op_amount_minor = None
             op_currency_code = None

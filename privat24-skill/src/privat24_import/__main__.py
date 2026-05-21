@@ -26,12 +26,48 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence, TypedDict
 
 from .core import dedup as dedup_mod
 from .core import store as store_mod
 from .parsers import detect as detect_mod
 from .parsers import web_xlsx as web_xlsx_mod
+
+
+# Result schema. Stable across status values; missing fields are filled
+# with the defaults in ``_result``.
+ImportStatus = Literal["imported", "skipped", "unsupported", "error"]
+
+
+class ImportResult(TypedDict):
+    file: str
+    status: ImportStatus
+    rows_inserted: int
+    rows_skipped: int
+    import_run_id: int | None
+    error: str | None
+    archived_to: str | None
+
+
+def _result(
+    file: Path | str,
+    status: ImportStatus,
+    *,
+    rows_inserted: int = 0,
+    rows_skipped: int = 0,
+    import_run_id: int | None = None,
+    error: str | None = None,
+    archived_to: str | None = None,
+) -> ImportResult:
+    return {
+        "file": str(file),
+        "status": status,
+        "rows_inserted": rows_inserted,
+        "rows_skipped": rows_skipped,
+        "import_run_id": import_run_id,
+        "error": error,
+        "archived_to": archived_to,
+    }
 
 
 def _resolve_data_dir(arg: str | None) -> Path:
@@ -64,46 +100,34 @@ def import_one(
     *,
     data_dir: Path,
     do_archive: bool,
-) -> dict:
-    """Import a single file. Returns a JSON-serialisable result dict.
-
-    Result shape::
-
-        {"file": "...", "status": "imported" | "skipped" | "unsupported" | "error",
-         "rows_inserted": int, "rows_skipped": int, "import_run_id": int | None,
-         "error": str | None, "archived_to": str | None}
+) -> ImportResult:
+    """Import a single file. Returns an ``ImportResult`` dict.
 
     Status semantics:
       - ``imported``: parser ran, rows landed (possibly 0 if file is empty).
       - ``skipped``:  same byte sequence already in ``privat_import_runs``.
       - ``unsupported``: ``detect`` couldn't classify the file.
-      - ``error``: parser or store raised; ``error`` carries the message.
+      - ``error``: parser or store raised, OR a pre-flight I/O error
+        occurred (e.g. file disappeared between cwd-scan and hash);
+        ``error`` carries the message.
     """
-    sha = dedup_mod.file_sha256(str(file))
+    # File-level I/O may fail before the DB is even opened - e.g. TOCTOU
+    # race between `cmd_import_inbox`'s glob and our hash read. Surface
+    # those as a clean error result rather than a Python traceback so
+    # the SKILL.md JSON-on-stdout contract holds.
+    try:
+        sha = dedup_mod.file_sha256(str(file))
+    except OSError as exc:
+        return _result(file, "error", error=f"cannot read file: {exc}")
+
     conn = store_mod.open_db(data_dir / "data.db")
     try:
         prior = store_mod.already_imported(conn, sha)
         if prior is not None:
-            return {
-                "file": str(file),
-                "status": "skipped",
-                "rows_inserted": 0,
-                "rows_skipped": 0,
-                "import_run_id": prior,
-                "error": None,
-                "archived_to": None,
-            }
+            return _result(file, "skipped", import_run_id=prior)
         det = detect_mod.detect(file)
         if det.fmt is detect_mod.Format.UNKNOWN:
-            return {
-                "file": str(file),
-                "status": "unsupported",
-                "rows_inserted": 0,
-                "rows_skipped": 0,
-                "import_run_id": None,
-                "error": det.reason,
-                "archived_to": None,
-            }
+            return _result(file, "unsupported", error=det.reason)
         run_id = store_mod.start_import_run(
             conn,
             source=det.fmt.value,
@@ -126,27 +150,18 @@ def import_one(
                 rows_skipped=0,
                 error=str(exc),
             )
-            return {
-                "file": str(file),
-                "status": "error",
-                "rows_inserted": 0,
-                "rows_skipped": 0,
-                "import_run_id": run_id,
-                "error": str(exc),
-                "archived_to": None,
-            }
+            return _result(file, "error", import_run_id=run_id, error=str(exc))
         archived = None
         if do_archive:
             archived = str(_archive_file(file, data_dir))
-        return {
-            "file": str(file),
-            "status": "imported",
-            "rows_inserted": outcome.rows_inserted,
-            "rows_skipped": outcome.rows_skipped,
-            "import_run_id": run_id,
-            "error": None,
-            "archived_to": archived,
-        }
+        return _result(
+            file,
+            "imported",
+            rows_inserted=outcome.rows_inserted,
+            rows_skipped=outcome.rows_skipped,
+            import_run_id=run_id,
+            archived_to=archived,
+        )
     finally:
         conn.close()
 
@@ -162,15 +177,8 @@ def _do_import(
         # avoid silent "did nothing" paths.
         raise NotImplementedError(f"no importer for {fmt.value}")
     parsed = web_xlsx_mod.parse(file)
-    store_mod.upsert_account(
-        conn,
-        account_id=parsed.account_id,
-        iban=None,
-        account_type=None,
-        currency_code=parsed.account_currency_code,
-        masked_pan=parsed.masked_pan,
-    )
-    keys = [
+    # Build natural keys, then assign stable ids via the dedup helper.
+    keys: list[dedup_mod.TxKey] = [
         {
             "ts": r.ts,
             "amount_minor": r.amount_minor,
@@ -197,7 +205,18 @@ def _do_import(
         )
         for tx_id, r in zip(ids, parsed.rows)
     ]
-    return store_mod.insert_transactions(conn, run_id=run_id, txs=txs)
+    # Account upsert and transaction inserts share a single transaction
+    # so a partial failure rolls both back together.
+    account = store_mod.AccountSpec(
+        account_id=parsed.account_id,
+        iban=None,
+        account_type=None,
+        currency_code=parsed.account_currency_code,
+        masked_pan=parsed.masked_pan,
+    )
+    return store_mod.insert_transactions(
+        conn, run_id=run_id, txs=txs, account=account
+    )
 
 
 def cmd_import(args: argparse.Namespace) -> int:
@@ -217,14 +236,11 @@ def cmd_import_inbox(args: argparse.Namespace) -> int:
     if not inbox.exists():
         _emit_error(f"inbox dir not found: {inbox}")
         return 1
-    files = sorted(inbox.glob("privat*.xlsx")) + sorted(inbox.glob("*.xlsx"))
-    # de-dup paths while preserving order
-    seen: set[Path] = set()
-    files = [p for p in files if not (p in seen or seen.add(p))]
+    files = sorted(inbox.glob("*.xlsx"))
     if not files:
         print(json.dumps({"status": "empty", "inbox": str(inbox)}, indent=2))
         return 0
-    results = []
+    results: list[ImportResult] = []
     any_error = False
     for f in files:
         r = import_one(f, data_dir=data_dir, do_archive=not args.no_archive)
@@ -242,7 +258,7 @@ def _emit_error(msg: str) -> None:
     )
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="privat24-import",
         description="Import Privat24 statement exports into ~/finances/data.db",
@@ -275,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = _build_parser().parse_args(argv)
     return args.func(args)
 
 

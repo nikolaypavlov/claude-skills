@@ -20,15 +20,17 @@ The user just exported a statement from <https://privat24.ua/statement> and drop
    - If the user named a specific path, use it.
    - Otherwise list `~/finances/inbox/*.xlsx`. If multiple match, ask the user to confirm or pass `--all` to import every one.
 
-3. **Run the importer**. From this plugin's directory (`${CLAUDE_PLUGIN_ROOT}` resolves to it):
+3. **Run the importer**. From this plugin's directory (`${CLAUDE_PLUGIN_ROOT}` resolves to it). Use `set -e` so Bash propagates a `uv run` startup failure (missing venv, broken install) instead of leaving Claude to parse empty stdout as JSON:
 
    ```bash
+   set -e
    uv run --directory "${CLAUDE_PLUGIN_ROOT}" privat24-import import "<path>"
    ```
 
    Or for batch:
 
    ```bash
+   set -e
    uv run --directory "${CLAUDE_PLUGIN_ROOT}" privat24-import import-inbox
    ```
 

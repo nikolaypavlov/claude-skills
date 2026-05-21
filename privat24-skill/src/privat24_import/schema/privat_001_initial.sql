@@ -1,10 +1,13 @@
 -- privat_* schema, owned by privat24-skill.
--- This file is applied inside a single sqlite3 transaction by
--- src/privat24_import/lib/store.py when privat_schema_version reports a
--- version below 1. PRAGMA statements (journal_mode, foreign_keys,
--- busy_timeout) are set once per connection in store.py before the
--- migration runs, NOT in this file - journal_mode cannot be changed
--- inside a transaction.
+-- Applied inside a single sqlite3 transaction by
+-- src/privat24_import/core/store.py when privat_schema_version reports a
+-- version below 1. The applier loads this file via importlib.resources
+-- and executes each statement inside an explicit BEGIN/COMMIT so the
+-- whole migration is atomic - sqlite3.Connection.executescript() can
+-- NOT be used here because it issues an implicit COMMIT before running.
+-- PRAGMA statements (journal_mode, foreign_keys, busy_timeout) are set
+-- once per connection in store.py before the migration runs, NOT in
+-- this file - journal_mode cannot be changed inside a transaction.
 --
 -- Convention contract: docs/transactions-schema.md (v1.0).
 

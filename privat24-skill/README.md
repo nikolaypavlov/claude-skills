@@ -51,16 +51,26 @@ The plugin works without `monobank-mcp` or `personal-finance` installed. Imports
 
 ## CLI
 
+The CLI is invoked through `uv run`, which manages the virtualenv. The
+`--directory` flag points uv at the plugin's `pyproject.toml` so the
+commands work from any cwd:
+
 ```bash
 # Single file
-uv run privat24-import import ~/finances/inbox/vyp.xlsx
+uv run --directory <path-to-privat24-skill> \
+  privat24-import import ~/finances/inbox/vyp.xlsx
 
 # Every XLSX in the inbox
-uv run privat24-import import-inbox
+uv run --directory <path-to-privat24-skill> privat24-import import-inbox
 
 # Skip the archive move (e.g. for one-off inspection)
-uv run privat24-import import ~/path/to/file.xlsx --no-archive
+uv run --directory <path-to-privat24-skill> \
+  privat24-import import ~/path/to/file.xlsx --no-archive
 ```
+
+If you've `cd`'d into `privat24-skill/` you can drop `--directory`.
+Inside Claude Code the skill uses `${CLAUDE_PLUGIN_ROOT}` instead - see
+`skills/privat24-import/SKILL.md`.
 
 The JSON output is intended to be piped or parsed. Exit codes:
 
