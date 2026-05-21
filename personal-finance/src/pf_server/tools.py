@@ -4,7 +4,13 @@ PR#3 lands the three read-path tools (``list_accounts``,
 ``get_transactions``, ``summarize_spending``) plus a diagnostic
 (``data_sources``). The remaining tools from the design (`find_*`,
 `get_report_bundle`, `set_category`, `add_rule`, `reload_rules`,
-`apply_rules_retroactively`, `categorize_uncategorized`) ship in PR#4.
+`apply_rules_retroactively`, `categorize_uncategorized`) ship in PR#4
+and are registered here as no-op stubs from a metadata table so the
+schema shape is visible to discovery clients without 7x boilerplate.
+
+Tool errors are raised as ``mcp.server.fastmcp.exceptions.ToolError``
+so FastMCP serialises them into a structured tool-error response on the
+wire (rather than letting them escape as server-level exceptions).
 """
 
 from __future__ import annotations
@@ -13,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from . import queries, store
 from .types import DataSourcesReport
@@ -23,6 +30,15 @@ _NOT_YET_IMPLEMENTED = (
     "PR#3 only exposes the read-path skeleton: list_accounts, "
     "get_transactions, summarize_spending, data_sources."
 )
+
+
+def _pr4_stub() -> Any:
+    """Shared body for every PR#4 placeholder tool. FastMCP infers each
+    tool's parameter schema from the function signature, so we keep the
+    PR#4 surface as seven explicit functions below with realistic
+    arguments (rather than a metadata-driven loop with ``**kwargs``,
+    which the SDK rejects). All of them just delegate here."""
+    raise ToolError(_NOT_YET_IMPLEMENTED)
 
 
 def build_server(db_path: str | Path | None = None) -> FastMCP:
@@ -118,7 +134,7 @@ def build_server(db_path: str | Path | None = None) -> FastMCP:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         if limit < 1 or limit > 5000:
-            raise ValueError(f"limit must be in [1, 5000], got {limit}")
+            raise ToolError(f"limit must be in [1, 5000], got {limit}")
         conn = _open()
         try:
             txs = queries.get_transactions(
@@ -156,40 +172,50 @@ def build_server(db_path: str | Path | None = None) -> FastMCP:
     ) -> list[dict[str, Any]]:
         conn = _open()
         try:
-            buckets = queries.summarize_spending(
-                conn,
-                from_ts=from_ts,
-                to_ts=to_ts,
-                group_by=group_by,
-                account_id=account_id,
-                bank=bank,
-                currency_code=currency_code,
-            )
+            try:
+                buckets = queries.summarize_spending(
+                    conn,
+                    from_ts=from_ts,
+                    to_ts=to_ts,
+                    group_by=group_by,
+                    account_id=account_id,
+                    bank=bank,
+                    currency_code=currency_code,
+                )
+            except ValueError as exc:
+                # `_group_by_expression` raises ValueError on an unknown
+                # group_by. Surface it as a clean tool-error so the LLM
+                # gets the canonical valid-values list.
+                raise ToolError(str(exc)) from exc
             return [dict(b) for b in buckets]
         finally:
             conn.close()
 
-    # ---- PR#4 placeholders. Surfaced so the schema shape is visible
-    # to LLMs surveying the server, but bodies just raise. The official
-    # mcp SDK turns the RuntimeError into a clean tool-error response. ----
+    # PR#4 placeholders. Each has a realistic signature so FastMCP
+    # publishes the parameter schema discovery clients will need in
+    # PR#4. Bodies just delegate to _pr4_stub().
 
-    @server.tool(description="Search transactions by description substring. Ships in PR#4.")
-    def find_transaction(query: str, limit: int = 50) -> list[dict[str, Any]]:
-        raise RuntimeError(_NOT_YET_IMPLEMENTED)
+    @server.tool(
+        description="Search transactions by description substring. Ships in PR#4."
+    )
+    def find_transaction(query: str, limit: int = 50) -> Any:
+        return _pr4_stub()
 
-    @server.tool(description="Build a full report bundle for the given period. Ships in PR#4.")
+    @server.tool(
+        description="Build a full report bundle for the given period. Ships in PR#4."
+    )
     def get_report_bundle(
         from_ts: int,
         to_ts: int,
         account_id: str | None = None,
         bank: str | None = None,
         comparison: bool = True,
-    ) -> dict[str, Any]:
-        raise RuntimeError(_NOT_YET_IMPLEMENTED)
+    ) -> Any:
+        return _pr4_stub()
 
     @server.tool(description="Pin a manual category on a specific tx. Ships in PR#4.")
-    def set_category(tx_id: str, category: str, note: str | None = None) -> dict[str, Any]:
-        raise RuntimeError(_NOT_YET_IMPLEMENTED)
+    def set_category(tx_id: str, category: str, note: str | None = None) -> Any:
+        return _pr4_stub()
 
     @server.tool(description="Add a categorization rule (preview-only). Ships in PR#4.")
     def add_rule(
@@ -198,19 +224,25 @@ def build_server(db_path: str | Path | None = None) -> FastMCP:
         category: str,
         priority: int = 100,
         source: str = "claude-suggested",
-    ) -> dict[str, Any]:
-        raise RuntimeError(_NOT_YET_IMPLEMENTED)
+    ) -> Any:
+        return _pr4_stub()
 
-    @server.tool(description="Reload categorization rules from the YAML / DB sources. Ships in PR#4.")
-    def reload_rules() -> dict[str, Any]:
-        raise RuntimeError(_NOT_YET_IMPLEMENTED)
+    @server.tool(
+        description="Reload categorization rules from the YAML / DB sources. Ships in PR#4."
+    )
+    def reload_rules() -> Any:
+        return _pr4_stub()
 
-    @server.tool(description="Apply a rule retroactively to historical transactions. Ships in PR#4.")
-    def apply_rules_retroactively(rule_id: int, dry_run: bool = True) -> dict[str, Any]:
-        raise RuntimeError(_NOT_YET_IMPLEMENTED)
+    @server.tool(
+        description="Apply a rule retroactively to historical transactions. Ships in PR#4."
+    )
+    def apply_rules_retroactively(rule_id: int, dry_run: bool = True) -> Any:
+        return _pr4_stub()
 
-    @server.tool(description="Categorize all uncategorized transactions. Ships in PR#4.")
-    def categorize_uncategorized(scope: str = "all") -> dict[str, Any]:
-        raise RuntimeError(_NOT_YET_IMPLEMENTED)
+    @server.tool(
+        description="Categorize all uncategorized transactions. Ships in PR#4."
+    )
+    def categorize_uncategorized(scope: str = "all") -> Any:
+        return _pr4_stub()
 
     return server

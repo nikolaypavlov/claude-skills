@@ -8,9 +8,14 @@ hypothetical ``revolut-mcp`` would land as ``revolut_*`` without any
 code change here.
 
 We treat each detected bank's table as a "view source" and build a
-UNION ALL projection over all sources at query time. Columns missing
-in a particular bank's schema (e.g. ``cashback_minor`` is mono-only) are
-substituted with ``NULL`` so the projected shape is uniform.
+UNION ALL projection over all sources at query time. Every detected
+bank table is required to expose the columns in ``COMMON_TX_COLUMNS`` /
+``COMMON_ACCOUNT_COLUMNS`` per the cross-plugin contract in
+``docs/transactions-schema.md``. If a future bank omits a column the
+projected query will fail at execute time with
+``OperationalError: no such column`` - we do NOT silently inject
+``NULL`` for absent columns, because that would mask a real contract
+violation.
 """
 
 from __future__ import annotations
@@ -20,7 +25,10 @@ import sqlite3
 from dataclasses import dataclass
 
 # Columns we expose at the umbrella query layer. Order matters - all
-# UNION ALL legs must select these in the same sequence.
+# UNION ALL legs must select these in the same sequence. The literal
+# ``bank`` column is materialised from the bank prefix in the projection,
+# so it is selected from the discovered prefix rather than from a real
+# column in the source table.
 COMMON_TX_COLUMNS: tuple[str, ...] = (
     "id",
     "bank",
@@ -48,14 +56,16 @@ COMMON_ACCOUNT_COLUMNS: tuple[str, ...] = (
     "opened_at",
 )
 
-# Per-bank tables we know how to read. New banks just add an entry.
+# Per-bank tables we know how to read. New banks just add an entry. The
+# regex deliberately rejects underscores in the prefix so a bank named
+# "my_other" doesn't collide with our suffix convention.
 _TX_TABLE_PATTERN = re.compile(r"^(?P<bank>[a-z][a-z0-9]*)_transactions$")
 _ACCOUNT_TABLE_PATTERN = re.compile(r"^(?P<bank>[a-z][a-z0-9]*)_accounts$")
 
 
 @dataclass(frozen=True)
 class DiscoveredSources:
-    """Tables detected in the shared store. Each list element is the
+    """Tables detected in the shared store. Each tuple element is the
     bank prefix - e.g. ``"mono"`` or ``"privat"``."""
 
     tx_banks: tuple[str, ...]
@@ -74,19 +84,13 @@ def discover_sources(conn: sqlite3.Connection) -> DiscoveredSources:
     """
     names = {
         row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     tx_banks = sorted(
-        m.group("bank")
-        for name in names
-        if (m := _TX_TABLE_PATTERN.match(name))
+        m.group("bank") for name in names if (m := _TX_TABLE_PATTERN.match(name))
     )
     account_banks = sorted(
-        m.group("bank")
-        for name in names
-        if (m := _ACCOUNT_TABLE_PATTERN.match(name))
+        m.group("bank") for name in names if (m := _ACCOUNT_TABLE_PATTERN.match(name))
     )
     return DiscoveredSources(tuple(tx_banks), tuple(account_banks))
 
@@ -104,9 +108,9 @@ def build_tx_union_sql(sources: DiscoveredSources) -> str | None:
     """
     if not sources.tx_banks:
         return None
-    legs: list[str] = []
-    for bank in sources.tx_banks:
-        legs.append(_tx_leg_sql(bank))
+    legs = [
+        _leg_sql(bank, "transactions", COMMON_TX_COLUMNS) for bank in sources.tx_banks
+    ]
     return "\n  UNION ALL\n".join(legs)
 
 
@@ -114,32 +118,22 @@ def build_accounts_union_sql(sources: DiscoveredSources) -> str | None:
     """UNION ALL SELECT over every detected ``<bank>_accounts`` table."""
     if not sources.account_banks:
         return None
-    legs = [_account_leg_sql(bank) for bank in sources.account_banks]
+    legs = [
+        _leg_sql(bank, "accounts", COMMON_ACCOUNT_COLUMNS)
+        for bank in sources.account_banks
+    ]
     return "\n  UNION ALL\n".join(legs)
 
 
-def _tx_leg_sql(bank: str) -> str:
-    """One UNION ALL leg projecting a bank-specific table to the common
-    transaction shape. Columns absent in the bank's table are NULL'd."""
-    table = f"{bank}_transactions"
-    # Each bank may or may not have these optional columns. We assume
-    # the cross-plugin contract (docs/transactions-schema.md) holds for
-    # required columns and use NULL fallbacks for the optional ones.
-    # NOTE: every bank we ship today writes all listed columns; the
-    # COALESCE-like fallbacks only kick in for future banks that omit
-    # them.
-    return (
-        f"  SELECT id, '{bank}' AS bank, account_id, ts, amount_minor, "
-        f"currency_code, op_amount_minor, op_currency_code, mcc, "
-        f"description, counterparty, balance_minor, imported_at "
-        f"FROM {table}"
+def _leg_sql(bank: str, table_suffix: str, columns: tuple[str, ...]) -> str:
+    """One UNION ALL leg projecting a bank-specific table to the
+    common shape. Column names are inlined; only the discovered ``bank``
+    prefix is interpolated, and the regex guarantees it is
+    ``[a-z][a-z0-9]*`` so no SQL escaping is needed for the string
+    literal. The table identifier is double-quoted so a future bank
+    prefix that happens to be a SQLite reserved word (``group``,
+    ``order``, etc.) still produces valid SQL."""
+    projected = ", ".join(
+        f"'{bank}' AS bank" if col == "bank" else col for col in columns
     )
-
-
-def _account_leg_sql(bank: str) -> str:
-    table = f"{bank}_accounts"
-    return (
-        f"  SELECT account_id, '{bank}' AS bank, iban, type, currency_code, "
-        f"masked_pan, label, opened_at "
-        f"FROM {table}"
-    )
+    return f'  SELECT {projected} FROM "{bank}_{table_suffix}"'

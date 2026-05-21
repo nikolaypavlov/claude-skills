@@ -167,8 +167,8 @@
     {
       "name": "personal-finance",
       "source": "./personal-finance",
-      "description": "Umbrella MCP server for cross-bank personal finance queries over the shared ~/finances/data.db SQLite store. Auto-discovers <bank>_transactions tables (mono_*, privat_*, future banks) via sqlite_master and projects them through a UNION ALL view. Owns pf_* tables for categorization rules and manual overrides. Read-path tools (list_accounts / get_transactions / summarize_spending / data_sources) ship in 0.1.0; categorization + reporting in PR#4.",
-      "version": "0.1.0",
+      "description": "Umbrella MCP server for cross-bank personal finance queries over the shared ~/finances/data.db SQLite store. Auto-discovers <bank>_transactions tables (mono_*, privat_*, future banks) via sqlite_master and projects them through a UNION ALL view. Owns pf_* tables for categorization rules and manual overrides. Read-path tools (list_accounts / get_transactions / summarize_spending / data_sources) ship today; categorization + reporting in PR#4.",
+      "version": "0.2.0",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"

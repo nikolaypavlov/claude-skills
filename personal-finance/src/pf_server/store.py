@@ -50,6 +50,13 @@ def open_db(path: str | Path | None = None) -> sqlite3.Connection:
     target = Path(path).expanduser() if path else default_db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(target)
+    # Disable Python sqlite3's implicit transaction management so the
+    # explicit BEGIN/COMMIT in `ensure_pf_schema` (and any caller) is
+    # the sole transaction boundary. Without this, `conn.execute("BEGIN")`
+    # can collide with an implicit transaction Python opened on a
+    # prior DML statement and raise "cannot start a transaction within
+    # a transaction" on some CPython versions.
+    conn.isolation_level = None
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
@@ -63,15 +70,11 @@ def ensure_pf_schema(conn: sqlite3.Connection) -> None:
     The bootstrap CREATE TABLE for ``pf_schema_version`` lives inside
     the migration SQL itself, so the version tracker is part of the
     same atomic transaction as the rest of the pf_* DDL. On a fresh DB
-    the SELECT raises ``OperationalError`` which we catch and treat as
-    ``applied = 0``.
+    the SELECT raises ``OperationalError: no such table`` which we
+    catch (and ONLY that variant) and treat as ``applied = 0``. Other
+    operational failures (locked / corrupt / read-only DB) propagate.
     """
-    try:
-        applied = conn.execute(
-            "SELECT COALESCE(MAX(version), 0) FROM pf_schema_version"
-        ).fetchone()[0]
-    except sqlite3.OperationalError:
-        applied = 0
+    applied = _read_applied_version(conn)
     for version, filename in _MIGRATION_FILES:
         if version <= applied:
             continue
@@ -85,6 +88,22 @@ def ensure_pf_schema(conn: sqlite3.Connection) -> None:
         except Exception:
             conn.rollback()
             raise
+
+
+def _read_applied_version(conn: sqlite3.Connection) -> int:
+    """Return the highest applied migration version, or 0 when the
+    version table doesn't exist yet. Any other ``OperationalError``
+    (locked DB, corrupt DB, read-only filesystem) propagates so the
+    caller sees the real cause instead of a misleading 0."""
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM pf_schema_version"
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).lower():
+            raise
+        return 0
+    return int(row[0]) if row else 0
 
 
 def _load_migration_sql(filename: str) -> str:
@@ -113,11 +132,8 @@ def _split_statements(sql: str) -> list[str]:
 
 
 def schema_version(conn: sqlite3.Connection) -> int:
-    """Return the highest applied pf_* migration version, or 0."""
-    try:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(version), 0) FROM pf_schema_version"
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return 0
-    return int(row[0]) if row else 0
+    """Return the highest applied pf_* migration version, or 0 when the
+    tracker table does not exist yet. Other ``OperationalError`` cases
+    (locked / corrupt DB) propagate - they are not "no migration applied"
+    and must not silently report as version 0."""
+    return _read_applied_version(conn)

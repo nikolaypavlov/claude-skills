@@ -1,6 +1,6 @@
 [project]
 name = "pf-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Personal finance MCP umbrella server - cross-bank query/report over the shared ~/finances/data.db"
 authors = [
     { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },

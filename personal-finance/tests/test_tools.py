@@ -12,6 +12,7 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
 from pf_server.tools import build_server
 
 
@@ -67,22 +68,16 @@ def test_get_transactions_via_tool(both_banks_db: Path) -> None:
 
 def test_get_transactions_rejects_bad_limit(both_banks_db: Path) -> None:
     server = build_server(db_path=both_banks_db)
-    # The tool wrapper validates `limit`; FastMCP turns the raise into
-    # a tool-error in the protocol layer, but the python-level call
-    # still raises ValueError.
-    try:
+    # The tool wrapper validates `limit` and raises ToolError; FastMCP
+    # turns that into a structured tool-error response on the wire and
+    # re-raises Python-side. Using pytest.raises here so a regression
+    # where the exception is swallowed (test passes green with no
+    # validation) fails loudly.
+    with pytest.raises(Exception, match="limit must be"):
         _call_tool(server, "get_transactions", limit=0)
-    except Exception as exc:
-        assert "limit must be" in str(exc)
-    else:
-        raise AssertionError("expected limit=0 to be rejected")
 
 
 def test_pr4_tool_raises(both_banks_db: Path) -> None:
     server = build_server(db_path=both_banks_db)
-    try:
+    with pytest.raises(Exception, match="PR#4"):
         _call_tool(server, "set_category", tx_id="mono_t1", category="x")
-    except Exception as exc:
-        assert "PR#4" in str(exc)
-    else:
-        raise AssertionError("PR#4 stub should raise")
