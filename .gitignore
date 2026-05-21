@@ -56,3 +56,9 @@ ENV/
 *.temp
 
 samples/
+
+# Reference screenshots dropped into the repo for chat context.
+# These can contain personal data (IBAN, masked PAN, balances) - never commit.
+Screenshot*.png
+Screenshot*.jpg
+Screenshot*.jpeg

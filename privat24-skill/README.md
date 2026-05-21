@@ -19,13 +19,26 @@ This is one of three plugins in the personal-finance design (`docs/personal-fina
 
 ## Quick start
 
-1. Install the plugin (via `/plugin install` or marketplace UI).
-2. Export your statement from <https://privat24.ua/statement>:
-   - pick the card and date range
-   - choose **Excel** as the file format
-   - save the downloaded `vyp*.xlsx` (or similarly-named file)
-3. Drop it into `~/finances/inbox/` (the directory is auto-created on first run).
-4. Tell Claude "import privat" (or your file name). The skill picks it up.
+1. Make sure [uv](https://docs.astral.sh/uv/) is installed (`brew install uv` or the official installer). The skill ships as a Python package and `uv run` manages its virtualenv.
+2. Install the plugin (via `/plugin install privat24-skill@ai-engineering-skills` or marketplace UI).
+3. Export the XLSX statement from Privat24 (see [Exporting a statement](#exporting-a-statement) below).
+4. Drop it into `~/finances/inbox/` (the directory is auto-created on first run).
+5. Tell Claude "import privat" (or mention the file name). The skill picks it up and runs `privat24-import import-inbox`.
+
+## Exporting a statement
+
+1. Open <https://next.privat24.ua/wallet> in any browser and sign in.
+2. Click the card you want to export from the left-hand list.
+3. On the right pane stay on the **"Історія"** (History) tab.
+4. Optionally set a date range via the **"Період"** picker. Wider ranges
+   are fine - the importer dedupes by natural key so overlapping
+   re-exports do not create duplicate rows.
+5. Click the **"Експорт у XLS"** icon (Excel-style grey sheet)
+   between the search field and the **"Фільтр"** button.
+6. Save the downloaded file (Privat24 names it something like
+   `vyp_<date_range>.xlsx`).
+
+Repeat per card - each XLSX covers exactly one card.
 
 ## What the importer does
 
@@ -38,12 +51,18 @@ This is one of three plugins in the personal-finance design (`docs/personal-fina
 
 ## Schema
 
-See [`schema/privat_001_initial.sql`](./schema/privat_001_initial.sql). All tables are prefixed `privat_`:
+See [`src/privat24_import/schema/privat_001_initial.sql`](./src/privat24_import/schema/privat_001_initial.sql). The SQL travels with the Python package (loaded via `importlib.resources`) so it works in both source-tree and wheel layouts. All tables are prefixed `privat_`:
 
 - `privat_accounts` - one row per card, derived from the masked PAN in the XLSX.
 - `privat_transactions` - one row per statement entry; conforms to `docs/transactions-schema.md` (cross-plugin contract).
 - `privat_import_runs` - audit log; `file_sha256` indexed for fast short-circuit.
 - `privat_schema_version` - migration tracker.
+
+The migration runs inside a single explicit `BEGIN`/`COMMIT` (no `executescript` - it auto-commits before the script runs and would defeat the envelope). A crash mid-apply rolls back every DDL including the version-tracker table.
+
+## Timezone handling
+
+Privat24 web exports stamp every row with naive Europe/Kyiv local time. The parser attaches `ZoneInfo("Europe/Kyiv")` so the stored unix timestamp is true UTC seconds. The `tzdata` PyPI package is pinned as a runtime dependency so `ZoneInfo` works on systems without an IANA tz database (Windows by default, some slim Linux container images).
 
 ## Standalone use
 
