@@ -92,6 +92,58 @@ def test_add_with_apply_backfills(both_banks_db: Path, capsys: pytest.CaptureFix
     assert row == ("Test/Privat",)
 
 
+def test_add_invalid_regex_rejected_before_insert(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A malformed regex must surface at add time with a CliError, not
+    silently insert a rule that never matches at categorize time."""
+    rc, _, err = _run(
+        [
+            "add",
+            "--match-field",
+            "description",
+            "--pattern",
+            "(unclosed",
+            "--category",
+            "Trash",
+            "--db",
+            str(both_banks_db),
+        ],
+        capsys,
+    )
+    assert rc == 1
+    err_payload = json.loads(err)
+    assert err_payload["ok"] is False
+    assert "not a valid Python regex" in err_payload["error"]
+    # Validation runs before the DB open, so the rule could not have
+    # landed anywhere (the assertion in the next test confirms the happy
+    # path does open the DB and insert).
+
+
+def test_add_mcc_pattern_not_validated_as_regex(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """MCC patterns are exact integer-string matches, not regexes; an
+    "invalid regex" like "(" is still a valid MCC literal and must not
+    be rejected."""
+    rc, payload, err = _run(
+        [
+            "add",
+            "--match-field",
+            "mcc",
+            "--pattern",
+            "(",
+            "--category",
+            "X",
+            "--db",
+            str(both_banks_db),
+        ],
+        capsys,
+    )
+    assert rc == 0, err
+    assert payload["ok"] is True
+
+
 def test_add_invalid_match_field_rejected(
     both_banks_db: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -269,14 +321,7 @@ def test_set_override_writes_with_note(
     assert row == ("Pinned", "test pin")
 
 
-# --- reload / list ----------------------------------------------------------
-
-
-def test_reload_reports_rule_count(both_banks_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    rc, payload, err = _run(["reload", "--db", str(both_banks_db)], capsys)
-    assert rc == 0, err
-    assert payload["rules_count"] > 0
-    assert "rules reload on every invocation" in payload["note"]
+# --- list -------------------------------------------------------------------
 
 
 def test_list_returns_seed_plus_db(both_banks_db: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -3,10 +3,11 @@
 ``overrides.local.yaml`` into ``category_overrides`` so user pins
 survive across pulls.
 
-The whole pass runs inside one explicit BEGIN/COMMIT - same atomicity
-contract as the migration applier in ``store.py``. A crash mid-pass
-rolls back every row; ``INSERT OR IGNORE`` on ``tx_category`` (PK on
-``tx_id``) keeps the rerun idempotent.
+The rule pass and the overrides import each run in their own explicit
+BEGIN/COMMIT (two separate transactions). Both halves are idempotent:
+``INSERT OR REPLACE`` for overrides, ``INSERT OR IGNORE`` for
+``tx_category``. A crash between the two leaves overrides committed and
+the rule pass to be re-run - safe to retry.
 """
 
 from __future__ import annotations
@@ -21,7 +22,13 @@ from .queries import (
     CATEGORY_JOIN_SQL,
     TX_COLUMNS_SQL,
 )
-from .rules import Rule, first_match, load_all_rules, load_overrides
+from .rules import (
+    DEFAULT_PRIORITY_BY_FIELD,
+    Rule,
+    first_match,
+    load_all_rules,
+    load_overrides,
+)
 from .view import build_tx_union_sql, discover_sources
 
 VALID_SCOPES: tuple[str, ...] = ("all", "last-n-days")
@@ -46,7 +53,7 @@ def apply_rules(
           "no_match_count":    int,    # left uncategorized this pass
           "overrides_applied": int,    # rows UPSERTed into category_overrides
           "active_rules":      int,    # rules considered (after enabled filter)
-          "scope": { "scope": str, "from_ts": int|None, "to_ts": int|None },
+          "scope": { "scope": str, "from_ts": int|None },
         }
 
     ``data_dir`` defaults to ``default_db_path().parent`` so
@@ -81,7 +88,6 @@ def apply_rules(
             active_rules=len(enabled_rules),
             scope=scope,
             from_ts=from_ts,
-            to_ts=None,
         )
 
     pending = _fetch_uncategorized(conn, union, from_ts=from_ts)
@@ -113,7 +119,6 @@ def apply_rules(
         active_rules=len(enabled_rules),
         scope=scope,
         from_ts=from_ts,
-        to_ts=None,
     )
 
 
@@ -220,15 +225,38 @@ def _summary(
     active_rules: int,
     scope: str,
     from_ts: int | None,
-    to_ts: int | None,
 ) -> dict[str, Any]:
     return {
         "categorized_count": categorized,
         "no_match_count": no_match,
         "overrides_applied": overrides,
         "active_rules": active_rules,
-        "scope": {"scope": scope, "from_ts": from_ts, "to_ts": to_ts},
+        "scope": {"scope": scope, "from_ts": from_ts},
     }
+
+
+def _matching_uncategorized(
+    conn: sqlite3.Connection, rule: Rule
+) -> list[dict[str, Any]]:
+    """Return uncategorized transactions in the store that the given
+    rule would match. Used by both ``preview_rule`` and
+    ``apply_rule_by_id`` so the discover/union/filter pipeline lives in
+    one place. Returns ``[]`` on a store with no ingest plugin
+    installed."""
+    sources = discover_sources(conn)
+    union = build_tx_union_sql(sources)
+    if union is None:
+        return []
+    rows = _fetch_uncategorized(conn, union, from_ts=None)
+    return [
+        row
+        for row in rows
+        if rule.matches(
+            mcc=row["mcc"],
+            description=row["description"],
+            counterparty=row["counterparty"],
+        )
+    ]
 
 
 def preview_rule(
@@ -239,15 +267,17 @@ def preview_rule(
     category: str,
     limit_sample: int = 5,
 ) -> dict[str, Any]:
-    """Probe how many existing transactions a candidate rule would touch.
+    """Probe how many uncategorized transactions a candidate rule would
+    touch.
 
-    Used by ``pf-rules add`` to surface the "would affect N rows" preview
-    the design doc spec calls for. Counts ALL matching transactions in
-    the store (not scoped) but returns at most ``limit_sample`` example
-    rows. Does NOT write to ``tx_category`` - that is the explicit job
-    of ``pf-rules apply``.
+    Counts only uncategorized rows (those where
+    ``COALESCE(category_overrides.category, tx_category.category) IS NULL``)
+    - i.e. exactly the rows a subsequent ``apply_rule_by_id`` would
+    write. Already-categorized transactions are excluded, so a pattern
+    matching merchants the user has already classified shows
+    ``would_affect_count: 0``.
 
-    Returns::
+    Does NOT write to ``tx_category``. Returns::
 
         {
           "match_field": str,
@@ -257,40 +287,20 @@ def preview_rule(
           "sample": list[Transaction],
         }
     """
-    sources = discover_sources(conn)
-    union = build_tx_union_sql(sources)
-    if union is None:
-        return {
-            "match_field": match_field,
-            "pattern": pattern,
-            "category": category,
-            "would_affect_count": 0,
-            "sample": [],
-        }
     candidate = Rule(
-        priority=DEFAULT_PRIORITY_FOR_FIELD[match_field],
+        priority=DEFAULT_PRIORITY_BY_FIELD[match_field],
         match_field=match_field,
         pattern=pattern,
         category=category,
         source="preview",
     )
-    rows = _fetch_uncategorized(conn, union, from_ts=None)
-    matched = [
-        row
-        for row in rows
-        if candidate.matches(
-            mcc=row["mcc"],
-            description=row["description"],
-            counterparty=row["counterparty"],
-        )
-    ]
-    sample = matched[: max(0, int(limit_sample))]
+    matched = _matching_uncategorized(conn, candidate)
     return {
         "match_field": match_field,
         "pattern": pattern,
         "category": category,
         "would_affect_count": len(matched),
-        "sample": sample,
+        "sample": matched[: max(0, int(limit_sample))],
     }
 
 
@@ -326,28 +336,7 @@ def apply_rule_by_id(
         rule_id=int(row[0]),
         enabled=bool(row[5]),
     )
-    sources = discover_sources(conn)
-    union = build_tx_union_sql(sources)
-    if union is None:
-        return {
-            "rule_id": rule.rule_id,
-            "category": rule.category,
-            "matched_count": 0,
-            "applied": 0,
-            "dry_run": dry_run,
-            "sample": [],
-        }
-
-    pending = _fetch_uncategorized(conn, union, from_ts=None)
-    matched = [
-        row
-        for row in pending
-        if rule.matches(
-            mcc=row["mcc"],
-            description=row["description"],
-            counterparty=row["counterparty"],
-        )
-    ]
+    matched = _matching_uncategorized(conn, rule)
 
     applied = 0
     if not dry_run and matched:
@@ -370,12 +359,3 @@ def apply_rule_by_id(
         "dry_run": dry_run,
         "sample": matched[:5],
     }
-
-
-# Mapping used by ``preview_rule`` so the default priority for a
-# would-be rule matches the source it would land in once persisted.
-DEFAULT_PRIORITY_FOR_FIELD: dict[str, int] = {
-    "mcc": 300,
-    "counterparty": 200,
-    "description": 100,
-}

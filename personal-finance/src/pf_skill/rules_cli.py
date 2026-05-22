@@ -5,9 +5,8 @@ Subcommands::
     pf-rules add --match-field FIELD --pattern P --category C
                  [--priority N] [--source S] [--apply]
     pf-rules apply --rule-id N [--dry-run]
-    pf-rules set-category --tx-id ID --category C [--note T]
+    pf-rules set-category --tx-id ID --category C
     pf-rules set-override --tx-id ID --category C [--note T]
-    pf-rules reload
     pf-rules list [--enabled-only] [--source S]
 
 Every mutating subcommand runs inside an explicit BEGIN/COMMIT so a
@@ -20,23 +19,24 @@ show the preview to the user first and only call ``apply`` on yes.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from collections.abc import Sequence
 from contextlib import closing
 from typing import Any
 
-from .common.categorizer import (
-    DEFAULT_PRIORITY_FOR_FIELD,
-    apply_rule_by_id,
-    preview_rule,
-)
+from .common.categorizer import apply_rule_by_id, preview_rule
 from .common.cli import (
     CliError,
     resolve_db_path,
     run_subcommand,
 )
-from .common.rules import VALID_MATCH_FIELDS, load_all_rules
+from .common.rules import (
+    DEFAULT_PRIORITY_BY_FIELD,
+    VALID_MATCH_FIELDS,
+    load_all_rules,
+)
 from .common.store import open_db
 
 
@@ -55,10 +55,23 @@ def cmd_add(args: argparse.Namespace) -> dict[str, Any]:
         raise CliError("--pattern must be non-empty")
     if not args.category:
         raise CliError("--category must be non-empty")
+    # Compile the pattern up front so a typo lands as a clean CliError
+    # rather than a silently-non-matching rule that ships to the DB and
+    # produces would_affect_count=0 on every preview. ``mcc`` patterns
+    # are exact integer matches inside Rule.matches() so they are not
+    # compiled as regex; skip the check for them.
+    if args.match_field != "mcc":
+        try:
+            re.compile(args.pattern)
+        except re.error as exc:
+            raise CliError(
+                f"--pattern is not a valid Python regex: {exc}",
+                kind="ValueError",
+            ) from exc
     priority = (
         int(args.priority)
         if args.priority is not None
-        else DEFAULT_PRIORITY_FOR_FIELD[args.match_field]
+        else DEFAULT_PRIORITY_BY_FIELD[args.match_field]
     )
     now_ts = int(time.time())
     db_path = resolve_db_path(args.db)
@@ -174,21 +187,6 @@ def cmd_set_override(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def cmd_reload(_args: argparse.Namespace) -> dict[str, Any]:
-    """No-op today: rules.load_all_rules reads every source on every
-    invocation. The subcommand exists so SKILL.md can pretend to have
-    a refresh action without lying about the contract - we just count
-    the active rules so the user sees a real number back."""
-    db_path = resolve_db_path(_args.db)
-    with closing(open_db(db_path)) as conn:
-        rules = load_all_rules(conn, data_dir=db_path.parent)
-    return {
-        "ok": True,
-        "rules_count": len(rules),
-        "note": "rules reload on every invocation; nothing cached",
-    }
-
-
 def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
     db_path = resolve_db_path(args.db)
     with closing(open_db(db_path)) as conn:
@@ -256,7 +254,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_set = sub.add_parser("set-category", help="Pin a single tx to a category (tx_category)")
     p_set.add_argument("--tx-id", required=True)
     p_set.add_argument("--category", required=True)
-    p_set.add_argument("--note", default=None, help="Stored only for set-override; ignored here")
     p_set.add_argument("--db", default=None)
     p_set.set_defaults(func=cmd_set_category)
 
@@ -269,13 +266,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_over.add_argument("--note", default=None)
     p_over.add_argument("--db", default=None)
     p_over.set_defaults(func=cmd_set_override)
-
-    p_reload = sub.add_parser(
-        "reload",
-        help="Refresh the rule view (no-op today; rules reload at every call)",
-    )
-    p_reload.add_argument("--db", default=None)
-    p_reload.set_defaults(func=cmd_reload)
 
     p_list = sub.add_parser("list", help="List rules merged from every source")
     p_list.add_argument(

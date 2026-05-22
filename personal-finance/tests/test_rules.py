@@ -13,9 +13,7 @@ import pytest
 
 from pf_skill.common import store
 from pf_skill.common.rules import (
-    DEFAULT_PRIORITY_COUNTERPARTY,
-    DEFAULT_PRIORITY_DESCRIPTION,
-    DEFAULT_PRIORITY_MCC,
+    DEFAULT_PRIORITY_BY_FIELD,
     Rule,
     first_match,
     load_all_rules,
@@ -29,7 +27,7 @@ def test_seed_description_rules_loaded(empty_db: Path) -> None:
     desc = [r for r in rules if r.source == "seed-description"]
     assert desc, "expected at least one seed description rule"
     assert all(r.match_field == "description" for r in desc)
-    assert all(r.priority == DEFAULT_PRIORITY_DESCRIPTION for r in desc)
+    assert all(r.priority == DEFAULT_PRIORITY_BY_FIELD["description"] for r in desc)
 
 
 def test_seed_mcc_rules_loaded(empty_db: Path) -> None:
@@ -38,7 +36,7 @@ def test_seed_mcc_rules_loaded(empty_db: Path) -> None:
     mcc = [r for r in rules if r.source == "seed-mcc"]
     assert mcc, "expected at least one seed MCC rule"
     assert all(r.match_field == "mcc" for r in mcc)
-    assert all(r.priority == DEFAULT_PRIORITY_MCC for r in mcc)
+    assert all(r.priority == DEFAULT_PRIORITY_BY_FIELD["mcc"] for r in mcc)
     # The _comment key must NOT have become a rule.
     assert not any(r.pattern.startswith("_") for r in mcc)
     # 5814 is a representative MCC; we ship it in the seed.
@@ -49,8 +47,8 @@ def test_sort_order_puts_description_before_mcc(empty_db: Path) -> None:
     conn = store.open_db(empty_db)
     rules = load_all_rules(conn, data_dir=empty_db.parent)
     # First rule must be priority 100 (description). Last must be >= 300 (mcc).
-    assert rules[0].priority == DEFAULT_PRIORITY_DESCRIPTION
-    assert rules[-1].priority >= DEFAULT_PRIORITY_MCC
+    assert rules[0].priority == DEFAULT_PRIORITY_BY_FIELD["description"]
+    assert rules[-1].priority >= DEFAULT_PRIORITY_BY_FIELD["mcc"]
 
 
 def test_local_counterparty_missing_is_silent(empty_db: Path) -> None:
@@ -74,7 +72,7 @@ def test_local_counterparty_loaded(tmp_path: Path) -> None:
     local = [r for r in rules if r.source == "local-counterparty"]
     assert len(local) == 1
     assert local[0].match_field == "counterparty"
-    assert local[0].priority == DEFAULT_PRIORITY_COUNTERPARTY
+    assert local[0].priority == DEFAULT_PRIORITY_BY_FIELD["counterparty"]
     assert local[0].pattern == "ACME Corp"
     assert local[0].category == "Робота"
 

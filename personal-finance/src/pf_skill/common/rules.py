@@ -38,14 +38,21 @@ import yaml
 
 from .store import default_db_path
 
-DEFAULT_PRIORITY_DESCRIPTION = 100
-DEFAULT_PRIORITY_COUNTERPARTY = 200
-DEFAULT_PRIORITY_MCC = 300
+# Single source of truth for default rule priorities. Used by every
+# seed/local loader to stamp imported rules, and by ``cmd_add`` /
+# ``preview_rule`` to pick a default when the user doesn't pass
+# ``--priority`` explicitly. Lower number = checked first; description
+# rules outrank counterparty rules which outrank MCC fallback.
+DEFAULT_PRIORITY_BY_FIELD: dict[str, int] = {
+    "description": 100,
+    "counterparty": 200,
+    "mcc": 300,
+}
 
 # Valid ``match_field`` values - keep in sync with the
 # ``categorization_rules.match_field`` column constraints documented in
 # the SQL schema. Used to validate rule rows from every source.
-VALID_MATCH_FIELDS: tuple[str, ...] = ("mcc", "description", "counterparty")
+VALID_MATCH_FIELDS: tuple[str, ...] = tuple(DEFAULT_PRIORITY_BY_FIELD.keys())
 
 
 @dataclass(frozen=True)
@@ -181,7 +188,7 @@ def _load_seed_descriptions() -> list[Rule]:
                 entry,
                 index=i,
                 match_field="description",
-                priority=DEFAULT_PRIORITY_DESCRIPTION,
+                priority=DEFAULT_PRIORITY_BY_FIELD["description"],
                 source="seed-description",
                 location="pf_skill/rules/description.yaml",
             )
@@ -208,7 +215,7 @@ def _load_seed_mcc() -> list[Rule]:
             )
         rules.append(
             Rule(
-                priority=DEFAULT_PRIORITY_MCC,
+                priority=DEFAULT_PRIORITY_BY_FIELD["mcc"],
                 match_field="mcc",
                 pattern=mcc_key,
                 category=str(category),
@@ -236,7 +243,7 @@ def _load_local_counterparty(data_dir: Path) -> list[Rule]:
                 entry,
                 index=i,
                 match_field="counterparty",
-                priority=DEFAULT_PRIORITY_COUNTERPARTY,
+                priority=DEFAULT_PRIORITY_BY_FIELD["counterparty"],
                 source="local-counterparty",
                 location=str(path),
             )

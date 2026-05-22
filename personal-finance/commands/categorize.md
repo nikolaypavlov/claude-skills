@@ -29,7 +29,7 @@ Output:
   "no_match_count": 7,
   "overrides_applied": 1,
   "active_rules": 96,
-  "scope": {"scope": "last-n-days", "from_ts": 1747...,  "to_ts": null}
+  "scope": {"scope": "last-n-days", "from_ts": 1747...}
 }
 ```
 

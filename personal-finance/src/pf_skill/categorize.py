@@ -37,16 +37,13 @@ def cmd_categorize(args: argparse.Namespace) -> dict[str, Any]:
         raise CliError("--n is required when --scope=last-n-days")
     if args.scope != "last-n-days" and args.n is not None:
         raise CliError("--n is only valid with --scope=last-n-days")
-    try:
-        with closing(open_db(db_path)) as conn:
-            result = apply_rules(
-                conn,
-                scope=args.scope,
-                n_days=args.n if args.n is not None else 0,
-                data_dir=db_path.parent,
-            )
-    except ValueError as exc:
-        raise CliError(str(exc), kind="ValueError") from exc
+    with closing(open_db(db_path)) as conn:
+        result = apply_rules(
+            conn,
+            scope=args.scope,
+            n_days=args.n if args.n is not None else 0,
+            data_dir=db_path.parent,
+        )
     return {"ok": True, **result}
 
 
