@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Sample launchd plist for opt-in hourly Monobank syncing.
+
+    Copy to ~/Library/LaunchAgents/com.monobank-mcp.sync.plist, edit the
+    two paths marked CHANGE_ME, then load with:
+
+        launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.monobank-mcp.sync.plist
+        launchctl enable gui/$UID/com.monobank-mcp.sync
+
+    Why this exists
+    ===============
+    Claude already triggers an on-demand `ensure_synced` via the
+    monobank-mcp MCP tool before generating reports, so the conversation
+    flow does not need this. But if you ALSO want the store to stay
+    fresh while Claude isn't running (e.g. so the next pf-report
+    "yesterday" query has yesterday's data already pulled), a periodic
+    launchd job is the cleanest way. It runs the same `sync` subcommand
+    the MCP tool uses underneath, just on a schedule.
+
+    Notes
+    -----
+    - `StartInterval` 3600 = once an hour. Monobank's documented rate
+      limit is 1 req / 60s per token, well under what this triggers.
+    - `RunAtLoad` keeps the job ready-but-quiet at login; the first run
+      happens after the first interval, not at load time.
+    - `MONOBANK_MCP_DATA_DIR` is optional. Set it if your store lives
+      somewhere other than ~/finances.
+    - The token resolution chain (env var > Keychain) inside
+      monobank-mcp still works here - if you keep the token in the
+      macOS Keychain (the default after `monobank-mcp init`), no env
+      var is required.
+    - StandardOut/StandardError go to ~/finances/logs/ so a failing
+      sync surfaces in your existing log review path rather than
+      vanishing into the launchd default sink.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.monobank-mcp.sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- CHANGE_ME: absolute path to the monobank-mcp binary. The
+             plugin installs it under
+             ~/.claude/plugins/cache/<marketplace>/monobank-mcp/<version>/bin/.
+             Use `which monobank-mcp` to find yours. -->
+        <string>/CHANGE_ME/path/to/monobank-mcp</string>
+        <string>sync</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Optional: override the data directory. Leave commented out
+             to use ~/finances/. -->
+        <!--
+        <key>MONOBANK_MCP_DATA_DIR</key>
+        <string>/CHANGE_ME/path/to/finances</string>
+        -->
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/CHANGE_ME/Users/your-name/finances/logs/monobank-sync.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/CHANGE_ME/Users/your-name/finances/logs/monobank-sync.err.log</string>
+</dict>
+</plist>

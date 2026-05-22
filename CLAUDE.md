@@ -14,8 +14,9 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **iCloud MCP** (`icloud-mcp/`) -- Local Rust MCP server for Apple iCloud Calendar (CalDAV via `libdav`) and Mail (IMAP via `async-imap` + `tokio-rustls`). Read + create-only: events can be created; mail can only be saved as drafts via IMAP APPEND (no SMTP). Credentials via `APPLE_ID`/`APPLE_APP_PASSWORD` env vars with macOS Keychain fallback.
 - **Monobank MCP** (`monobank-mcp/`) -- Local Rust MCP server + CLI for the Monobank Personal API. Ingest plugin in the personal-finance design: owns `mono_*` tables in the shared `~/finances/data.db` SQLite store. Tool surface, CLI, and configuration are documented in the "Monobank MCP Development" section below.
 - **Privat24 Skill** (`privat24-skill/`) -- `uv`-managed Python skill that imports Privat24 web-cabinet XLSX statement exports into the shared `~/finances/data.db`. Owns `privat_*` tables. Standalone (works without monobank-mcp or the personal-finance umbrella). Package layout and conventions are in the "Privat24 Skill Development" section below.
+- **Personal Finance** (`personal-finance/`) -- `uv`-managed Python umbrella skill for query / report / categorize over the shared `~/finances/data.db`. Owns `pf_*` tables (categorization rules, manual overrides). Reads `<bank>_transactions` tables via runtime UNION ALL discovery so it works with any subset of ingest plugins installed. Four CLI entry points (`pf-query`, `pf-report`, `pf-categorize`, `pf-rules`) follow the same JSON-output contract as the ingest plugins. Layout and rule-loading conventions are in the "Personal Finance Umbrella Development" section below.
 
-**Cross-plugin design**: `docs/personal-finance-design.md` (v2.1) describes the 3-plugin architecture; `docs/transactions-schema.md` (v1.0) is the cross-plugin contract that monobank-mcp and privat24-skill follow for their `<bank>_transactions` shapes.
+**Cross-plugin design**: `docs/personal-finance-design.md` (v3.0) describes the 3-plugin architecture; `docs/transactions-schema.md` (v1.0) is the cross-plugin contract that monobank-mcp and privat24-skill follow for their `<bank>_transactions` shapes.
 
 ## Plugin Architecture
 
@@ -44,7 +45,7 @@ Three plugins share `~/finances/data.db` (SQLite, WAL) by partitioning the table
 |------------------|----------|-------------------------------|--------------------------------------|
 | `monobank-mcp`   | Rust     | `mono_*`                      | only `mono_*`                        |
 | `privat24-skill` | Python   | `privat_*`                    | only `privat_*`                      |
-| `personal-finance` (TBD, PR#3) | Python | `pf_*` (categorization rules / overrides) | reads `mono_*` + `privat_*` via runtime UNION ALL discovery |
+| `personal-finance` | Python (uv) | `pf_*` (categorization rules / overrides) | reads `mono_*` + `privat_*` via runtime UNION ALL discovery |
 
 Each ingest plugin migrates only its own tables. The umbrella plugin auto-detects available `<bank>_transactions` tables via `sqlite_master` and builds a UNION ALL view at query time. The shared row shape (signed minor units, ISO 4217 numeric currency codes, `<bank>_<native_id>` ids) is documented in `docs/transactions-schema.md` and enforced by convention - not by code.
 
@@ -160,6 +161,46 @@ privat24-skill/
 - `ImportResult` is a `TypedDict` with `Literal["imported", "skipped", "unsupported", "error"]` status. Pre-flight I/O failures (missing file, unwritable data dir) land as `status: error` JSON, not as a traceback escaping stdout.
 - Fixture file is regenerated via `fixtures/generate.py`; the committed `sample_web.xlsx` is the canonical reference for tests.
 
+## Personal Finance Umbrella Development
+
+Python skill, `uv`-managed. Read-and-write side of the personal-finance loop: owns `pf_*` tables (categorization rules + manual overrides), reads ingest plugins' `<bank>_transactions` tables through a runtime-discovered UNION ALL view. Four CLI entry points exposed via `[project.scripts]`; SKILL.md tells Claude which one to invoke for each user phrase.
+
+**Build / test:**
+```bash
+cd personal-finance && uv sync
+uv run pytest -q                          # 99 tests
+uv run ruff check src tests
+```
+
+**Package layout:**
+```
+personal-finance/
+  pyproject.toml                          # uv-managed; deps: pyyaml; Python >= 3.13
+  skills/personal-finance/SKILL.md        # trigger phrases + invocation cookbook
+  commands/categorize.md                  # /personal-finance:categorize workflow
+  src/pf_skill/
+    query.py        report.py             # read-only CLI entry points
+    categorize.py   rules_cli.py          # write CLI entry points (PR#4)
+    schema/pf_001_initial.sql             # in-package, importlib.resources
+    rules/{mcc.json,description.yaml}     # bundled seed rules, importlib.resources
+    common/
+      store.py     view.py                # SQLite + runtime UNION discovery
+      queries.py   reports.py             # read helpers + report bundle
+      rules.py     categorizer.py         # 4-source rule loader + apply pass
+      cli.py       currencies.py types.py
+  tests/                                  # store / view / queries / reports /
+                                          # rules / categorizer + end-to-end CLI
+```
+
+**Conventions specific to this skill:**
+- Same atomicity contract as the ingest plugins: `isolation_level = None`, explicit `BEGIN`/`COMMIT`, individual `conn.execute` calls (NEVER `executescript`). Rule pass + overrides import are two SEPARATE transactions inside `apply_rules` - both idempotent (`INSERT OR IGNORE` on `tx_category`, `INSERT OR REPLACE` on `category_overrides`) so a crash between them is safe to retry.
+- Rule priority is unified in `common/rules.py::DEFAULT_PRIORITY_BY_FIELD` (description 100 < counterparty 200 < mcc 300 < explicit DB priority). Lower wins; ties broken by source then pattern.
+- `pf-rules add` validates regex via `re.compile` BEFORE the INSERT (MCC patterns skipped - they are exact integer matches). A typo lands as a clean CliError instead of a silently-non-matching rule.
+- `preview_rule` and `apply_rule_by_id` count UNCATEGORIZED rows only - exactly what a subsequent apply would write. Already-categorized transactions show `would_affect_count: 0` even when the pattern matches them.
+- `Rule.matches` swallows `re.error` (returns False, treats as non-match) so a single bad rule in the DB does not break the whole `pf-categorize` pass.
+- Local YAMLs at `$DATA_DIR/rules/counterparty.local.yaml` and `$DATA_DIR/rules/overrides.local.yaml` are gitignored and silently optional. Overrides are UPSERTed into `category_overrides` on every `pf-categorize` run.
+- Output contract is shared across every `pf-*` script: success → JSON stdout exit 0; `CliError` → `{"ok": false, "error": ..., "type": ...}` stderr exit 1; uncaught → traceback + structured error stderr exit 2. `common/cli.py::run_subcommand` is the gate.
+
 ## Jira Manager Development
 
 The only skill with executable code. Python package in `jira-manager/`.
@@ -208,7 +249,7 @@ This repository is a Claude Code plugin. When creating or modifying skills, comm
 - CLI tools communicate via JSON on stdin/stdout
 - Each plugin owns its own test suite where the language supports it:
   - Rust plugins: `cargo test` (icloud-mcp, monobank-mcp)
-  - Python `uv` plugins: `uv run pytest -q` (privat24-skill; jira-manager has a `tests/` dir but most of its testing is manual via example scripts)
+  - Python `uv` plugins: `uv run pytest -q` (privat24-skill, personal-finance; jira-manager has a `tests/` dir but most of its testing is manual via example scripts)
   - Documentation-only skills (nemo-builder, acli-manager, pdf-design-system) have no test suite
 
 ### Developer gotchas
