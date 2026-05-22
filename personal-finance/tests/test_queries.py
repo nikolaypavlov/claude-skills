@@ -41,9 +41,7 @@ def test_get_transactions_time_range(both_banks_db: Path) -> None:
     conn = store.open_db(both_banks_db)
     # Fixture mono ts: 1_700_000_000 + {0, 1000, 2000}
     # Fixture privat ts: 1_700_000_000 + {10000, 11000}
-    txs = queries.get_transactions(
-        conn, from_ts=1_700_001_500, to_ts=1_700_010_500, limit=100
-    )
+    txs = queries.get_transactions(conn, from_ts=1_700_001_500, to_ts=1_700_010_500, limit=100)
     ids = sorted(tx["id"] for tx in txs)
     assert ids == ["mono_t3", "privat_h_1"]
 
@@ -79,6 +77,35 @@ def test_get_transactions_category_resolution(both_banks_db: Path) -> None:
     assert by_id["privat_h_1"]["category"] is None  # never categorized
 
 
+def test_get_transactions_category_filter(both_banks_db: Path) -> None:
+    """``category="X"`` returns only rows resolved to X; ``category=""`` is
+    the uncategorized sentinel and returns rows with NULL resolved
+    category (no rule, no override). The empty-string special-casing is
+    load-bearing for the `pf-query list --category ""` invocation in
+    SKILL.md."""
+    conn = store.open_db(both_banks_db)
+    # Categorize 2 of the 5 fixture rows; leave the other 3 uncategorized.
+    conn.execute(
+        "INSERT INTO tx_category (tx_id, category, rule_id, set_at, set_by) "
+        "VALUES ('mono_t1', 'Food', NULL, 0, 'rule')"
+    )
+    conn.execute(
+        "INSERT INTO category_overrides (tx_id, category, note, set_at) "
+        "VALUES ('mono_t2', 'Transport', NULL, 0)"
+    )
+
+    food = queries.get_transactions(conn, category="Food", limit=100)
+    assert [tx["id"] for tx in food] == ["mono_t1"]
+
+    transport = queries.get_transactions(conn, category="Transport", limit=100)
+    assert [tx["id"] for tx in transport] == ["mono_t2"]
+
+    uncategorized = queries.get_transactions(conn, category="", limit=100)
+    uncat_ids = sorted(tx["id"] for tx in uncategorized)
+    assert uncat_ids == ["mono_t3", "privat_h_1", "privat_h_2"]
+    assert all(tx["category"] is None for tx in uncategorized)
+
+
 def test_summarize_spending_by_currency(both_banks_db: Path) -> None:
     conn = store.open_db(both_banks_db)
     buckets = queries.summarize_spending(
@@ -96,9 +123,7 @@ def test_summarize_spending_by_currency(both_banks_db: Path) -> None:
 
 def test_summarize_spending_by_bank(both_banks_db: Path) -> None:
     conn = store.open_db(both_banks_db)
-    buckets = queries.summarize_spending(
-        conn, from_ts=0, to_ts=2_000_000_000, group_by="bank"
-    )
+    buckets = queries.summarize_spending(conn, from_ts=0, to_ts=2_000_000_000, group_by="bank")
     by_key = {b["key"]: b for b in buckets}
     assert by_key["mono"]["tx_count"] == 3
     assert by_key["privat"]["tx_count"] == 2
@@ -109,9 +134,7 @@ def test_summarize_spending_by_bank(both_banks_db: Path) -> None:
 def test_summarize_spending_rejects_unknown_group_by(both_banks_db: Path) -> None:
     conn = store.open_db(both_banks_db)
     with pytest.raises(ValueError, match="unsupported group_by"):
-        queries.summarize_spending(
-            conn, from_ts=0, to_ts=2_000_000_000, group_by="bogus"
-        )
+        queries.summarize_spending(conn, from_ts=0, to_ts=2_000_000_000, group_by="bogus")
 
 
 def test_summarize_spending_empty_db(empty_db: Path) -> None:

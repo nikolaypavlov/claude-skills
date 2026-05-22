@@ -1,12 +1,13 @@
-//! Two flavours of "resume" coverage:
+//! Backfill cursor / chunking contract:
 //!   * `backfill_is_idempotent_across_runs` - re-running the same range
-//!     produces no new rows and the cursor stays put. Verifies the
-//!     INSERT-OR-IGNORE + cursor-MAX combination.
-//!   * `backfill_resume_skips_already_completed_chunks` - simulates a
-//!     prior partial run by seeding `last_completed_ts` partway into a
-//!     multi-chunk range, then asserts the engine only fetches the
-//!     remaining chunks. This catches a regression where `seed_sync_state`
-//!     would overwrite a higher cursor instead of using INSERT OR IGNORE.
+//!     produces no new rows. Verifies the INSERT-OR-IGNORE + cursor-MAX
+//!     combination inside `insert_statement_chunk`.
+//!   * `backfill_rewalks_when_from_is_earlier_than_existing_cursor` -
+//!     explicit `--from <past_date>` lowers the cursor floor so the
+//!     engine re-walks the whole requested range. INSERT OR IGNORE makes
+//!     the re-fetched chunks idempotent. This is what the user means by
+//!     "give me everything from this date" - the prior cursor position
+//!     does not override the explicit floor.
 
 mod common;
 
@@ -60,13 +61,12 @@ async fn backfill_is_idempotent_across_runs() {
 }
 
 #[tokio::test]
-async fn backfill_resume_skips_already_completed_chunks() {
+async fn backfill_rewalks_when_from_is_earlier_than_existing_cursor() {
     use monobank_mcp::util::time::CHUNK_SECONDS;
 
     let server = httpmock::MockServer::start_async().await;
     common::mount_client_info(&server, &common::client_info_fixture());
 
-    // Track how many statement requests hit the server.
     let statement_mock = server.mock(|when, then| {
         when.method(httpmock::Method::GET).path_prefix(format!(
             "/personal/statement/{}/",
@@ -82,13 +82,13 @@ async fn backfill_resume_skips_already_completed_chunks() {
     let limiter = RateLimiter::new(Duration::from_millis(0));
     let engine = BackfillEngine::new(api, store.clone(), limiter, Duration::from_millis(0));
 
-    // Simulate "two chunks already done": 90 days back is 3 chunks; cursor
-    // sits at +60 days from start = end-of-chunk-2.
+    // Simulate a store whose cursor is already at ~now (e.g. after a
+    // narrower backfill --from one-week-ago). The user then asks for
+    // --from 90 days ago. The engine must rewind the floor and walk
+    // all 3 chunks, not silently treat the request as a no-op.
     let now = monobank_mcp::util::time::now_unix();
     let from = now - 3 * CHUNK_SECONDS;
-    let prior_cursor = from + 2 * CHUNK_SECONDS;
-    // Account row + sync_state row must exist BEFORE backfill, so the
-    // engine's seed_sync_state (INSERT OR IGNORE) is a no-op.
+    let prior_cursor = now;
     store
         .upsert_account(&monobank_mcp::types::MonoAccount {
             id: common::FIXTURE_ACCOUNT_ID.into(),
@@ -106,13 +106,12 @@ async fn backfill_resume_skips_already_completed_chunks() {
         .await
         .unwrap();
 
-    // Run backfill - it should only fetch the remaining 1 chunk
-    // (prior_cursor .. now), NOT all 3.
     engine.run(vec![], Some(from)).await.unwrap();
     assert_eq!(
         statement_mock.calls(),
-        1,
-        "expected one statement chunk fetched (the unfinished one), got {}",
+        3,
+        "expected three statement chunks fetched (one per 31d window from \
+         the rewound floor up to now), got {}",
         statement_mock.calls()
     );
 
@@ -123,5 +122,38 @@ async fn backfill_resume_skips_already_completed_chunks() {
         .unwrap()
         .last_completed_ts;
     assert!(cursor_after >= now - 60);
-    assert!(cursor_after > prior_cursor);
+}
+
+#[tokio::test]
+async fn rewind_sync_state_keeps_lower_existing_cursor() {
+    use monobank_mcp::types::MonoAccount;
+
+    let store = Store::open_in_memory().unwrap();
+    let acc_id = "rewind-acc";
+    store
+        .upsert_account(&MonoAccount {
+            id: acc_id.into(),
+            iban: None,
+            r#type: Some("black".into()),
+            currency_code: common::FIXTURE_CCY_UAH,
+            masked_pan: None,
+            balance: None,
+            label: None,
+        })
+        .await
+        .unwrap();
+    // Existing cursor sits at an early timestamp; a later rewind target
+    // must not advance it - rewind only ever moves the floor backwards.
+    store.seed_sync_state(acc_id, 1_000).await.unwrap();
+    store.rewind_sync_state(acc_id, 5_000).await.unwrap();
+    let st = store.get_sync_state(acc_id).await.unwrap().unwrap();
+    assert_eq!(
+        st.last_completed_ts, 1_000,
+        "rewind must keep the lower existing cursor"
+    );
+
+    // Now the inverse: rewind to an earlier ts lowers the floor.
+    store.rewind_sync_state(acc_id, 500).await.unwrap();
+    let st = store.get_sync_state(acc_id).await.unwrap().unwrap();
+    assert_eq!(st.last_completed_ts, 500);
 }

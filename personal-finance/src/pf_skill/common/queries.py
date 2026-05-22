@@ -123,6 +123,13 @@ def get_transactions(
     SELECT-list alias in WHERE), so passing ``category="Food"`` returns
     rows whose effective category is "Food" even when only a manual
     override set it.
+
+    Empty string ``category=""`` is the "uncategorized" sentinel - it
+    selects rows where the resolved category is NULL (no override and
+    no rule match). This is what the SKILL.md `pf-query list --category ""`
+    invocation relies on; a literal `category = ""` predicate would
+    return nothing because neither `tx_category.category` nor
+    `category_overrides.category` is ever stored as an empty string.
     """
     sources = discover_sources(conn)
     union = build_tx_union_sql(sources)
@@ -136,8 +143,11 @@ def get_transactions(
         currency_code=currency_code,
     )
     if category is not None:
-        where.append(f"{CATEGORY_EXPR} = ?")
-        params.append(category)
+        if category == "":
+            where.append(f"{CATEGORY_EXPR} IS NULL")
+        else:
+            where.append(f"{CATEGORY_EXPR} = ?")
+            params.append(category)
     where_sql = ("\nWHERE " + " AND ".join(where)) if where else ""
     sql = (
         f"SELECT {TX_COLUMNS_SQL}, {CATEGORY_EXPR} AS category "

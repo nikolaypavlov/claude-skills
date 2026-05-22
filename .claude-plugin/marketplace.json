@@ -153,7 +153,7 @@
       "name": "monobank-mcp",
       "source": "./monobank-mcp",
       "description": "Local MCP server + CLI (Rust) for Monobank Personal API. Slim ingest: pulls statements into a shared SQLite store and exposes ensure_synced / get_sync_status / list_mono_accounts tools. Query, reports, and categorisation are handled by the personal-finance plugin.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"
@@ -186,7 +186,7 @@
       "name": "personal-finance",
       "source": "./personal-finance",
       "description": "Umbrella skill for personal finance queries, reports, and categorization over the shared ~/finances/data.db. Auto-discovers <bank>_transactions tables (mono_*, privat_*) and projects them to a common shape. Owns pf_* tables (categorization rules, manual overrides). Ships pf-query, pf-report, pf-categorize, and pf-rules.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"
