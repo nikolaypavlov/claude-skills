@@ -82,7 +82,15 @@ The binary lands at `icloud-mcp/target/release/icloud-mcp`. For plugin users it 
 
 ## Rust binary plugin releases
 
-Both Rust plugins (`icloud-mcp`, `monobank-mcp`) follow the same tag-driven release pattern. There are two workflows - `.github/workflows/release-icloud-mcp.yml` and `release-monobank-mcp.yml` - that are structural copies; bug fixes to one usually apply to the other.
+**Mandatory for every Rust plugin in this repo.** Every Rust crate that ships as a user-installable binary plugin MUST have:
+
+1. A `.github/workflows/release-<plugin>.yml` workflow modeled on `release-icloud-mcp.yml` (the canonical template). Copy it whole-file when adding a new plugin and only change the plugin name + crate path; never invent a new release shape.
+2. A `<plugin>/scripts/install-binary.sh` that downloads from the matching `https://github.com/<owner>/<repo>/releases/download/<plugin>-v${version}/` URL and verifies SHA256.
+3. A `<plugin>/scripts/launch.sh` referenced from `<plugin>/.mcp.json` that runs `install-binary.sh` then `exec`s the binary.
+4. Prebuilt artifacts for all 4 standard targets (darwin arm64/x64, linux x64/arm64) on every released version - i.e. a release tag pushed for every `<plugin>/Cargo.toml` version bump. A cargo-build fallback in `install-binary.sh` is for unsupported platforms, NOT a substitute for missing prebuilt artifacts.
+5. The marketplace entry's `version` field in `.claude-plugin/marketplace.json` always matches `<plugin>/Cargo.toml`'s `version`. The workflow's tag assertion catches drift; the matching marketplace entry is the user-facing contract.
+
+Both existing Rust plugins (`icloud-mcp`, `monobank-mcp`) follow this pattern. There are two workflows - `.github/workflows/release-icloud-mcp.yml` and `release-monobank-mcp.yml` - that are structural copies; bug fixes to one usually apply to the other.
 
 To cut a new version of `<plugin>`:
 
