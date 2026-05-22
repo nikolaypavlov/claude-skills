@@ -264,14 +264,36 @@ impl Store {
         Ok(rows)
     }
 
-    /// Initialise `last_completed_ts` for an account when no row exists yet
-    /// (e.g. backfill --from). Does nothing if already present.
+    /// Initialise `last_completed_ts` for an account when no row exists yet.
+    /// Used by the sync engine to auto-seed a newly-discovered account at
+    /// `now`. Does nothing if a row is already present.
     pub async fn seed_sync_state(&self, account_id: &str, last_completed_ts: i64) -> Result<()> {
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT OR IGNORE INTO mono_sync_state (account_id, last_completed_ts, last_sync_at) \
              VALUES (?1, ?2, strftime('%s','now'))",
             params![account_id, last_completed_ts],
+        )?;
+        Ok(())
+    }
+
+    /// Lower the cursor floor for an explicit `backfill --from <ts>`. If no
+    /// row exists yet, insert at `target_ts`; otherwise set
+    /// `last_completed_ts = MIN(existing, target_ts)`. This is the inverse
+    /// of the `MAX(...)` UPSERT used by `insert_statement_chunk`: chunk
+    /// inserts only ever advance the cursor forward, while an explicit
+    /// backfill request walks it backwards so the sync engine re-fetches
+    /// any historical chunks the user has asked for. Re-fetched chunks are
+    /// idempotent via INSERT OR IGNORE.
+    pub async fn rewind_sync_state(&self, account_id: &str, target_ts: i64) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO mono_sync_state (account_id, last_completed_ts, last_sync_at) \
+             VALUES (?1, ?2, strftime('%s','now')) \
+             ON CONFLICT(account_id) DO UPDATE SET \
+                 last_completed_ts = MIN(mono_sync_state.last_completed_ts, excluded.last_completed_ts), \
+                 last_sync_at = excluded.last_sync_at",
+            params![account_id, target_ts],
         )?;
         Ok(())
     }

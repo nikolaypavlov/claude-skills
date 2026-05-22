@@ -1,11 +1,13 @@
 //! Cold-start backfill orchestration.
 //!
 //! Differences from incremental sync:
-//!   - Caller supplies `--from`. If absent, we use the earliest
-//!     `opened_at` across selected accounts, or `now - 365d` as a safe
-//!     fallback when `client-info` returns no `openedAt`.
-//!   - We seed `mono_sync_state.last_completed_ts = from_ts` before
-//!     starting so the sync engine has a cursor to advance.
+//!   - Caller supplies `--from`. If absent, we use `now - 365d` as a
+//!     safe fallback.
+//!   - We rewind `mono_sync_state.last_completed_ts` to `MIN(existing,
+//!     from_ts)` so the sync engine re-walks any chunks the user has
+//!     just asked for. Re-walks are cheap to make safe (the chunk insert
+//!     is `INSERT OR IGNORE`); the only cost is API budget time, which
+//!     is the explicit price of asking for more history.
 //!   - No wall-clock budget; resumable on Ctrl-C because every chunk is
 //!     atomic.
 
@@ -57,9 +59,9 @@ impl BackfillEngine {
         };
         let now = now_unix();
         let from = from_ts.unwrap_or_else(|| now - FALLBACK_LOOKBACK_SECONDS);
-        info!(from, "backfill: seeding sync state");
+        info!(from, "backfill: rewinding cursor floor");
         for id in &targets {
-            self.store.seed_sync_state(id, from).await?;
+            self.store.rewind_sync_state(id, from).await?;
         }
         // 3) Reuse the sync engine without a deadline. Backfill marks runs
         // as `Backfill` so audit reports can tell them apart from sync runs.
