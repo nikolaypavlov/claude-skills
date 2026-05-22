@@ -623,28 +623,43 @@ personal-finance/
 
 ### 4.2 Залежності (pyproject.toml)
 
+Single source of truth - `pyproject.toml` тримає і runtime, і dev deps.
+Жодних PEP 723 inline-metadata блоків у entry-script файлах: ризик
+drift між двома місцями оголошення не виправдовується перевагою
+"можна запустити без uv sync".
+
 ```toml
 [project]
 name = "pf-skill"
 version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = [
-  "pyyaml>=6",
-  "tzdata>=2024.1",       # Europe/Kyiv on slim Linux / Windows
-]
+requires-python = ">=3.13"
+dependencies = []        # PR#3 read path - stdlib only.
+                         # PR#4 додає pyyaml (rule loading) + tzdata
+                         # (Europe/Kyiv display у narratives).
 
 [project.scripts]
-pf-report     = "pf_skill.report:main"
-pf-categorize = "pf_skill.categorize:main"
-pf-query      = "pf_skill.query:main"
-pf-rules      = "pf_skill.rules_cli:main"
+pf-query  = "pf_skill.query:main"
+pf-report = "pf_skill.report:main"
+# pf-categorize, pf-rules - PR#4.
 
-[tool.uv]
-managed = true
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools.package-data]
-pf_skill = ["schema/*.sql"]
+"pf_skill.schema" = ["*.sql"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.5"]
 ```
+
+Claude викликає `uv run --directory <plugin-root> pf-query ...` -
+uv resolve project env (sync on first call as needed) і запускає
+entry-point. На fresh checkout перший виклик коштує одного uv sync;
+наступні - cached venv hit.
 
 Stdlib для решти (sqlite3, re, json, argparse, dataclasses, importlib.resources).
 

@@ -5,15 +5,12 @@ description = "Personal finance umbrella skill - query / report / categorize ove
 authors = [
     { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },
 ]
-requires-python = ">=3.10"
-dependencies = [
-    "pyyaml>=6",
-    # zoneinfo (stdlib) consults the IANA tz database. On Linux/macOS
-    # that's the OS tzdata; on Windows / slim Linux containers it's
-    # absent, so tzdata gives us a deterministic fallback for any
-    # report that converts unix seconds back to Europe/Kyiv for display.
-    "tzdata>=2024.1",
-]
+requires-python = ">=3.13"
+# PR#3 read path is stdlib only. PR#4 will add pyyaml (rule loading) and
+# tzdata (Europe/Kyiv display in narratives). pyproject.toml is the
+# single source of truth for runtime + dev deps - no PEP 723 inline
+# duplication.
+dependencies = []
 license = { text = "MIT" }
 readme = "README.md"
 keywords = ["personal-finance", "monobank", "privat24", "sqlite", "categorize"]
@@ -47,7 +44,7 @@ dev = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

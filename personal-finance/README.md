@@ -61,7 +61,7 @@ uv run ruff check src tests
 The package follows the same layout as `privat24-skill`:
 - `src/pf_skill/common/` - shared modules (store, view, queries, reports, cli, types, currencies)
 - `src/pf_skill/schema/pf_001_initial.sql` - migration (loaded via `importlib.resources`)
-- `src/pf_skill/query.py`, `report.py` - argparse entry points
+- `src/pf_skill/query.py`, `report.py` - argparse entry points exposed via `[project.scripts]` as `pf-query` and `pf-report`
 
 ## Output contract (same across every `pf-*` script)
 

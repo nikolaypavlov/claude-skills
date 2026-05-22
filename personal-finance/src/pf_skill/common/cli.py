@@ -22,7 +22,7 @@ import os
 import sys
 import traceback
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -125,10 +125,9 @@ def parse_time_arg(value: str, *, flag: str) -> int:
         dt = datetime.fromisoformat(iso)
     except ValueError as exc:
         raise CliError(
-            f"{flag}: cannot parse {value!r} as unix-s or ISO 8601 "
-            f"({exc})",
+            f"{flag}: cannot parse {value!r} as unix-s or ISO 8601 ({exc})",
             kind="ValueError",
         ) from exc
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return int(dt.timestamp())

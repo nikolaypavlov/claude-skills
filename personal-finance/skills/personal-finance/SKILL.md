@@ -25,6 +25,10 @@ allowed-tools: Bash, Read
 
 The pre-flight does NOT apply to "find a transaction" lookups or "list my accounts" - those are cheap and we don't want to add 60-90s of latency for a one-line answer.
 
+## Invocation form
+
+Entry points are exposed as `[project.scripts]` in the plugin's `pyproject.toml`. Invoke them via `uv run --directory <plugin-root> pf-query ...` / `uv run --directory <plugin-root> pf-report ...`. `<plugin-root>` is wherever the plugin was installed (typically under `~/.claude/plugins/cache/<marketplace>/personal-finance/<version>/`). uv handles the project's venv (`uv sync` on first call as needed).
+
 ## Tool invocations (all read-only in PR#3 scope)
 
 ### List accounts across all banks
