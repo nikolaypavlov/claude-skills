@@ -16,7 +16,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **Privat24 Skill** (`privat24-skill/`) -- `uv`-managed Python skill that imports Privat24 web-cabinet XLSX statement exports into the shared `~/finances/data.db`. Owns `privat_*` tables. Standalone (works without monobank-mcp or the personal-finance umbrella). Package layout and conventions are in the "Privat24 Skill Development" section below.
 - **Personal Finance** (`personal-finance/`) -- `uv`-managed Python umbrella skill for query / report / categorize over the shared `~/finances/data.db`. Owns `pf_*` tables (categorization rules, manual overrides). Reads `<bank>_transactions` tables via runtime UNION ALL discovery so it works with any subset of ingest plugins installed. Four CLI entry points (`pf-query`, `pf-report`, `pf-categorize`, `pf-rules`) follow the same JSON-output contract as the ingest plugins. Layout and rule-loading conventions are in the "Personal Finance Umbrella Development" section below.
 
-**Cross-plugin design**: `docs/personal-finance-design.md` (v3.0) describes the 3-plugin architecture; `docs/transactions-schema.md` (v1.0) is the cross-plugin contract that monobank-mcp and privat24-skill follow for their `<bank>_transactions` shapes.
+**Cross-plugin contract**: `docs/transactions-schema.md` (v1.0) is the row-shape contract that monobank-mcp and privat24-skill follow for their `<bank>_transactions` tables; personal-finance reads through it.
 
 ## Plugin Architecture
 

@@ -1,7 +1,6 @@
 """Shared CLI scaffolding for every ``pf-*`` entry point.
 
-Centralises the JSON output / error contract documented in
-``docs/personal-finance-design.md`` §4.3:
+Centralises the JSON output / error contract:
 
 - success: ``json.dumps(result)`` to stdout, exit 0
 - expected failure (CliError - bad args, IO, DB locked, etc.):

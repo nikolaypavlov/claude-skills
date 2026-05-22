@@ -1,6 +1,6 @@
 # Pre-publish checklist
 
-Manual review before tagging a release that touches the personal-finance plugin family. Mirrors the items in `docs/personal-finance-design.md` §9.8 with concrete commands.
+Manual review before tagging a release that touches the personal-finance plugin family. The threat model: the repo is public, the SQLite store is private; no API tokens, real PANs, real IBANs, real phone numbers, or real merchant data may land in the repo.
 
 Run every section, in order. Stop on the first failure.
 
