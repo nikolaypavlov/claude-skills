@@ -53,26 +53,63 @@ Alternative: `pf-report --from <date> --to <date>` returns a JSON bundle whose t
 
 Group by counterparty / description and present a short summary - "X transactions at Glovo, Y at uklon, Z at АТБ" - so the user can answer in batches instead of one-by-one.
 
-A practical pattern: pipe the `transactions[]` array through `jq` (or read it yourself) and cluster by `description` + `mcc`. Example:
+The dedicated helper does this server-side - no jq pipeline needed:
 
 ```bash
-uv run --directory <plugin-root> pf-query list \
-  --from 2026-01-01 --to 2027-01-01 --category "" --limit 200 \
-  | jq -r '.transactions | group_by(.description) | map({merchant: .[0].description, mcc: .[0].mcc, count: length, sum_minor: (map(.amount_minor) | add)}) | sort_by(-.count)'
+# Default --group-by is description. Time bounds are optional.
+uv run --directory <plugin-root> pf-query summarize-uncategorized
+
+# Group by MCC when the user thinks in category codes
+uv run --directory <plugin-root> pf-query summarize-uncategorized \
+  --group-by mcc --from 2026-01-01 --to 2027-01-01
 ```
 
-Note: `pf-query summarize --group-by counterparty` exists but does **not** accept `--category ""`, so it aggregates all transactions, not just uncategorized ones. For uncategorized clustering, use the `list` + group-in-memory approach above.
+Output:
+
+```json
+{
+  "ok": true,
+  "from_ts": null,
+  "to_ts": null,
+  "group_by": "description",
+  "count": 7,
+  "buckets": [
+    {"key": "Portmone",   "currency_code": 980, "tx_count": 3, "total_minor": -110933},
+    {"key": "Паркінг",    "currency_code": 980, "tx_count": 2, "total_minor": -21000},
+    {"key": "MAISW CAR WASH", "currency_code": 980, "tx_count": 2, "total_minor": -14000}
+  ]
+}
+```
+
+Use `pf-query list --category "" --limit N` when you also need raw rows (IDs, MCCs, timestamps) - for example, before issuing `set-override`. `summarize-uncategorized` only gives counts.
+
+**Compared to plain `pf-query summarize`:** that helper aggregates **all** transactions (no `--category ""` filter), and `--group-by` accepts more keys (category/bank/account/currency). Reach for it when you want totals across the full ledger, not for triaging uncategorized rows.
 
 ## Step 3: propose a rule, preview, apply
 
 **Before naming any new category, enumerate the ones already in use** so suggestions match the user's existing taxonomy (don't invent `Транспорт/Паркінг` if `Авто/Паркінг` is already established):
 
 ```bash
-uv run --directory <plugin-root> pf-query summarize \
-  --from 2026-01-01 --to 2027-01-01 --group-by category
+uv run --directory <plugin-root> pf-query categories
 ```
 
-The `buckets[]` payload lists every distinct category currently assigned, with row counts. Reference that list when proposing new names to the user.
+Output (truncated):
+
+```json
+{
+  "ok": true,
+  "count": 25,
+  "categories": [
+    {"category": "Перекази",    "tx_count": 210},
+    {"category": "Їжа/Фастфуд", "tx_count": 64},
+    {"category": "Їжа/Продукти", "tx_count": 50}
+  ]
+}
+```
+
+Categories are sorted by `tx_count` desc - the user's most-used categories surface first. Resolution mirrors `pf-query list`: an override beats a rule-assigned category, so a tx pinned to "Подарунки" via `set-override` counts toward Подарунки and not the rule-original category.
+
+This lists only categories *currently assigned to at least one transaction*. Categories that live in the seed/db rule set but have never matched a tx are not here - enumerate those via `pf-rules list` (Step 5) if needed.
 
 For each cluster the user agrees to categorize, propose a `pf-rules add` call and **preview first**.
 

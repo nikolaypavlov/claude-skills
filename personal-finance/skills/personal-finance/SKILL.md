@@ -69,6 +69,24 @@ uv run --directory <plugin-root> pf-query find --query "GLOVO" [--limit 100]
 
 Case-insensitive LIKE over `description` and `counterparty`.
 
+### Enumerate categories in use
+
+```bash
+uv run --directory <plugin-root> pf-query categories
+```
+
+Returns `{ok, count, categories: [{category, tx_count}]}` sorted by `tx_count` desc. Use this before proposing a new category name (during categorization, or when answering "what taxonomy am I using?") so suggestions stay consistent with the user's existing categories. Resolution: override beats rule-assigned; categories that exist only in rules but have never matched a transaction are not listed (use `pf-rules list` for those).
+
+### Cluster uncategorized transactions
+
+```bash
+uv run --directory <plugin-root> pf-query summarize-uncategorized \
+  [--group-by description|counterparty|mcc] \
+  [--from <date>] [--to <date>] [--bank mono|privat]
+```
+
+Returns `buckets: [{key, currency_code, tx_count, total_minor}]` for transactions whose resolved category is NULL. Default grouping is `description`; time bounds are optional (default = all time). Use this in the categorize flow when you need to show the user "here's what needs a rule" without dumping raw rows.
+
 ### Full report bundle (for narrative reports)
 
 ```bash

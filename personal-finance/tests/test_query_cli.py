@@ -236,6 +236,114 @@ def test_currency_alpha_filter(
     assert payload["count"] == 5  # every fixture row is UAH
 
 
+def test_categories_empty_when_unassigned(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc, payload, err = _run(["categories", "--db", str(both_banks_db)], capsys)
+    assert rc == 0, err
+    assert payload["ok"] is True
+    assert payload["count"] == 0
+    assert payload["categories"] == []
+
+
+def test_categories_lists_after_assignment(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pf_skill.common import store
+
+    conn = store.open_db(both_banks_db)
+    try:
+        conn.execute(
+            "INSERT INTO tx_category (tx_id, category, rule_id, set_at, set_by) "
+            "VALUES ('mono_t1', 'Food', NULL, 0, 'rule'), "
+            "('mono_t2', 'Food', NULL, 0, 'rule'), "
+            "('mono_t3', 'Salary', NULL, 0, 'rule')"
+        )
+        conn.execute(
+            "INSERT INTO category_overrides (tx_id, category, note, set_at) "
+            "VALUES ('privat_h_1', 'Manual', NULL, 0)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    rc, payload, err = _run(["categories", "--db", str(both_banks_db)], capsys)
+    assert rc == 0, err
+    by = {c["category"]: c["tx_count"] for c in payload["categories"]}
+    assert by == {"Food": 2, "Salary": 1, "Manual": 1}
+
+
+def test_summarize_uncategorized_default_group_by_description(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc, payload, err = _run(
+        ["summarize-uncategorized", "--db", str(both_banks_db)], capsys
+    )
+    assert rc == 0, err
+    assert payload["group_by"] == "description"
+    assert payload["from_ts"] is None and payload["to_ts"] is None
+    keys = {b["key"] for b in payload["buckets"]}
+    assert keys == {"Coffee shop", "Grocery shop", "Salary", "Privat shop", "EUR transfer"}
+
+
+def test_summarize_uncategorized_with_time_window(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc, payload, err = _run(
+        [
+            "summarize-uncategorized",
+            "--from",
+            "1700001500",
+            "--to",
+            "1700010500",
+            "--db",
+            str(both_banks_db),
+        ],
+        capsys,
+    )
+    assert rc == 0, err
+    keys = {b["key"] for b in payload["buckets"]}
+    assert keys == {"Salary", "Privat shop"}
+
+
+def test_summarize_uncategorized_invalid_group_by(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc, _, err = _run(
+        [
+            "summarize-uncategorized",
+            "--group-by",
+            "bank",
+            "--db",
+            str(both_banks_db),
+        ],
+        capsys,
+    )
+    assert rc == 1
+    err_payload = json.loads(err)
+    assert err_payload["ok"] is False
+    assert "--group-by" in err_payload["error"]
+
+
+def test_summarize_uncategorized_inverted_range_rejected(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc, _, err = _run(
+        [
+            "summarize-uncategorized",
+            "--from",
+            "2000000000",
+            "--to",
+            "1000000000",
+            "--db",
+            str(both_banks_db),
+        ],
+        capsys,
+    )
+    assert rc == 1
+    err_payload = json.loads(err)
+    assert "strictly less" in err_payload["error"]
+
+
 def test_db_path_env_honoured(
     both_banks_db: Path,
     capsys: pytest.CaptureFixture[str],

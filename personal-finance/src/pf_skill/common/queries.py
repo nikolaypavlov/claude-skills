@@ -64,11 +64,27 @@ _GROUP_BY_EXPRESSIONS: dict[str, str] = {
     "bank": "tx.bank",
 }
 
+# Group-by keys allowed for ``summarize_uncategorized``. Subset of
+# ``_GROUP_BY_EXPRESSIONS`` - ``category`` is excluded because the
+# function already filters to "category IS NULL" rows, so grouping by
+# category would always produce a single bucket.
+_UNCATEGORIZED_GROUP_BY_EXPRESSIONS: dict[str, str] = {
+    "description": "tx.description",
+    "counterparty": "tx.counterparty",
+    "mcc": "tx.mcc",
+}
+
 
 def valid_group_by_keys() -> tuple[str, ...]:
     """Tuple of supported ``--group-by`` values, in stable order for
     user-facing error messages and argparse ``choices=``."""
     return tuple(_GROUP_BY_EXPRESSIONS.keys())
+
+
+def valid_uncategorized_group_by_keys() -> tuple[str, ...]:
+    """Tuple of supported ``--group-by`` values for
+    ``summarize_uncategorized``."""
+    return tuple(_UNCATEGORIZED_GROUP_BY_EXPRESSIONS.keys())
 
 
 def list_accounts(
@@ -212,6 +228,118 @@ def summarize_spending(
         )
         for r in rows
     ]
+
+
+def summarize_uncategorized(
+    conn: sqlite3.Connection,
+    *,
+    from_ts: int | None = None,
+    to_ts: int | None = None,
+    group_by: str = "description",
+    account_id: str | None = None,
+    bank: str | None = None,
+    currency_code: int | None = None,
+) -> list[dict[str, Any]]:
+    """Cluster uncategorized transactions (resolved category IS NULL)
+    by ``group_by`` and return per-cluster count + sum.
+
+    Designed for the categorize-skill Step 2 workflow: ``pf-query
+    list --category ""`` returns raw rows; this groups them so the
+    user sees "MAISW CAR WASH x2, Portmone x3, ..." without piping
+    through jq. Pure read-side aggregation - it does not modify the
+    DB and does not consult the rules tables (only the
+    already-categorized state in ``tx_category`` / ``category_overrides``).
+
+    ``from_ts`` / ``to_ts`` are both optional - omit for "all time"
+    (the typical case when triaging the leftover uncategorized pile).
+
+    Output shape::
+
+        [{"key": "MAISW CAR WASH",
+          "currency_code": 980,
+          "tx_count": 2,
+          "total_minor": -14000}, ...]
+
+    Sorted by ``tx_count`` desc then ``key`` asc. ``key`` is ``None``
+    when the grouping column has NULL values - e.g. uncategorized rows
+    without a description if grouping by description.
+    """
+    if group_by not in _UNCATEGORIZED_GROUP_BY_EXPRESSIONS:
+        raise ValueError(
+            f"unsupported group_by={group_by!r}; "
+            f"valid values: {sorted(_UNCATEGORIZED_GROUP_BY_EXPRESSIONS.keys())}"
+        )
+    key_expr = _UNCATEGORIZED_GROUP_BY_EXPRESSIONS[group_by]
+    sources = discover_sources(conn)
+    union = build_tx_union_sql(sources)
+    if union is None:
+        return []
+    where, params = _tx_filters(
+        from_ts=from_ts,
+        to_ts=to_ts,
+        account_id=account_id,
+        bank=bank,
+        currency_code=currency_code,
+    )
+    where.append(f"{CATEGORY_EXPR} IS NULL")
+    sql = (
+        f"SELECT {key_expr} AS key, tx.currency_code, "
+        f"COUNT(*) AS tx_count, "
+        f"SUM(tx.amount_minor) AS total_minor "
+        f"FROM (\n{union}\n) AS tx "
+        f"{CATEGORY_JOIN_SQL} "
+        f"WHERE {' AND '.join(where)} "
+        f"GROUP BY {key_expr}, tx.currency_code "
+        f"ORDER BY tx_count DESC, key ASC"
+    )
+    rows = conn.execute(sql, params)
+    return [
+        {
+            "key": r[0],
+            "currency_code": int(r[1]),
+            "tx_count": int(r[2]),
+            "total_minor": int(r[3] or 0),
+        }
+        for r in rows
+    ]
+
+
+def list_categories(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return every category currently assigned to at least one
+    transaction, with the count of transactions resolving to it.
+
+    Resolution follows the same precedence as ``get_transactions``: an
+    override beats a rule-assigned category. So a transaction whose
+    rule-assigned category is ``A`` but is overridden to ``B`` counts
+    toward ``B`` only.
+
+    Result shape::
+
+        [{"category": "Food", "tx_count": 42},
+         {"category": "Gifts", "tx_count": 3},
+         ...]
+
+    Sorted by ``tx_count`` desc, then ``category`` asc for stable
+    ordering when counts tie. Does NOT include categories that exist
+    only as patterns in the rule tables but have never matched a
+    transaction - the goal is "what taxonomy is already in use", which
+    is more useful when picking a name for a new rule than the full
+    seed set (which can be enumerated via ``pf-rules list`` instead).
+    """
+    sql = (
+        "SELECT category, COUNT(*) AS tx_count FROM ("
+        "  SELECT COALESCE(o.category, c.category) AS category "
+        "  FROM (SELECT tx_id FROM tx_category "
+        "        UNION "
+        "        SELECT tx_id FROM category_overrides) AS ids "
+        "  LEFT JOIN tx_category c ON c.tx_id = ids.tx_id "
+        "  LEFT JOIN category_overrides o ON o.tx_id = ids.tx_id"
+        ") WHERE category IS NOT NULL "
+        "GROUP BY category "
+        "ORDER BY tx_count DESC, category ASC"
+    )
+    rows = conn.execute(sql)
+    return [{"category": r[0], "tx_count": int(r[1])} for r in rows]
 
 
 def find_transactions(

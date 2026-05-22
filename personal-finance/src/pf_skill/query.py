@@ -3,8 +3,10 @@
 Subcommands::
 
     pf-query accounts
+    pf-query categories
     pf-query list --from <ts> --to <ts> [filters]
     pf-query summarize --from <ts> --to <ts> --group-by <key> [filters]
+    pf-query summarize-uncategorized [--from <ts>] [--to <ts>] [--group-by <key>] [filters]
     pf-query find --query <text> [--limit N]
 
 ``--from`` / ``--to`` accept either unix seconds or an ISO 8601 string
@@ -128,6 +130,47 @@ def cmd_summarize(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_categories(args: argparse.Namespace) -> dict[str, Any]:
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        cats = q.list_categories(conn)
+    return {
+        "ok": True,
+        "count": len(cats),
+        "categories": cats,
+    }
+
+
+def cmd_summarize_uncategorized(args: argparse.Namespace) -> dict[str, Any]:
+    db_path = resolve_db_path(args.db)
+    from_ts = parse_time_arg(args.from_, flag="--from") if args.from_ else None
+    to_ts = parse_time_arg(args.to, flag="--to") if args.to else None
+    if from_ts is not None and to_ts is not None and from_ts >= to_ts:
+        raise CliError(f"--from ({from_ts}) must be strictly less than --to ({to_ts})")
+    currency_code = _parse_currency_or_cli_error(args.currency)
+    try:
+        with closing(open_db(db_path)) as conn:
+            buckets = q.summarize_uncategorized(
+                conn,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                group_by=args.group_by,
+                account_id=args.account,
+                bank=args.bank,
+                currency_code=currency_code,
+            )
+    except ValueError as exc:
+        raise CliError(f"--group-by: {exc}", kind="ValueError") from exc
+    return {
+        "ok": True,
+        "from_ts": from_ts,
+        "to_ts": to_ts,
+        "group_by": args.group_by,
+        "count": len(buckets),
+        "buckets": buckets,
+    }
+
+
 def cmd_find(args: argparse.Namespace) -> dict[str, Any]:
     db_path = resolve_db_path(args.db)
     text = (args.query or "").strip()
@@ -171,6 +214,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_acc.add_argument("--db", default=None)
     p_acc.set_defaults(func=cmd_accounts)
 
+    p_cats = sub.add_parser(
+        "categories",
+        help="List every category currently assigned to a transaction, with tx counts",
+    )
+    p_cats.add_argument("--db", default=None)
+    p_cats.set_defaults(func=cmd_categories)
+
     p_list = sub.add_parser("list", help="List transactions in a date range")
     p_list.add_argument("--from", dest="from_", required=True, help="Start (unix s or ISO 8601)")
     p_list.add_argument("--to", required=True, help="End exclusive (unix s or ISO 8601)")
@@ -190,6 +240,29 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_common_filters(p_sum)
     p_sum.set_defaults(func=cmd_summarize)
+
+    p_unc = sub.add_parser(
+        "summarize-uncategorized",
+        help="Cluster uncategorized transactions by merchant or MCC",
+    )
+    p_unc.add_argument(
+        "--from",
+        dest="from_",
+        default=None,
+        help="Start (unix s or ISO 8601). Optional - default is all time.",
+    )
+    p_unc.add_argument(
+        "--to",
+        default=None,
+        help="End exclusive (unix s or ISO 8601). Optional - default is all time.",
+    )
+    p_unc.add_argument(
+        "--group-by",
+        default="description",
+        help=f"One of {list(q.valid_uncategorized_group_by_keys())} (default: description)",
+    )
+    _add_common_filters(p_unc)
+    p_unc.set_defaults(func=cmd_summarize_uncategorized)
 
     p_find = sub.add_parser("find", help="Substring search over description and counterparty")
     p_find.add_argument("--query", required=True, help="Substring to search for")

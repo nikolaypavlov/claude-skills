@@ -173,3 +173,123 @@ def test_find_transactions_escapes_like_wildcards(both_banks_db: Path) -> None:
     rows = queries.find_transactions(conn, query="_")
     # None of the fixture descriptions contain a literal underscore.
     assert rows == []
+
+
+def test_list_categories_empty_when_nothing_assigned(both_banks_db: Path) -> None:
+    """No rows in tx_category or category_overrides yet -> empty list."""
+    conn = store.open_db(both_banks_db)
+    assert queries.list_categories(conn) == []
+
+
+def test_list_categories_counts_rule_assignments(both_banks_db: Path) -> None:
+    conn = store.open_db(both_banks_db)
+    conn.execute(
+        "INSERT INTO tx_category (tx_id, category, rule_id, set_at, set_by) "
+        "VALUES ('mono_t1', 'Food', NULL, 0, 'rule'), "
+        "('mono_t2', 'Food', NULL, 0, 'rule'), "
+        "('mono_t3', 'Salary', NULL, 0, 'rule')"
+    )
+    cats = queries.list_categories(conn)
+    by = {c["category"]: c["tx_count"] for c in cats}
+    assert by == {"Food": 2, "Salary": 1}
+    # tx_count desc sort: Food (2) before Salary (1)
+    assert cats[0]["category"] == "Food"
+    assert cats[1]["category"] == "Salary"
+
+
+def test_list_categories_override_replaces_rule_category(both_banks_db: Path) -> None:
+    """An overridden tx counts toward the override category, not the
+    rule-assigned one. The rule's category is dropped if no other tx
+    holds it."""
+    conn = store.open_db(both_banks_db)
+    conn.execute(
+        "INSERT INTO tx_category (tx_id, category, rule_id, set_at, set_by) "
+        "VALUES ('mono_t1', 'Food', NULL, 0, 'rule')"
+    )
+    conn.execute(
+        "INSERT INTO category_overrides (tx_id, category, note, set_at) "
+        "VALUES ('mono_t1', 'Gifts', NULL, 0)"
+    )
+    by = {c["category"]: c["tx_count"] for c in queries.list_categories(conn)}
+    assert by == {"Gifts": 1}
+    assert "Food" not in by
+
+
+def test_list_categories_override_only_tx_appears(both_banks_db: Path) -> None:
+    """A tx with only a category_override (never matched by a rule) still
+    shows up in the listing."""
+    conn = store.open_db(both_banks_db)
+    conn.execute(
+        "INSERT INTO category_overrides (tx_id, category, note, set_at) "
+        "VALUES ('privat_h_1', 'Manual', 'pinned', 0)"
+    )
+    by = {c["category"]: c["tx_count"] for c in queries.list_categories(conn)}
+    assert by == {"Manual": 1}
+
+
+def test_summarize_uncategorized_returns_all_when_nothing_categorized(
+    both_banks_db: Path,
+) -> None:
+    conn = store.open_db(both_banks_db)
+    buckets = queries.summarize_uncategorized(conn, group_by="description")
+    by = {b["key"]: b["tx_count"] for b in buckets}
+    # Fixture: 3 mono + 2 privat, each with a distinct description.
+    assert by == {
+        "Coffee shop": 1,
+        "Grocery shop": 1,
+        "Salary": 1,
+        "Privat shop": 1,
+        "EUR transfer": 1,
+    }
+
+
+def test_summarize_uncategorized_excludes_categorized(both_banks_db: Path) -> None:
+    conn = store.open_db(both_banks_db)
+    conn.execute(
+        "INSERT INTO tx_category (tx_id, category, rule_id, set_at, set_by) "
+        "VALUES ('mono_t1', 'Food', NULL, 0, 'rule'), "
+        "('mono_t3', 'Salary', NULL, 0, 'rule')"
+    )
+    by = {b["key"]: b["tx_count"] for b in queries.summarize_uncategorized(conn)}
+    assert "Coffee shop" not in by  # mono_t1 categorized
+    assert "Salary" not in by  # mono_t3 categorized
+    assert by == {"Grocery shop": 1, "Privat shop": 1, "EUR transfer": 1}
+
+
+def test_summarize_uncategorized_excludes_overridden(both_banks_db: Path) -> None:
+    """An override (no rule needed) makes the tx categorized for the
+    purposes of this listing."""
+    conn = store.open_db(both_banks_db)
+    conn.execute(
+        "INSERT INTO category_overrides (tx_id, category, note, set_at) "
+        "VALUES ('mono_t1', 'Coffee', NULL, 0)"
+    )
+    by = {b["key"]: b["tx_count"] for b in queries.summarize_uncategorized(conn)}
+    assert "Coffee shop" not in by
+
+
+def test_summarize_uncategorized_group_by_mcc(both_banks_db: Path) -> None:
+    conn = store.open_db(both_banks_db)
+    buckets = queries.summarize_uncategorized(conn, group_by="mcc")
+    by = {b["key"]: b["tx_count"] for b in buckets}
+    assert by[5814] == 1  # mono_t1 coffee shop
+    assert by[5411] == 1  # mono_t2 grocery
+    # mono_t3 (NULL mcc) + 2 privat (NULL mcc) -> 3 rows in NULL bucket
+    assert by[None] == 3
+
+
+def test_summarize_uncategorized_time_range(both_banks_db: Path) -> None:
+    """Bound the window so only a subset of fixture rows fall inside."""
+    conn = store.open_db(both_banks_db)
+    buckets = queries.summarize_uncategorized(
+        conn, from_ts=1_700_001_500, to_ts=1_700_010_500
+    )
+    by = {b["key"]: b["tx_count"] for b in buckets}
+    # mono_t3 (ts=1_700_002_000) + privat_h_1 (ts=1_700_010_000) only
+    assert by == {"Salary": 1, "Privat shop": 1}
+
+
+def test_summarize_uncategorized_unknown_group_by(both_banks_db: Path) -> None:
+    conn = store.open_db(both_banks_db)
+    with pytest.raises(ValueError, match="unsupported group_by"):
+        queries.summarize_uncategorized(conn, group_by="bank")
