@@ -1,23 +1,23 @@
 # personal-finance
 
-Umbrella skill in the personal-finance plugin family. Queries, reports, and (PR#4) categorizes transactions written by the ingest plugins into the shared `~/finances/data.db` SQLite store.
+Umbrella skill in the personal-finance plugin family. Queries, reports, and categorizes transactions written by the ingest plugins into the shared `~/finances/data.db` SQLite store.
 
 Owns the `pf_*` tables (categorization rules, per-transaction overrides). Reads `<bank>_transactions` / `<bank>_accounts` tables via runtime UNION ALL discovery - no static knowledge of which ingest plugins are installed.
 
-## What's in PR#3 (this PR)
+## CLI surface
 
-- `pf-query` CLI: `accounts`, `list`, `summarize`, `find` (read-only, no writes to `pf_*`)
-- `pf-report` CLI: full or bucketed report bundle with optional previous-period comparison
-- `skills/personal-finance/SKILL.md` for Claude activation
-- `commands/categorize.md` stub (mutations land in PR#4)
-- `pf_*` schema migration applied on first read
+- `pf-query` - `accounts`, `list`, `summarize`, `find` (read-only)
+- `pf-report` - full or bucketed report bundle with optional previous-period comparison
+- `pf-categorize` - run the rule-based categorizer pass (`--scope all|last-n-days [--n N]`)
+- `pf-rules` - `add`, `apply`, `set-category`, `set-override`, `reload`, `list`
 
-## What's in PR#4 (next)
+## Seed rules
 
-- `pf-categorize` CLI (runs the rule-based categorizer pass)
-- `pf-rules` CLI (`add`, `apply`, `set-category`, `set-override`, `reload`, `list`)
-- `rules/mcc.json` + `rules/description.yaml` seed
-- `scripts/build_mcc_map.py`
+- `src/pf_skill/rules/mcc.json` - hand-curated MCC -> Ukrainian category map (priority 300)
+- `src/pf_skill/rules/description.yaml` - global brand regexes (priority 100)
+- `~/finances/rules/counterparty.local.yaml` - user-local merchants (priority 200, gitignored)
+- `~/finances/rules/overrides.local.yaml` - per-tx pins UPSERTed into `category_overrides` on every `pf-categorize` run (gitignored)
+- `categorization_rules` table - rules added via `pf-rules add`
 
 ## Architecture
 
@@ -59,9 +59,10 @@ uv run ruff check src tests
 ```
 
 The package follows the same layout as `privat24-skill`:
-- `src/pf_skill/common/` - shared modules (store, view, queries, reports, cli, types, currencies)
+- `src/pf_skill/common/` - shared modules (store, view, queries, reports, rules, categorizer, cli, types, currencies)
 - `src/pf_skill/schema/pf_001_initial.sql` - migration (loaded via `importlib.resources`)
-- `src/pf_skill/query.py`, `report.py` - argparse entry points exposed via `[project.scripts]` as `pf-query` and `pf-report`
+- `src/pf_skill/rules/{mcc.json, description.yaml}` - seed rule data (importlib.resources)
+- `src/pf_skill/{query, report, categorize, rules_cli}.py` - argparse entry points exposed via `[project.scripts]`
 
 ## Output contract (same across every `pf-*` script)
 

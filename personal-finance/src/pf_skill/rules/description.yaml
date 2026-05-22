@@ -1,0 +1,65 @@
+# Seed brand-recognition rules for the categorizer. Loaded at default
+# priority 100 (description rules outrank counterparty (200) and MCC
+# (300)) so a brand-known merchant beats a coarse MCC category - e.g.
+# "Glovo" is delivery (Їжа/Доставка) not generic fast-food, even though
+# its MCC is 5814.
+#
+# `pattern` is a Python regex applied to the `description` column of
+# the projected transactions view. Add `(?i)` for case-insensitive
+# matching. Per-user / per-merchant overrides live in
+# ~/finances/rules/counterparty.local.yaml (priority 200) and
+# ~/finances/rules/overrides.local.yaml (UPSERT into category_overrides).
+# Both local files are gitignored and never travel through the repo.
+
+# Food delivery
+- {pattern: "(?i)glovo",                category: "Їжа/Доставка"}
+- {pattern: "(?i)bolt[\\s\\-]*food",    category: "Їжа/Доставка"}
+- {pattern: "(?i)wolt",                 category: "Їжа/Доставка"}
+- {pattern: "(?i)uber[\\s\\-]*eats",    category: "Їжа/Доставка"}
+- {pattern: "(?i)raketa[\\s\\-]?delivery", category: "Їжа/Доставка"}
+
+# Taxis (Bolt must come AFTER Bolt Food so the food pattern wins;
+# priority is the same so order in the file is the tiebreaker)
+- {pattern: "(?i)uklon",                category: "Транспорт/Таксі"}
+- {pattern: "(?i)bolt(?![\\s\\-]*food)", category: "Транспорт/Таксі"}
+- {pattern: "(?i)uber(?![\\s\\-]*eats)", category: "Транспорт/Таксі"}
+
+# Fast food chains
+- {pattern: "(?i)mcdonald",             category: "Їжа/Фастфуд"}
+- {pattern: "(?i)kfc",                  category: "Їжа/Фастфуд"}
+- {pattern: "(?i)domino",               category: "Їжа/Фастфуд"}
+- {pattern: "(?i)pizza\\s*hut",         category: "Їжа/Фастфуд"}
+- {pattern: "(?i)starbucks",            category: "Їжа/Ресторани"}
+
+# Grocery chains (UA)
+- {pattern: "(?i)silpo|сільпо",         category: "Їжа/Продукти"}
+- {pattern: "(?i)\\bat[\\s\\-]*b\\b|атб", category: "Їжа/Продукти"}
+- {pattern: "(?i)novus|новус",          category: "Їжа/Продукти"}
+- {pattern: "(?i)varus|варус",          category: "Їжа/Продукти"}
+- {pattern: "(?i)fora|фора",            category: "Їжа/Продукти"}
+- {pattern: "(?i)metro\\s*cash",        category: "Їжа/Продукти"}
+
+# Streaming + subscriptions
+- {pattern: "(?i)netflix",              category: "Підписки/Стрімінг"}
+- {pattern: "(?i)megogo",               category: "Підписки/Стрімінг"}
+- {pattern: "(?i)sweet\\s*tv",          category: "Підписки/Стрімінг"}
+- {pattern: "(?i)spotify",              category: "Підписки/Музика"}
+- {pattern: "(?i)apple\\s*music",       category: "Підписки/Музика"}
+- {pattern: "(?i)youtube\\s*premium",   category: "Підписки/Стрімінг"}
+- {pattern: "(?i)icloud|apple\\.com/bill", category: "Підписки/Інше"}
+- {pattern: "(?i)google\\s*play|google\\s*one|google\\s*workspace", category: "Підписки/Інше"}
+- {pattern: "(?i)dropbox",              category: "Підписки/Інше"}
+- {pattern: "(?i)github",               category: "Підписки/AI"}
+- {pattern: "(?i)openai|anthropic|claude\\.ai", category: "Підписки/AI"}
+
+# Online stores
+- {pattern: "(?i)amazon",               category: "Покупки"}
+- {pattern: "(?i)aliexpress|temu",      category: "Покупки"}
+- {pattern: "(?i)rozetka|розетка",      category: "Покупки/Електроніка"}
+- {pattern: "(?i)epicentr|епіцентр",    category: "Покупки/Універмаги"}
+- {pattern: "(?i)olx",                  category: "Покупки"}
+
+# Post / parcel
+- {pattern: "(?i)nova\\s*posh|нова\\s*пошта", category: "Покупки/Доставка"}
+- {pattern: "(?i)ukrposhta|укрпошта",   category: "Покупки/Доставка"}
+- {pattern: "(?i)dhl",                  category: "Покупки/Доставка"}
