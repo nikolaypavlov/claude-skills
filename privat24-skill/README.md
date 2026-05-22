@@ -2,12 +2,12 @@
 
 Standalone Claude Code skill that imports Privat24 web-cabinet statement exports (XLSX) into the shared `~/finances/data.db` SQLite store. Owns the `privat_*` schema group; reads nothing else.
 
-This is one of three plugins in the personal-finance design (`docs/personal-finance-design.md`):
+This is one of three plugins in the personal-finance family:
 
 ```
 +-------------------+  +------------------+  +---------------------------+
 |  monobank-mcp     |  | privat24-skill   |  |    personal-finance       |
-|  (Rust, owns      |  | (Python, owns    |  |    (Python MCP, owns      |
+|  (Rust, owns      |  | (Python, owns    |  |    (Python skill, owns    |
 |   mono_*)         |  |  privat_*)       |  |    pf_*, reads both)      |
 +--------+----------+  +---------+--------+  +-------------+-------------+
          |                       |                          |

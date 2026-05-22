@@ -109,7 +109,7 @@ Local Rust MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP), shippi
 
 ### Monobank MCP
 
-Local Rust MCP server + CLI that pulls Monobank Personal API statements into the shared `~/finances/data.db` SQLite store. First plugin in the [personal-finance design](./docs/personal-finance-design.md) - owns `mono_*` tables, standalone, no umbrella required for ingest.
+Local Rust MCP server + CLI that pulls Monobank Personal API statements into the shared `~/finances/data.db` SQLite store. Ingest plugin in the personal-finance family - owns `mono_*` tables, standalone, no umbrella required for ingest.
 
 **Features:**
 - 3 MCP tools: `ensure_synced` (inline incremental sync bounded by `max_wait_seconds`, default 90s), `get_sync_status`, `list_mono_accounts`
@@ -124,7 +124,7 @@ Local Rust MCP server + CLI that pulls Monobank Personal API statements into the
 
 ### Privat24 Skill
 
-Python Claude Code skill that imports Privat24 web-cabinet statement exports (XLSX) into the shared `~/finances/data.db` SQLite store. Second plugin in the [personal-finance design](./docs/personal-finance-design.md) - owns `privat_*` tables, standalone, complements `monobank-mcp` without depending on it.
+Python Claude Code skill that imports Privat24 web-cabinet statement exports (XLSX) into the shared `~/finances/data.db` SQLite store. Ingest plugin in the personal-finance family - owns `privat_*` tables, standalone, complements `monobank-mcp` without depending on it.
 
 **Features:**
 - Drops into `~/finances/inbox/` workflow: export from privat24.ua, drop XLSX, ask Claude "import privat"
@@ -203,7 +203,7 @@ Once installed, plugins are automatically available in Claude Code.
 
 **Privat24 Skill**: Export the XLSX from Privat24 (open <https://next.privat24.ua/wallet>, click the card, stay on **Історія**, click the **"Експорт у XLS"** icon between the search field and **Фільтр** - see [Exporting a statement](./privat24-skill/README.md#exporting-a-statement) for the click-by-click flow). Drop the file into `~/finances/inbox/` and tell Claude "import privat". The skill runs `privat24-import import-inbox`, dedupes against prior runs by SHA, parses the file, and archives the source under `~/finances/archive/YYYY-MM-DD/`.
 
-> Cross-bank query / categorisation tools (the `personal-finance` umbrella plugin from the [design doc](./docs/personal-finance-design.md)) land in a follow-up PR. The `mono_*` and `privat_*` ingest plugins above are usable standalone today.
+**Personal Finance umbrella**: install the `personal-finance` skill alongside one or both ingest plugins. It auto-detects whichever `<bank>_transactions` tables are present; ask Claude things like "звіт за квітень", "скільки витратив на каву минулого місяця", "категоризуй транзакції". See [personal-finance README](./personal-finance/README.md) for the full CLI surface (`pf-query`, `pf-report`, `pf-categorize`, `pf-rules`).
 
 ## Structure
 
@@ -282,9 +282,22 @@ claude-skills/
 │   ├── fixtures/                 # generate.py + sample_web.xlsx (synthetic)
 │   ├── tests/                    # 35 pytest tests
 │   └── examples/workflow.md
-├── docs/                         # Cross-plugin design + schema contract
-│   ├── personal-finance-design.md
-│   └── transactions-schema.md
+├── personal-finance/             # Personal Finance umbrella plugin (Python)
+│   ├── pyproject.toml            # pyyaml; Python >= 3.13
+│   ├── src/pf_skill/
+│   │   ├── query.py report.py    # read CLI entry points
+│   │   ├── categorize.py rules_cli.py  # write CLI entry points
+│   │   ├── schema/               # pf_001_initial.sql + __init__.py
+│   │   ├── rules/                # mcc.json + description.yaml seed
+│   │   └── common/               # store, view, queries, reports, rules,
+│   │                             # categorizer, cli, currencies, types
+│   ├── skills/personal-finance/SKILL.md
+│   ├── commands/categorize.md
+│   ├── examples/                 # backup_db.sh + launchd plist (opt-in)
+│   └── tests/                    # 99 pytest tests
+├── docs/
+│   ├── transactions-schema.md   # Cross-plugin row-shape contract
+│   └── pre-publish-checklist.md
 └── README.md                     # This file
 ```
 

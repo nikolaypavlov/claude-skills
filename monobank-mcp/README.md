@@ -1,6 +1,6 @@
 # monobank-mcp
 
-Local MCP server + CLI for the [Monobank Personal API](https://api.monobank.ua/docs/). Pulls statements into the shared `~/finances/data.db` SQLite store so the [personal-finance](../docs/personal-finance-design.md) umbrella plugin can query, categorise, and report across all your banks.
+Local MCP server + CLI for the [Monobank Personal API](https://api.monobank.ua/docs/). Pulls statements into the shared `~/finances/data.db` SQLite store so the [personal-finance](../personal-finance/README.md) umbrella plugin can query, categorise, and report across all your banks.
 
 This is the **ingest plugin only**. It owns the `mono_*` tables in the shared store and does nothing else. Query, reports, and categorisation live in the personal-finance plugin (separate package).
 

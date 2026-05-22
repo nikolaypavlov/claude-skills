@@ -71,4 +71,4 @@ for r in c.execute('SELECT account_id, COUNT(*) FROM privat_transactions GROUP B
 "
 ```
 
-For real cross-bank queries / categorisation, the personal-finance plugin (PR#3 in the design doc) is the entry point.
+For real cross-bank queries / categorisation, the personal-finance plugin is the entry point.

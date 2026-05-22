@@ -27,11 +27,17 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
+.ruff_cache/
 
 # Virtual environments
 venv/
 env/
 ENV/
+.venv/
+
+# Rust
+target/
 
 # Secrets / per-environment configuration
 .env
@@ -62,3 +68,18 @@ samples/
 Screenshot*.png
 Screenshot*.jpg
 Screenshot*.jpeg
+
+# Personal-finance threat model: never let any of the shared store,
+# its journal/wal/shm side-files, or local-only rule overrides land in
+# the repo. ~/finances/ lives outside the repo, but a stray symlink or
+# accidental copy must not turn into a commit. *.local.* covers both
+# counterparty.local.yaml and overrides.local.yaml.
+config.toml
+data.db
+data.db-journal
+data.db-wal
+data.db-shm
+*.local
+*.local.*
+inbox/
+archive/

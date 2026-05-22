@@ -30,8 +30,8 @@ from .view import build_tx_union_sql, discover_sources
 
 # Periods up to this many days inline every transaction in the bundle.
 # Beyond this, we switch to monthly_buckets + top_transactions + the
-# always-included uncategorized_transactions. 90 days is the design-doc
-# default and matches what a typical "last quarter" review needs.
+# always-included uncategorized_transactions. 90 days matches what a
+# typical "last quarter" review needs without blowing the context window.
 FULL_DUMP_THRESHOLD_DAYS = 90
 
 # Cap on highlighted transactions in bucketed mode. 100 is enough for

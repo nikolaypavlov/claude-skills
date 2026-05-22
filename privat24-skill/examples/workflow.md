@@ -40,4 +40,4 @@ End-to-end from "I just exported a statement" to "data is in `~/finances/data.db
    Claude reports: "Already imported in run #3; nothing new."
 ```
 
-Cross-bank queries / category reports happen via the personal-finance plugin (PR#3 in `docs/personal-finance-design.md`); this skill stays in its lane and only touches `privat_*` tables.
+Cross-bank queries / category reports happen via the personal-finance plugin; this skill stays in its lane and only touches `privat_*` tables.

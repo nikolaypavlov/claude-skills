@@ -48,7 +48,6 @@ Owns the `pf_*` tables (categorization rules, per-transaction overrides). Reads 
 ```
 
 Cross-plugin row shape: `docs/transactions-schema.md` (v1.0).
-Design rationale: `docs/personal-finance-design.md` (v3.0).
 
 ## Build / test
 
