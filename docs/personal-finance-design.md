@@ -568,17 +568,18 @@ personal-finance/
   .claude-plugin/
     plugin.json
   pyproject.toml                         uv-managed; deps: pyyaml, tzdata
-  rules/
-    mcc.json                             generated, committed
-    description.yaml                     generic global brands only
   scripts/
-    build_mcc_map.py                     generates rules/mcc.json
+    build_mcc_map.py                     generates src/pf_skill/rules/mcc.json
+                                         (deferred; PR#4 ships hand-curated seed)
   src/
     pf_skill/
       __init__.py
       schema/
         pf_001_initial.sql               loaded via importlib.resources;
                                          single canonical location
+      rules/
+        mcc.json                         seed, loaded via importlib.resources
+        description.yaml                 generic global brand regexes
       common/
         __init__.py
         store.py                         open_db, migrate_pf, PRAGMAs
@@ -798,10 +799,10 @@ Rules:
 
 | Файл                                      | Походження                          | Commit? |
 |-------------------------------------------|-------------------------------------|---------|
-| `personal-finance/rules/mcc.json`         | `scripts/build_mcc_map.py`          | yes     |
-| `personal-finance/rules/description.yaml` | generic global brands (Apple, Google, Uber, ...) | yes     |
-| `~/finances/rules/counterparty.local.yaml` | local merchants by name             | NO      |
-| `~/finances/rules/overrides.local.yaml`   | per-tx overrides                    | NO      |
+| `personal-finance/src/pf_skill/rules/mcc.json`         | hand-curated seed (PR#4); `scripts/build_mcc_map.py` is a follow-up | yes     |
+| `personal-finance/src/pf_skill/rules/description.yaml` | generic global brands (Apple, Google, Uber, ...) | yes     |
+| `~/finances/rules/counterparty.local.yaml`             | local merchants by name             | NO      |
+| `~/finances/rules/overrides.local.yaml`                | per-tx overrides                    | NO      |
 
 `build_mcc_map.py` parses PrivatBank MCC PDF за default; з `--source mcc.in.ua` оновлює з web. Output - committed `rules/mcc.json` (50-150 кодів покривають 95% побутових категорій).
 
@@ -1381,8 +1382,8 @@ Goal: complete pf-categorize і pf-rules + mcc-map generator. Mutations to pf_* 
 - `src/pf_skill/categorize.py` - entry `pf-categorize` з `--scope all|last-n-days [--n N]`
 - `src/pf_skill/rules_cli.py` - entry `pf-rules` з subcommands `add`, `apply`, `set-category`, `set-override`, `reload`, `list`
 - `scripts/build_mcc_map.py` (parse PrivatBank PDF або mcc.in.ua HTML)
-- `rules/mcc.json` (generated, committed)
-- `rules/description.yaml` (seed з 20-30 global brands)
+- `src/pf_skill/rules/mcc.json` (hand-curated seed; PR#4 stops short of writing the parser script)
+- `src/pf_skill/rules/description.yaml` (seed з 20-30 global brands)
 - `commands/categorize.md` - filled out (instructs Claude to run `pf-categorize` + propose rules for remaining)
 - `tests/test_categorizer.py`, `test_rules.py` - end-to-end CLI стиль
 - CI integration test: spin up clean DB, apply mono migrations (PR#1), apply privat migrations (PR#2), apply pf migrations, insert 50 synthetic tx, run `pf-categorize`, assert `tx_category` populated. Validates cross-plugin shape convention.

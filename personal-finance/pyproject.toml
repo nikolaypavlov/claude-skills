@@ -1,16 +1,18 @@
 [project]
 name = "pf-skill"
-version = "0.1.0"
+version = "0.2.0"
 description = "Personal finance umbrella skill - query / report / categorize over the shared ~/finances/data.db"
 authors = [
     { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },
 ]
 requires-python = ">=3.13"
-# PR#3 read path is stdlib only. PR#4 will add pyyaml (rule loading) and
-# tzdata (Europe/Kyiv display in narratives). pyproject.toml is the
-# single source of truth for runtime + dev deps - no PEP 723 inline
-# duplication.
-dependencies = []
+# PR#3 read path was stdlib only. PR#4 adds pyyaml for loading
+# description.yaml / *.local.yaml rule files. tzdata stays optional
+# (only matters when a future narrative path converts unix seconds back
+# to Europe/Kyiv for display).
+dependencies = [
+    "pyyaml>=6",
+]
 license = { text = "MIT" }
 readme = "README.md"
 keywords = ["personal-finance", "monobank", "privat24", "sqlite", "categorize"]
@@ -22,7 +24,8 @@ Repository = "https://github.com/nikolaypavlov/claude-skills.git"
 [project.scripts]
 pf-query = "pf_skill.query:main"
 pf-report = "pf_skill.report:main"
-# pf-categorize and pf-rules land in PR#4 (categorization + rule mgmt).
+pf-categorize = "pf_skill.categorize:main"
+pf-rules = "pf_skill.rules_cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -31,10 +34,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Migration SQL travels with the package so importlib.resources can find
-# it in both source-tree and installed-wheel layouts.
+# Migration SQL and the bundled seed rules travel with the package so
+# importlib.resources can find them in both source-tree and
+# installed-wheel layouts.
 [tool.setuptools.package-data]
 "pf_skill.schema" = ["*.sql"]
+"pf_skill.rules" = ["*.json", "*.yaml"]
 
 [dependency-groups]
 dev = [
