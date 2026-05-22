@@ -1,0 +1,51 @@
+[project]
+name = "pf-skill"
+version = "0.1.0"
+description = "Personal finance umbrella skill - query / report / categorize over the shared ~/finances/data.db"
+authors = [
+    { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },
+]
+requires-python = ">=3.13"
+# PR#3 read path is stdlib only. PR#4 will add pyyaml (rule loading) and
+# tzdata (Europe/Kyiv display in narratives). pyproject.toml is the
+# single source of truth for runtime + dev deps - no PEP 723 inline
+# duplication.
+dependencies = []
+license = { text = "MIT" }
+readme = "README.md"
+keywords = ["personal-finance", "monobank", "privat24", "sqlite", "categorize"]
+
+[project.urls]
+Homepage = "https://github.com/nikolaypavlov/claude-skills"
+Repository = "https://github.com/nikolaypavlov/claude-skills.git"
+
+[project.scripts]
+pf-query = "pf_skill.query:main"
+pf-report = "pf_skill.report:main"
+# pf-categorize and pf-rules land in PR#4 (categorization + rule mgmt).
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Migration SQL travels with the package so importlib.resources can find
+# it in both source-tree and installed-wheel layouts.
+[tool.setuptools.package-data]
+"pf_skill.schema" = ["*.sql"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

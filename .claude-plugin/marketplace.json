@@ -181,6 +181,27 @@
       "skills": [
         "./skills/privat24-import"
       ]
+    },
+    {
+      "name": "personal-finance",
+      "source": "./personal-finance",
+      "description": "Umbrella skill for personal finance queries, reports, and categorization over the shared ~/finances/data.db. Auto-discovers <bank>_transactions tables (mono_*, privat_*) and projects them to a common shape. Owns pf_* tables. PR#3 ships pf-query and pf-report (read path); categorization arrives in PR#4.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["personal-finance", "monobank", "privat24", "sqlite", "report", "umbrella"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./skills/personal-finance"
+      ],
+      "commands": [
+        "./commands"
+      ]
     }
   ]
 }

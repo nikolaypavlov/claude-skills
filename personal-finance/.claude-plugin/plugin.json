@@ -1,0 +1,12 @@
+{
+  "name": "personal-finance",
+  "description": "Umbrella skill for personal finance queries, reports, and categorization over the shared ~/finances/data.db SQLite store. Auto-discovers <bank>_transactions tables (mono_*, privat_*) via sqlite_master and projects them to a common Transaction shape. Owns pf_* tables (categorization rules, manual overrides). Triggered by report / spending / categorize / find-transaction style questions.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Mykola Pavlov",
+    "email": "me@nikolaypavlov.com"
+  },
+  "homepage": "https://github.com/nikolaypavlov/claude-skills",
+  "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+  "license": "MIT"
+}
