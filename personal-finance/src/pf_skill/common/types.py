@@ -8,13 +8,7 @@ dicts without ``# type: ignore``.
 
 from __future__ import annotations
 
-from typing import Literal, TypedDict
-
-# `bank` field of every projected row. New banks land here when their
-# ingest plugin lands. The umbrella code doesn't reject unknown values
-# at runtime (the view discovery is dynamic), but the Literal helps
-# type-check fixtures and assertions.
-Bank = Literal["mono", "privat"]
+from typing import TypedDict
 
 
 class Account(TypedDict):
@@ -62,13 +56,3 @@ class SummaryBucket(TypedDict):
     currency_code: int
     total_minor: int
     tx_count: int
-
-
-class DataSourcesReport(TypedDict):
-    """Diagnostic shape returned when the store is empty so the LLM
-    can tell the user "install at least one ingest plugin"."""
-
-    detected_banks: list[str]
-    pf_schema_version: int
-    db_path: str
-    warning: str | None

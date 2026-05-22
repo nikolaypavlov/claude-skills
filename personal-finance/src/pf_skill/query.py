@@ -36,8 +36,6 @@ from .common.currencies import parse_currency_arg
 from .common.store import open_db
 from .common.view import discover_sources
 
-_VALID_GROUP_BY = ("category", "mcc", "counterparty", "currency", "account", "bank")
-
 
 def _parse_currency_or_cli_error(value: str | None) -> int | None:
     """Wrap ``parse_currency_arg`` so unknown / malformed inputs land
@@ -55,7 +53,7 @@ def cmd_accounts(args: argparse.Namespace) -> dict[str, Any]:
     db_path = resolve_db_path(args.db)
     with closing(open_db(db_path)) as conn:
         sources = discover_sources(conn)
-        accounts = q.list_accounts(conn)
+        accounts = q.list_accounts(conn, sources=sources)
     payload: dict[str, Any] = {
         "ok": True,
         "detected_banks": list(sources.account_banks),
@@ -74,9 +72,7 @@ def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
     from_ts = parse_time_arg(args.from_, flag="--from")
     to_ts = parse_time_arg(args.to, flag="--to")
     if from_ts >= to_ts:
-        raise CliError(
-            f"--from ({from_ts}) must be strictly less than --to ({to_ts})"
-        )
+        raise CliError(f"--from ({from_ts}) must be strictly less than --to ({to_ts})")
     currency_code = _parse_currency_or_cli_error(args.currency)
     with closing(open_db(db_path)) as conn:
         rows = q.get_transactions(
@@ -101,28 +97,28 @@ def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_summarize(args: argparse.Namespace) -> dict[str, Any]:
     db_path = resolve_db_path(args.db)
-    if args.group_by not in _VALID_GROUP_BY:
-        raise CliError(
-            f"--group-by must be one of {list(_VALID_GROUP_BY)}, got "
-            f"{args.group_by!r}"
-        )
     from_ts = parse_time_arg(args.from_, flag="--from")
     to_ts = parse_time_arg(args.to, flag="--to")
     if from_ts >= to_ts:
-        raise CliError(
-            f"--from ({from_ts}) must be strictly less than --to ({to_ts})"
-        )
+        raise CliError(f"--from ({from_ts}) must be strictly less than --to ({to_ts})")
     currency_code = _parse_currency_or_cli_error(args.currency)
-    with closing(open_db(db_path)) as conn:
-        buckets = q.summarize_spending(
-            conn,
-            from_ts=from_ts,
-            to_ts=to_ts,
-            group_by=args.group_by,
-            account_id=args.account,
-            bank=args.bank,
-            currency_code=currency_code,
-        )
+    try:
+        with closing(open_db(db_path)) as conn:
+            buckets = q.summarize_spending(
+                conn,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                group_by=args.group_by,
+                account_id=args.account,
+                bank=args.bank,
+                currency_code=currency_code,
+            )
+    except ValueError as exc:
+        # The only ValueError summarize_spending raises is "unsupported
+        # group_by"; re-raise as CliError so the unified JSON-error
+        # contract (exit 1, stderr payload) is preserved instead of
+        # bubbling up as an uncaught exception (exit 2).
+        raise CliError(f"--group-by: {exc}", kind="ValueError") from exc
     return {
         "ok": True,
         "from_ts": from_ts,
@@ -151,9 +147,7 @@ def _add_common_filters(parser: argparse.ArgumentParser) -> None:
     """Filters shared by ``list`` and ``summarize`` so SKILL.md callers
     can swap subcommands without rewriting the flag list."""
     parser.add_argument("--account", default=None, help="Filter by account_id")
-    parser.add_argument(
-        "--bank", default=None, help="Filter by bank prefix (e.g. mono, privat)"
-    )
+    parser.add_argument("--bank", default=None, help="Filter by bank prefix (e.g. mono, privat)")
     parser.add_argument(
         "--currency",
         default=None,
@@ -178,12 +172,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_acc.set_defaults(func=cmd_accounts)
 
     p_list = sub.add_parser("list", help="List transactions in a date range")
-    p_list.add_argument(
-        "--from", dest="from_", required=True, help="Start (unix s or ISO 8601)"
-    )
-    p_list.add_argument(
-        "--to", required=True, help="End exclusive (unix s or ISO 8601)"
-    )
+    p_list.add_argument("--from", dest="from_", required=True, help="Start (unix s or ISO 8601)")
+    p_list.add_argument("--to", required=True, help="End exclusive (unix s or ISO 8601)")
     p_list.add_argument("--category", default=None)
     p_list.add_argument("--limit", type=int, default=500)
     p_list.add_argument("--offset", type=int, default=0)
@@ -191,23 +181,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_list.set_defaults(func=cmd_list)
 
     p_sum = sub.add_parser("summarize", help="Aggregate spending by a key")
-    p_sum.add_argument(
-        "--from", dest="from_", required=True, help="Start (unix s or ISO 8601)"
-    )
-    p_sum.add_argument(
-        "--to", required=True, help="End exclusive (unix s or ISO 8601)"
-    )
+    p_sum.add_argument("--from", dest="from_", required=True, help="Start (unix s or ISO 8601)")
+    p_sum.add_argument("--to", required=True, help="End exclusive (unix s or ISO 8601)")
     p_sum.add_argument(
         "--group-by",
         required=True,
-        help=f"One of {list(_VALID_GROUP_BY)}",
+        help=f"One of {list(q.valid_group_by_keys())}",
     )
     _add_common_filters(p_sum)
     p_sum.set_defaults(func=cmd_summarize)
 
-    p_find = sub.add_parser(
-        "find", help="Substring search over description and counterparty"
-    )
+    p_find = sub.add_parser("find", help="Substring search over description and counterparty")
     p_find.add_argument("--query", required=True, help="Substring to search for")
     p_find.add_argument("--limit", type=int, default=100)
     p_find.add_argument("--db", default=None)

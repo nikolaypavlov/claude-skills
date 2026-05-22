@@ -1,13 +1,9 @@
 -- pf_* schema, owned by personal-finance.
 -- Applied inside a single sqlite3 transaction by
 -- src/pf_skill/common/store.py when pf_schema_version reports a version
--- below 1. The applier loads this file via importlib.resources from the
--- in-package mirror at src/pf_skill/schema/ and executes each statement
--- inside an explicit BEGIN/COMMIT so the whole migration is atomic.
---
--- This top-level copy is committed for convenience (visibility in the
--- repo root and CLAUDE.md grep-ability). The authoritative location at
--- runtime is src/pf_skill/schema/pf_001_initial.sql - keep them in sync.
+-- below 1. The applier loads this file via importlib.resources and
+-- executes each statement inside an explicit BEGIN/COMMIT so the whole
+-- migration is atomic.
 --
 -- PRAGMAs (journal_mode, foreign_keys, busy_timeout) live in
 -- store.py::open_db, NOT here, because journal_mode cannot be changed

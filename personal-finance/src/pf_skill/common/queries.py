@@ -5,6 +5,12 @@ the schema-management and read-path logic stay independently
 testable. The CLI entry points (``pf_skill.query``, ``pf_skill.report``)
 are thin wrappers over these functions plus argument parsing and JSON
 serialisation.
+
+The SQL fragments at the top of this module (``TX_COLUMNS_SQL``,
+``CATEGORY_EXPR``, ``CATEGORY_JOIN_SQL``) are the canonical source for
+the cross-bank read shape; ``reports.py`` reuses them so a column
+added (or category-resolution rule changed) here propagates to both
+single-query and bundle paths.
 """
 
 from __future__ import annotations
@@ -15,18 +21,42 @@ from typing import Any
 
 from .types import Account, SummaryBucket, Transaction
 from .view import (
+    DiscoveredSources,
     build_accounts_union_sql,
     build_tx_union_sql,
     discover_sources,
 )
 
-# Valid `group_by` values for ``summarize_spending`` mapped to the SQL
-# expression evaluated against the joined UNION view. Hoisted to module
-# scope so the supported keys are visible without diving into the
-# function body, and so a typo lands as a clean ValueError with the
-# canonical list in the message.
+# Canonical SELECT-list for transactions projected through the UNION
+# view. Used directly by ``get_transactions``, ``find_transactions``,
+# and the ``reports.py`` helpers - any column added here needs to also
+# appear in ``view.COMMON_TX_COLUMNS`` (and vice-versa).
+TX_COLUMNS_SQL = (
+    "tx.id, tx.bank, tx.account_id, tx.ts, tx.amount_minor, "
+    "tx.currency_code, tx.op_amount_minor, tx.op_currency_code, "
+    "tx.mcc, tx.description, tx.counterparty, tx.balance_minor, "
+    "tx.imported_at"
+)
+
+# Resolved-category expression: override beats rule-assigned beats NULL.
+# Repeated rather than aliased because SQLite < 3.38 cannot reference
+# a SELECT-list alias from WHERE / GROUP BY clauses.
+CATEGORY_EXPR = "COALESCE(category_overrides.category, tx_category.category)"
+
+# Join boilerplate for stitching the resolved category onto a row from
+# the UNION view.
+CATEGORY_JOIN_SQL = (
+    "LEFT JOIN tx_category ON tx_category.tx_id = tx.id "
+    "LEFT JOIN category_overrides ON category_overrides.tx_id = tx.id"
+)
+
+# Valid ``group_by`` values for ``summarize_spending`` mapped to the
+# SQL expression evaluated against the joined UNION view. Hoisted to
+# module scope so the supported keys are visible without diving into
+# the function body, and so a typo lands as a clean ValueError with
+# the canonical list in the message.
 _GROUP_BY_EXPRESSIONS: dict[str, str] = {
-    "category": "COALESCE(category_overrides.category, tx_category.category)",
+    "category": CATEGORY_EXPR,
     "mcc": "tx.mcc",
     "counterparty": "tx.counterparty",
     "currency": "tx.currency_code",
@@ -35,9 +65,25 @@ _GROUP_BY_EXPRESSIONS: dict[str, str] = {
 }
 
 
-def list_accounts(conn: sqlite3.Connection) -> list[Account]:
-    """Return every account row from every discovered bank."""
-    sources = discover_sources(conn)
+def valid_group_by_keys() -> tuple[str, ...]:
+    """Tuple of supported ``--group-by`` values, in stable order for
+    user-facing error messages and argparse ``choices=``."""
+    return tuple(_GROUP_BY_EXPRESSIONS.keys())
+
+
+def list_accounts(
+    conn: sqlite3.Connection,
+    *,
+    sources: DiscoveredSources | None = None,
+) -> list[Account]:
+    """Return every account row from every discovered bank.
+
+    ``sources`` is optional; pass it when the caller has already
+    discovered to avoid a second ``sqlite_master`` round-trip (e.g.
+    ``cmd_accounts`` reads ``detected_banks`` from the same probe).
+    """
+    if sources is None:
+        sources = discover_sources(conn)
     union = build_accounts_union_sql(sources)
     if union is None:
         return []
@@ -73,7 +119,7 @@ def get_transactions(
     category stitched in (override > rule-assigned > NULL).
 
     ``category`` filter applies AFTER resolution (the WHERE predicate
-    repeats the COALESCE expression because SQLite cannot reference a
+    repeats ``CATEGORY_EXPR`` because SQLite cannot reference a
     SELECT-list alias in WHERE), so passing ``category="Food"`` returns
     rows whose effective category is "Food" even when only a manual
     override set it.
@@ -82,37 +128,27 @@ def get_transactions(
     union = build_tx_union_sql(sources)
     if union is None:
         return []
-    where, params = _collect_filters(
-        [
-            ("tx.ts >= ?", from_ts, int),
-            ("tx.ts < ?", to_ts, int),
-            ("tx.account_id = ?", account_id, None),
-            ("tx.bank = ?", bank, None),
-            ("tx.currency_code = ?", currency_code, int),
-            (
-                "COALESCE(category_overrides.category, tx_category.category) = ?",
-                category,
-                None,
-            ),
-        ]
+    where, params = _tx_filters(
+        from_ts=from_ts,
+        to_ts=to_ts,
+        account_id=account_id,
+        bank=bank,
+        currency_code=currency_code,
     )
+    if category is not None:
+        where.append(f"{CATEGORY_EXPR} = ?")
+        params.append(category)
     where_sql = ("\nWHERE " + " AND ".join(where)) if where else ""
-    params.extend([int(limit), int(offset)])
     sql = (
-        f"SELECT tx.id, tx.bank, tx.account_id, tx.ts, tx.amount_minor, "
-        f"tx.currency_code, tx.op_amount_minor, tx.op_currency_code, "
-        f"tx.mcc, tx.description, tx.counterparty, tx.balance_minor, "
-        f"tx.imported_at, "
-        f"COALESCE(category_overrides.category, tx_category.category) AS category "
+        f"SELECT {TX_COLUMNS_SQL}, {CATEGORY_EXPR} AS category "
         f"FROM (\n{union}\n) AS tx "
-        f"LEFT JOIN tx_category ON tx_category.tx_id = tx.id "
-        f"LEFT JOIN category_overrides ON category_overrides.tx_id = tx.id"
+        f"{CATEGORY_JOIN_SQL}"
         f"{where_sql} "
         f"ORDER BY tx.ts DESC, tx.id "
         f"LIMIT ? OFFSET ?"
     )
-    rows = conn.execute(sql, params)
-    return [_row_to_tx(r) for r in rows]
+    rows = conn.execute(sql, [*params, int(limit), int(offset)])
+    return [row_to_transaction(r) for r in rows]
 
 
 def summarize_spending(
@@ -137,26 +173,22 @@ def summarize_spending(
     union = build_tx_union_sql(sources)
     if union is None:
         return []
-    where, params = _collect_filters(
-        [
-            ("tx.ts >= ?", from_ts, int),
-            ("tx.ts < ?", to_ts, int),
-            ("tx.account_id = ?", account_id, None),
-            ("tx.bank = ?", bank, None),
-            ("tx.currency_code = ?", currency_code, int),
-        ]
+    where, params = _tx_filters(
+        from_ts=from_ts,
+        to_ts=to_ts,
+        account_id=account_id,
+        bank=bank,
+        currency_code=currency_code,
     )
     sql = (
         f"SELECT {key_expr} AS key, tx.currency_code, "
         f"SUM(tx.amount_minor) AS total_minor, "
         f"COUNT(*) AS tx_count "
         f"FROM (\n{union}\n) AS tx "
-        f"LEFT JOIN tx_category ON tx_category.tx_id = tx.id "
-        f"LEFT JOIN category_overrides ON category_overrides.tx_id = tx.id "
-        # Repeating the expression (rather than `GROUP BY key`) keeps us
-        # compatible with SQLite < 3.38, which does not allow grouping
-        # by SELECT-list alias.
+        f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
+        # Repeat the expression rather than refer to the alias for
+        # SQLite < 3.38 compatibility (no GROUP BY alias).
         f"GROUP BY {key_expr}, tx.currency_code "
         f"ORDER BY total_minor"
     )
@@ -198,38 +230,46 @@ def find_transactions(
     escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{escaped}%"
     sql = (
-        "SELECT tx.id, tx.bank, tx.account_id, tx.ts, tx.amount_minor, "
-        "tx.currency_code, tx.op_amount_minor, tx.op_currency_code, "
-        "tx.mcc, tx.description, tx.counterparty, tx.balance_minor, "
-        "tx.imported_at, "
-        "COALESCE(category_overrides.category, tx_category.category) AS category "
+        f"SELECT {TX_COLUMNS_SQL}, {CATEGORY_EXPR} AS category "
         f"FROM (\n{union}\n) AS tx "
-        "LEFT JOIN tx_category ON tx_category.tx_id = tx.id "
-        "LEFT JOIN category_overrides ON category_overrides.tx_id = tx.id "
+        f"{CATEGORY_JOIN_SQL} "
         "WHERE (LOWER(COALESCE(tx.description, '')) LIKE LOWER(?) ESCAPE '\\' "
         "       OR LOWER(COALESCE(tx.counterparty, '')) LIKE LOWER(?) ESCAPE '\\') "
         "ORDER BY tx.ts DESC, tx.id "
         "LIMIT ?"
     )
     rows = conn.execute(sql, [pattern, pattern, int(limit)])
-    return [_row_to_tx(r) for r in rows]
+    return [row_to_transaction(r) for r in rows]
 
 
-def _collect_filters(
-    spec: list[tuple[str, Any, Any]],
+def _tx_filters(
+    *,
+    from_ts: int | None,
+    to_ts: int | None,
+    account_id: str | None,
+    bank: str | None,
+    currency_code: int | None,
 ) -> tuple[list[str], list[Any]]:
-    """Build a WHERE-clause fragment list + bound-parameter list from a
-    declarative spec of ``(clause, value, cast_or_None)`` tuples.
-    Values that are ``None`` are skipped entirely - that's how a
-    caller signals "no filter on this dimension".
-    """
+    """Build a WHERE-fragment list + bound-parameter list for the
+    transactions UNION view. ``None`` values are dropped so the caller
+    can pass them straight through to skip a dimension."""
     where: list[str] = []
     params: list[Any] = []
-    for clause, value, cast in spec:
-        if value is None:
-            continue
-        where.append(clause)
-        params.append(cast(value) if cast is not None else value)
+    if from_ts is not None:
+        where.append("tx.ts >= ?")
+        params.append(int(from_ts))
+    if to_ts is not None:
+        where.append("tx.ts < ?")
+        params.append(int(to_ts))
+    if account_id is not None:
+        where.append("tx.account_id = ?")
+        params.append(account_id)
+    if bank is not None:
+        where.append("tx.bank = ?")
+        params.append(bank)
+    if currency_code is not None:
+        where.append("tx.currency_code = ?")
+        params.append(int(currency_code))
     return where, params
 
 
@@ -244,11 +284,11 @@ def _group_by_expression(group_by: str) -> str:
     return _GROUP_BY_EXPRESSIONS[group_by]
 
 
-def _row_to_tx(row: Sequence[Any]) -> Transaction:
-    """Project a 14-column sqlite3 row to ``Transaction``. The Sequence
-    type signals "must be indexable by position" - the previous
-    Iterable annotation accepted single-pass generators that would
-    consume on first index access."""
+def row_to_transaction(row: Sequence[Any]) -> Transaction:
+    """Project a 14-column sqlite3 row (``TX_COLUMNS_SQL`` + resolved
+    category as the 14th element) to ``Transaction``. Public so
+    ``reports.py`` reuses the same projection for its top/uncategorized
+    transaction lists without duplicating the field handling."""
     return Transaction(
         id=row[0],
         bank=row[1],

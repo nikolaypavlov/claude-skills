@@ -18,13 +18,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from .store import default_db_path
 
 
 class CliError(Exception):
@@ -91,16 +92,15 @@ def _json_default(obj: Any) -> Any:
 def resolve_db_path(arg: str | None) -> Path:
     """Resolve the ``--db`` flag the same way every ``pf-*`` script does.
 
-    Priority: explicit ``--db`` arg > ``MONOBANK_MCP_DATA_DIR`` env var
-    > ``~/finances/data.db``. The env var honours the shared override
-    used by the ingest plugins so a single setting reroutes everyone.
+    Explicit ``--db`` wins; otherwise delegate to
+    ``store.default_db_path`` which handles the env-var override
+    (``MONOBANK_MCP_DATA_DIR``) and the ``~/finances/data.db`` fallback.
+    Keeping the env+fallback in one place avoids drift between the two
+    resolution sites.
     """
     if arg:
         return Path(arg).expanduser()
-    env = os.environ.get("MONOBANK_MCP_DATA_DIR")
-    if env:
-        return Path(env).expanduser() / "data.db"
-    return Path.home() / "finances" / "data.db"
+    return default_db_path()
 
 
 def parse_time_arg(value: str, *, flag: str) -> int:

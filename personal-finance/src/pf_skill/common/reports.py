@@ -18,7 +18,14 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, TypedDict
 
-from .queries import get_transactions, list_accounts
+from .queries import (
+    CATEGORY_EXPR,
+    CATEGORY_JOIN_SQL,
+    TX_COLUMNS_SQL,
+    get_transactions,
+    list_accounts,
+    row_to_transaction,
+)
 from .view import build_tx_union_sql, discover_sources
 
 # Periods up to this many days inline every transaction in the bundle.
@@ -31,6 +38,13 @@ FULL_DUMP_THRESHOLD_DAYS = 90
 # Claude to spot "Recurring", "Anomalies", and "Top counterparties"
 # narrative beats without blowing the context window.
 TOP_TRANSACTIONS_LIMIT = 100
+
+# Cap on the uncategorized_transactions[] list in bucketed mode. Same
+# budget as top_transactions - in a year of data with low categorization
+# coverage the unbounded list would defeat the purpose of bucketed mode
+# (the very reason we switched away from full-dump). Full mode keeps the
+# list unbounded since the user explicitly asked for everything inline.
+UNCATEGORIZED_BUCKETED_LIMIT = 100
 
 
 class PeriodSummary(TypedDict):
@@ -66,7 +80,7 @@ def build_report_bundle(
     no activity.
     """
     sources = discover_sources(conn)
-    accounts = list_accounts(conn)
+    accounts = list_accounts(conn, sources=sources)
     period_days = max(1, (to_ts - from_ts) // 86_400)
     mode = "full" if period_days <= FULL_DUMP_THRESHOLD_DAYS else "bucketed"
 
@@ -85,24 +99,18 @@ def build_report_bundle(
         "last_sync_ts": _last_sync_ts_per_bank(conn, sources.tx_banks),
     }
 
-    if not sources.has_any_tx():
+    union = build_tx_union_sql(sources)
+    if union is None:
         bundle["warning"] = (
             "no transaction sources detected - install at least one ingest "
             "plugin (monobank-mcp or privat24-skill)"
         )
         return bundle
 
-    common_filters = {
-        "from_ts": from_ts,
-        "to_ts": to_ts,
-        "account_id": account_id,
-        "bank": bank,
-    }
-
-    bundle["currencies_seen"] = _currencies_seen(conn, sources, **common_filters)
+    bundle["currencies_seen"] = _currencies_seen(conn, union, from_ts, to_ts, account_id, bank)
     bundle["active_rules_count"] = _active_rules_count(conn)
     bundle["uncategorized_count"] = _uncategorized_count(
-        conn, sources, **common_filters
+        conn, union, from_ts, to_ts, account_id, bank
     )
 
     if mode == "full":
@@ -114,22 +122,28 @@ def build_report_bundle(
             bank=bank,
             limit=10_000,
         )
+        uncat_limit: int | None = None
     else:
-        bundle["monthly_buckets"] = _monthly_buckets(
-            conn, sources, **common_filters
-        )
+        bundle["monthly_buckets"] = _monthly_buckets(conn, union, from_ts, to_ts, account_id, bank)
         bundle["top_transactions"] = _top_transactions(
-            conn, sources, **common_filters, limit=TOP_TRANSACTIONS_LIMIT
+            conn,
+            union,
+            from_ts,
+            to_ts,
+            account_id,
+            bank,
+            limit=TOP_TRANSACTIONS_LIMIT,
         )
+        uncat_limit = UNCATEGORIZED_BUCKETED_LIMIT
 
     bundle["uncategorized_transactions"] = _uncategorized_transactions(
-        conn, sources, **common_filters
+        conn, union, from_ts, to_ts, account_id, bank, limit=uncat_limit
     )
 
     if comparison == "previous-period":
         bundle["comparison"] = _build_comparison(
             conn,
-            sources,
+            union,
             from_ts=from_ts,
             to_ts=to_ts,
             account_id=account_id,
@@ -160,40 +174,34 @@ def _last_sync_ts_per_bank(
     this timestamp" signal). For every other bank including ``privat``:
     ``MAX(imported_at)`` from ``<bank>_transactions`` (the closest
     approximation - when the last data landed in the store).
+
+    Both table identifiers are double-quoted so a future bank prefix
+    that happens to be a SQLite reserved word still produces valid SQL.
     """
     result: dict[str, int | None] = {}
     for bank in tx_banks:
         state_table = f"{bank}_sync_state"
         if _table_exists(conn, state_table):
-            row = conn.execute(
-                f"SELECT MAX(last_completed_ts) FROM {state_table}"
-            ).fetchone()
+            row = conn.execute(f'SELECT MAX(last_completed_ts) FROM "{state_table}"').fetchone()
         else:
-            tx_table = f'"{bank}_transactions"'
-            row = conn.execute(f"SELECT MAX(imported_at) FROM {tx_table}").fetchone()
+            row = conn.execute(f'SELECT MAX(imported_at) FROM "{bank}_transactions"').fetchone()
         result[bank] = int(row[0]) if row and row[0] is not None else None
     return result
 
 
 def _active_rules_count(conn: sqlite3.Connection) -> int:
-    row = conn.execute(
-        "SELECT COUNT(*) FROM categorization_rules WHERE enabled = 1"
-    ).fetchone()
+    row = conn.execute("SELECT COUNT(*) FROM categorization_rules WHERE enabled = 1").fetchone()
     return int(row[0]) if row else 0
 
 
 def _currencies_seen(
     conn: sqlite3.Connection,
-    sources: Any,
-    *,
+    union: str,
     from_ts: int,
     to_ts: int,
     account_id: str | None,
     bank: str | None,
 ) -> list[int]:
-    union = build_tx_union_sql(sources)
-    if union is None:
-        return []
     where, params = _period_where(from_ts, to_ts, account_id, bank)
     rows = conn.execute(
         f"SELECT DISTINCT tx.currency_code FROM (\n{union}\n) AS tx "
@@ -206,23 +214,18 @@ def _currencies_seen(
 
 def _uncategorized_count(
     conn: sqlite3.Connection,
-    sources: Any,
-    *,
+    union: str,
     from_ts: int,
     to_ts: int,
     account_id: str | None,
     bank: str | None,
 ) -> int:
-    union = build_tx_union_sql(sources)
-    if union is None:
-        return 0
     where, params = _period_where(from_ts, to_ts, account_id, bank)
     row = conn.execute(
         f"SELECT COUNT(*) FROM (\n{union}\n) AS tx "
-        f"LEFT JOIN tx_category ON tx_category.tx_id = tx.id "
-        f"LEFT JOIN category_overrides ON category_overrides.tx_id = tx.id "
+        f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
-        f"AND COALESCE(category_overrides.category, tx_category.category) IS NULL",
+        f"AND {CATEGORY_EXPR} IS NULL",
         params,
     ).fetchone()
     return int(row[0]) if row else 0
@@ -230,31 +233,25 @@ def _uncategorized_count(
 
 def _monthly_buckets(
     conn: sqlite3.Connection,
-    sources: Any,
-    *,
+    union: str,
     from_ts: int,
     to_ts: int,
     account_id: str | None,
     bank: str | None,
 ) -> list[dict[str, Any]]:
-    union = build_tx_union_sql(sources)
-    if union is None:
-        return []
     where, params = _period_where(from_ts, to_ts, account_id, bank)
-    category_expr = "COALESCE(category_overrides.category, tx_category.category)"
     rows = conn.execute(
         f"SELECT strftime('%Y-%m', tx.ts, 'unixepoch') AS year_month, "
-        f"  {category_expr} AS category, "
+        f"  {CATEGORY_EXPR} AS category, "
         f"  tx.currency_code, "
         f"  SUM(tx.amount_minor) AS total_minor, "
         f"  COUNT(*) AS tx_count "
         f"FROM (\n{union}\n) AS tx "
-        f"LEFT JOIN tx_category ON tx_category.tx_id = tx.id "
-        f"LEFT JOIN category_overrides ON category_overrides.tx_id = tx.id "
+        f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
         # Repeat the expression rather than refer to the alias for
         # SQLite < 3.38 compatibility (no GROUP BY alias).
-        f"GROUP BY year_month, {category_expr}, tx.currency_code "
+        f"GROUP BY year_month, {CATEGORY_EXPR}, tx.currency_code "
         f"ORDER BY year_month, total_minor",
         params,
     )
@@ -272,68 +269,64 @@ def _monthly_buckets(
 
 def _top_transactions(
     conn: sqlite3.Connection,
-    sources: Any,
-    *,
+    union: str,
     from_ts: int,
     to_ts: int,
     account_id: str | None,
     bank: str | None,
+    *,
     limit: int,
 ) -> list[dict[str, Any]]:
-    union = build_tx_union_sql(sources)
-    if union is None:
-        return []
     where, params = _period_where(from_ts, to_ts, account_id, bank)
     rows = conn.execute(
-        "SELECT tx.id, tx.bank, tx.account_id, tx.ts, tx.amount_minor, "
-        "tx.currency_code, tx.op_amount_minor, tx.op_currency_code, "
-        "tx.mcc, tx.description, tx.counterparty, tx.balance_minor, "
-        "tx.imported_at, "
-        "COALESCE(category_overrides.category, tx_category.category) AS category "
+        f"SELECT {TX_COLUMNS_SQL}, {CATEGORY_EXPR} AS category "
         f"FROM (\n{union}\n) AS tx "
-        "LEFT JOIN tx_category ON tx_category.tx_id = tx.id "
-        "LEFT JOIN category_overrides ON category_overrides.tx_id = tx.id "
+        f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
-        "ORDER BY ABS(tx.amount_minor) DESC, tx.ts DESC "
-        "LIMIT ?",
+        f"ORDER BY ABS(tx.amount_minor) DESC, tx.ts DESC "
+        f"LIMIT ?",
         [*params, int(limit)],
     )
-    return [_row_to_tx_dict(r) for r in rows]
+    return [row_to_transaction(r) for r in rows]
 
 
 def _uncategorized_transactions(
     conn: sqlite3.Connection,
-    sources: Any,
-    *,
+    union: str,
     from_ts: int,
     to_ts: int,
     account_id: str | None,
     bank: str | None,
+    *,
+    limit: int | None,
 ) -> list[dict[str, Any]]:
-    union = build_tx_union_sql(sources)
-    if union is None:
-        return []
+    """List uncategorized transactions in the period.
+
+    ``limit=None`` returns every match (full mode); a positive int caps
+    the result so the bundle stays bounded in bucketed mode. The cap
+    matters: with a year of data and low categorization coverage an
+    unbounded list would produce a payload larger than the full-dump
+    the bucketed mode was meant to avoid.
+    """
     where, params = _period_where(from_ts, to_ts, account_id, bank)
+    limit_sql = "LIMIT ?" if limit is not None else ""
+    limit_params = [int(limit)] if limit is not None else []
     rows = conn.execute(
-        "SELECT tx.id, tx.bank, tx.account_id, tx.ts, tx.amount_minor, "
-        "tx.currency_code, tx.op_amount_minor, tx.op_currency_code, "
-        "tx.mcc, tx.description, tx.counterparty, tx.balance_minor, "
-        "tx.imported_at, "
-        "NULL AS category "
+        f"SELECT {TX_COLUMNS_SQL}, NULL AS category "
         f"FROM (\n{union}\n) AS tx "
-        "LEFT JOIN tx_category ON tx_category.tx_id = tx.id "
-        "LEFT JOIN category_overrides ON category_overrides.tx_id = tx.id "
+        f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
-        "AND COALESCE(category_overrides.category, tx_category.category) IS NULL "
-        "ORDER BY ABS(tx.amount_minor) DESC, tx.ts DESC",
-        params,
+        f"AND {CATEGORY_EXPR} IS NULL "
+        f"ORDER BY ABS(tx.amount_minor) DESC, tx.ts DESC "
+        f"{limit_sql}",
+        [*params, *limit_params],
     )
-    return [_row_to_tx_dict(r) for r in rows]
+    return [row_to_transaction(r) for r in rows]
 
 
 def _build_comparison(
     conn: sqlite3.Connection,
-    sources: Any,
+    union: str,
     *,
     from_ts: int,
     to_ts: int,
@@ -347,7 +340,7 @@ def _build_comparison(
         "previous_period": {"from_ts": prev_from, "to_ts": prev_to},
         "per_currency": _per_currency_comparison(
             conn,
-            sources,
+            union,
             current=(from_ts, to_ts),
             previous=(prev_from, prev_to),
             account_id=account_id,
@@ -358,19 +351,15 @@ def _build_comparison(
 
 def _per_currency_comparison(
     conn: sqlite3.Connection,
-    sources: Any,
+    union: str,
     *,
     current: tuple[int, int],
     previous: tuple[int, int],
     account_id: str | None,
     bank: str | None,
 ) -> list[CurrencyComparison]:
-    cur = _in_out_per_currency(
-        conn, sources, *current, account_id=account_id, bank=bank
-    )
-    prev = _in_out_per_currency(
-        conn, sources, *previous, account_id=account_id, bank=bank
-    )
+    cur = _in_out_per_currency(conn, union, *current, account_id=account_id, bank=bank)
+    prev = _in_out_per_currency(conn, union, *previous, account_id=account_id, bank=bank)
     currencies = sorted(set(cur.keys()) | set(prev.keys()))
     zero = PeriodSummary(in_minor=0, out_minor=0, tx_count=0)
     return [
@@ -385,16 +374,13 @@ def _per_currency_comparison(
 
 def _in_out_per_currency(
     conn: sqlite3.Connection,
-    sources: Any,
+    union: str,
     from_ts: int,
     to_ts: int,
     *,
     account_id: str | None,
     bank: str | None,
 ) -> dict[int, PeriodSummary]:
-    union = build_tx_union_sql(sources)
-    if union is None:
-        return {}
     where, params = _period_where(from_ts, to_ts, account_id, bank)
     rows = conn.execute(
         f"SELECT tx.currency_code, "
@@ -431,26 +417,3 @@ def _period_where(
         where.append("tx.bank = ?")
         params.append(bank)
     return where, params
-
-
-def _row_to_tx_dict(row: Any) -> dict[str, Any]:
-    """Project a 14-column sqlite3 row to the same dict shape
-    ``Transaction`` carries, but as a plain dict to avoid the TypedDict
-    indirection here (the bundle ships these to stdout via json.dumps).
-    """
-    return {
-        "id": row[0],
-        "bank": row[1],
-        "account_id": row[2],
-        "ts": int(row[3]),
-        "amount_minor": int(row[4]),
-        "currency_code": int(row[5]),
-        "op_amount_minor": int(row[6]) if row[6] is not None else None,
-        "op_currency_code": int(row[7]) if row[7] is not None else None,
-        "mcc": int(row[8]) if row[8] is not None else None,
-        "description": row[9],
-        "counterparty": row[10],
-        "balance_minor": int(row[11]) if row[11] is not None else None,
-        "imported_at": int(row[12]),
-        "category": row[13],
-    }

@@ -181,7 +181,7 @@ privat24-skill/schema/
   privat_001_initial.sql      creates privat_accounts, privat_transactions,
                               privat_import_runs, privat_schema_version
 
-personal-finance/schema/
+personal-finance/src/pf_skill/schema/
   pf_001_initial.sql          creates categorization_rules, tx_category,
                               category_overrides, pf_schema_version
 ```
@@ -466,7 +466,7 @@ INSERT INTO privat_schema_version (version, applied_at)
 VALUES (1, strftime('%s','now'));
 ```
 
-### 3.3 pf_* schema (owned by personal-finance, file: `personal-finance/schema/pf_001_initial.sql`)
+### 3.3 pf_* schema (owned by personal-finance, file: `personal-finance/src/pf_skill/schema/pf_001_initial.sql`)
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -568,10 +568,6 @@ personal-finance/
   .claude-plugin/
     plugin.json
   pyproject.toml                         uv-managed; deps: pyyaml, tzdata
-  schema/                                (committed at root for convenience;
-                                          installed scripts read SQL via
-                                          importlib.resources from package)
-    pf_001_initial.sql                   ONLY pf_* tables (categorization)
   rules/
     mcc.json                             generated, committed
     description.yaml                     generic global brands only
@@ -581,8 +577,8 @@ personal-finance/
     pf_skill/
       __init__.py
       schema/
-        pf_001_initial.sql               in-package copy, loaded via
-                                         importlib.resources
+        pf_001_initial.sql               loaded via importlib.resources;
+                                         single canonical location
       common/
         __init__.py
         store.py                         open_db, migrate_pf, PRAGMAs
@@ -1353,8 +1349,7 @@ Goal: scaffold the skill, table discovery, and read-only `pf-query` + `pf-report
 
 - `.claude-plugin/plugin.json`
 - `pyproject.toml` (uv-managed; deps: pyyaml, tzdata)
-- `schema/pf_001_initial.sql` (categorization_rules, tx_category, category_overrides, pf_schema_version)
-- `src/pf_skill/schema/pf_001_initial.sql` (in-package copy; loaded via `importlib.resources`)
+- `src/pf_skill/schema/pf_001_initial.sql` (categorization_rules, tx_category, category_overrides, pf_schema_version; loaded via `importlib.resources`)
 - `src/pf_skill/common/`:
   - `store.py` - open_db, migrate_pf (own tables only), PRAGMA defensives
   - `view.py` - discovers `<bank>_transactions` via `sqlite_master`, builds UNION ALL SQL, projects to common shape
