@@ -137,6 +137,20 @@ Python Claude Code skill that imports Privat24 web-cabinet statement exports (XL
 
 **Requirements:** `uv` (Astral's Python toolchain). The skill runs through `uv run --directory ${CLAUDE_PLUGIN_ROOT} privat24-import ...`.
 
+### Personal Finance
+
+Python umbrella skill in the personal-finance family. Queries, reports, and categorizes transactions written by the ingest plugins (`monobank-mcp`, `privat24-skill`) into the shared `~/finances/data.db` SQLite store. Owns `pf_*` tables (categorization rules, manual overrides) and reads `<bank>_transactions` via runtime UNION ALL discovery, so it works with any subset of ingest plugins installed.
+
+**Features:**
+- 4 CLI entry points: `pf-query` (accounts, list, summarize, find), `pf-report` (full or bucketed bundle with previous-period comparison), `pf-categorize` (rule-based pass over uncategorized rows), `pf-rules` (add, apply, set-category, set-override, list, reload)
+- 4-source rule loader with unified priority (description regex 100 < counterparty 200 < MCC 300 < explicit DB priority); bundled seed rules ship inside the package, user-local YAMLs at `~/finances/rules/` are gitignored and silently optional
+- Manual overrides are UPSERTed into `category_overrides` on every `pf-categorize` run; rule pass and overrides import are two separate transactions, both idempotent, safe to retry after a crash
+- `pf-rules add` validates regex via `re.compile` BEFORE the INSERT - a typo lands as a clean error instead of a silently non-matching rule
+- Same JSON-on-stdout output contract as the ingest plugins (success exit 0; `CliError` JSON on stderr exit 1; uncaught traceback + structured error exit 2)
+- 116 pytest tests covering store, view discovery, queries, reports, rules, categorizer, and end-to-end CLI
+
+**Requirements:** `uv` and Python >= 3.13. At least one ingest plugin (`monobank-mcp` and/or `privat24-skill`) installed and populated; the umbrella is read-only against `<bank>_transactions` tables.
+
 ## Installation
 
 ### Add Marketplace
@@ -177,6 +191,9 @@ Python Claude Code skill that imports Privat24 web-cabinet statement exports (XL
 
 # Install Privat24 Skill (Python; needs `uv` on the host)
 /plugin install privat24-skill@ai-engineering-skills
+
+# Install Personal Finance umbrella (Python; needs `uv` and >=1 ingest plugin)
+/plugin install personal-finance@ai-engineering-skills
 ```
 
 ## Usage
@@ -294,7 +311,7 @@ claude-skills/
 │   ├── skills/personal-finance/SKILL.md
 │   ├── commands/categorize.md
 │   ├── examples/                 # backup_db.sh + launchd plist (opt-in)
-│   └── tests/                    # 99 pytest tests
+│   └── tests/                    # 116 pytest tests
 ├── docs/
 │   ├── transactions-schema.md   # Cross-plugin row-shape contract
 │   └── pre-publish-checklist.md

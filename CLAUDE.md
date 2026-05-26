@@ -111,7 +111,7 @@ Rust binary plugin. Same shipping pattern as `icloud-mcp` (`.mcp.json` -> `scrip
 ```bash
 cd monobank-mcp && cargo build --release
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
-cargo test    # 22 unit + 13 integration tests
+cargo test    # 24 unit + 18 integration tests
 ```
 
 **Key files:**
@@ -176,7 +176,7 @@ Python skill, `uv`-managed. Read-and-write side of the personal-finance loop: ow
 **Build / test:**
 ```bash
 cd personal-finance && uv sync
-uv run pytest -q                          # 99 tests
+uv run pytest -q                          # 116 tests
 uv run ruff check src tests
 ```
 
