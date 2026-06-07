@@ -63,6 +63,50 @@ def test_split_statements_ignores_semicolons_in_comments() -> None:
     assert stmts[1].startswith("INSERT INTO")
 
 
+def test_split_statements_handles_begin_end_block() -> None:
+    """A CREATE TRIGGER body has its own ``;`` between statements
+    inside ``BEGIN ... END``; those must not be treated as top-level
+    statement terminators."""
+    sql = (
+        "CREATE TABLE t (a INT);\n"
+        "CREATE TRIGGER tr BEFORE UPDATE ON t\n"
+        "BEGIN\n"
+        "    SELECT 1;\n"
+        "    SELECT 2;\n"
+        "END;\n"
+        "INSERT INTO t VALUES (1);\n"
+    )
+    stmts = _split_statements(sql)
+    assert len(stmts) == 3, f"expected 3 statements, got {len(stmts)}: {stmts}"
+    assert stmts[0].startswith("CREATE TABLE")
+    assert stmts[1].startswith("CREATE TRIGGER")
+    assert "BEGIN" in stmts[1] and "END" in stmts[1]
+    assert stmts[2].startswith("INSERT INTO")
+
+
+def test_split_statements_handles_semicolon_in_string_literal() -> None:
+    """``;`` inside a single-quoted string is data, not a separator.
+    Doubled single quotes inside the string keep the scanner inside
+    the string."""
+    sql = (
+        "INSERT INTO t VALUES ('hello; world');\n"
+        "INSERT INTO t VALUES ('it''s; fine');\n"
+    )
+    stmts = _split_statements(sql)
+    assert len(stmts) == 2, stmts
+    assert "hello; world" in stmts[0]
+    assert "it''s; fine" in stmts[1]
+
+
+def test_split_statements_does_not_mistake_identifier_for_begin() -> None:
+    """Whole-word keyword detection: ``begin_at`` is an identifier, not
+    a BEGIN block opener."""
+    sql = "CREATE TABLE t (begin_at INTEGER, end_at INTEGER);\n"
+    stmts = _split_statements(sql)
+    assert len(stmts) == 1, stmts
+    assert "begin_at" in stmts[0]
+
+
 def test_migration_rolls_back_on_failure(
     empty_db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
