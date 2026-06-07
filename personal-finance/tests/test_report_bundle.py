@@ -26,9 +26,7 @@ def test_full_mode_for_short_period(both_banks_db: Path) -> None:
     conn = store.open_db(both_banks_db)
     # Mode is decided by elapsed wall time of the period (not whether
     # the period covers any fixture rows), so use a real 30-day window.
-    short = build_report_bundle(
-        conn, from_ts=1_700_000_000, to_ts=1_700_000_000 + 30 * 86_400
-    )
+    short = build_report_bundle(conn, from_ts=1_700_000_000, to_ts=1_700_000_000 + 30 * 86_400)
     assert short["mode"] == "full"
     assert "transactions" in short
     assert "monthly_buckets" not in short
@@ -37,9 +35,7 @@ def test_full_mode_for_short_period(both_banks_db: Path) -> None:
 def test_bucketed_mode_for_long_period(both_banks_db: Path) -> None:
     conn = store.open_db(both_banks_db)
     span_s = (FULL_DUMP_THRESHOLD_DAYS + 30) * 86_400
-    bundle = build_report_bundle(
-        conn, from_ts=1_700_000_000, to_ts=1_700_000_000 + span_s
-    )
+    bundle = build_report_bundle(conn, from_ts=1_700_000_000, to_ts=1_700_000_000 + span_s)
     assert bundle["mode"] == "bucketed"
     assert "monthly_buckets" in bundle
     assert "top_transactions" in bundle
@@ -114,20 +110,50 @@ def test_comparison_previous_period(both_banks_db: Path) -> None:
     assert isinstance(bundle["comparison"]["per_currency"], list)
 
 
+def test_bundle_buckets_use_account_currency(mixed_currency_db: Path) -> None:
+    """``currencies_seen``, ``monthly_buckets``, and the per-currency
+    in/out comparison all report ACCOUNT currency. A UAH-card Patreon
+    charge with ``tx.currency_code = 840`` must not leak into the USD
+    line of any report dimension."""
+    conn = store.open_db(mixed_currency_db)
+    span_s = (FULL_DUMP_THRESHOLD_DAYS + 30) * 86_400
+    bundle = build_report_bundle(
+        conn,
+        from_ts=1_700_000_000 - 86_400,
+        to_ts=1_700_000_000 + span_s,
+        comparison="previous-period",
+    )
+
+    # currencies_seen: three account currencies, not four (would have
+    # been 980, 840, 978 + duplicate 840 from operation-currency view).
+    assert bundle["currencies_seen"] == [840, 978, 980]
+
+    # monthly_buckets bucket by account currency: Patreon shows up
+    # under 980 with the UAH kopecks amount.
+    patreon_buckets = [
+        b for b in bundle["monthly_buckets"] if (b.get("category") or "") == "(uncategorized)"
+    ]
+    by_cur = {(b["currency_code"], b["total_minor"]) for b in patreon_buckets}
+    # Patreon -21232 in UAH (980) must be present; -480 in USD (840)
+    # must NOT be present.
+    assert any(cur == 980 and total <= -21232 for cur, total in by_cur)
+    assert not any(cur == 840 and total == -480 for cur, total in by_cur)
+
+    # comparison.per_currency: one entry per account currency.
+    per_cur = {row["currency_code"] for row in bundle["comparison"]["per_currency"]}
+    assert per_cur == {840, 978, 980}
+
+
 def test_empty_db_returns_warning_bundle(empty_db: Path) -> None:
     conn = store.open_db(empty_db)
-    bundle = build_report_bundle(
-        conn, from_ts=1_700_000_000, to_ts=1_700_000_000 + 30 * 86_400
-    )
+    bundle = build_report_bundle(conn, from_ts=1_700_000_000, to_ts=1_700_000_000 + 30 * 86_400)
     assert bundle["ok"] is True
     assert bundle["accounts"] == []
     assert bundle["currencies_seen"] == []
     assert "warning" in bundle
 
 
-def test_cli_outputs_bundle_json(
-    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_cli_outputs_bundle_json(both_banks_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     rc = report_main(
         [
             "--from",

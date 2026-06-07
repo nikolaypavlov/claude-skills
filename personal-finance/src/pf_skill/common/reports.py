@@ -22,11 +22,12 @@ from .queries import (
     CATEGORY_EXPR,
     CATEGORY_JOIN_SQL,
     TX_COLUMNS_SQL,
+    accounts_join_sql,
     get_transactions,
     list_accounts,
     row_to_transaction,
 )
-from .view import build_tx_union_sql, discover_sources
+from .view import DiscoveredSources, build_tx_union_sql, discover_sources
 
 # Periods up to this many days inline every transaction in the bundle.
 # Beyond this, we switch to monthly_buckets + top_transactions + the
@@ -107,7 +108,9 @@ def build_report_bundle(
         )
         return bundle
 
-    bundle["currencies_seen"] = _currencies_seen(conn, union, from_ts, to_ts, account_id, bank)
+    bundle["currencies_seen"] = _currencies_seen(
+        conn, union, sources, from_ts, to_ts, account_id, bank
+    )
     bundle["active_rules_count"] = _active_rules_count(conn)
     bundle["uncategorized_count"] = _uncategorized_count(
         conn, union, from_ts, to_ts, account_id, bank
@@ -124,10 +127,13 @@ def build_report_bundle(
         )
         uncat_limit: int | None = None
     else:
-        bundle["monthly_buckets"] = _monthly_buckets(conn, union, from_ts, to_ts, account_id, bank)
+        bundle["monthly_buckets"] = _monthly_buckets(
+            conn, union, sources, from_ts, to_ts, account_id, bank
+        )
         bundle["top_transactions"] = _top_transactions(
             conn,
             union,
+            sources,
             from_ts,
             to_ts,
             account_id,
@@ -137,13 +143,14 @@ def build_report_bundle(
         uncat_limit = UNCATEGORIZED_BUCKETED_LIMIT
 
     bundle["uncategorized_transactions"] = _uncategorized_transactions(
-        conn, union, from_ts, to_ts, account_id, bank, limit=uncat_limit
+        conn, union, sources, from_ts, to_ts, account_id, bank, limit=uncat_limit
     )
 
     if comparison == "previous-period":
         bundle["comparison"] = _build_comparison(
             conn,
             union,
+            sources,
             from_ts=from_ts,
             to_ts=to_ts,
             account_id=account_id,
@@ -197,16 +204,19 @@ def _active_rules_count(conn: sqlite3.Connection) -> int:
 def _currencies_seen(
     conn: sqlite3.Connection,
     union: str,
+    sources: DiscoveredSources,
     from_ts: int,
     to_ts: int,
     account_id: str | None,
     bank: str | None,
 ) -> list[int]:
     where, params = _period_where(from_ts, to_ts, account_id, bank)
+    accounts_join = accounts_join_sql(sources)
     rows = conn.execute(
-        f"SELECT DISTINCT tx.currency_code FROM (\n{union}\n) AS tx "
+        f"SELECT DISTINCT acc.currency_code FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"WHERE {' AND '.join(where)} "
-        f"ORDER BY tx.currency_code",
+        f"ORDER BY acc.currency_code",
         params,
     )
     return [int(r[0]) for r in rows]
@@ -234,24 +244,27 @@ def _uncategorized_count(
 def _monthly_buckets(
     conn: sqlite3.Connection,
     union: str,
+    sources: DiscoveredSources,
     from_ts: int,
     to_ts: int,
     account_id: str | None,
     bank: str | None,
 ) -> list[dict[str, Any]]:
     where, params = _period_where(from_ts, to_ts, account_id, bank)
+    accounts_join = accounts_join_sql(sources)
     rows = conn.execute(
         f"SELECT strftime('%Y-%m', tx.ts, 'unixepoch') AS year_month, "
         f"  {CATEGORY_EXPR} AS category, "
-        f"  tx.currency_code, "
+        f"  acc.currency_code, "
         f"  SUM(tx.amount_minor) AS total_minor, "
         f"  COUNT(*) AS tx_count "
         f"FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
         # Repeat the expression rather than refer to the alias for
         # SQLite < 3.38 compatibility (no GROUP BY alias).
-        f"GROUP BY year_month, {CATEGORY_EXPR}, tx.currency_code "
+        f"GROUP BY year_month, {CATEGORY_EXPR}, acc.currency_code "
         f"ORDER BY year_month, total_minor",
         params,
     )
@@ -270,6 +283,7 @@ def _monthly_buckets(
 def _top_transactions(
     conn: sqlite3.Connection,
     union: str,
+    sources: DiscoveredSources,
     from_ts: int,
     to_ts: int,
     account_id: str | None,
@@ -278,9 +292,11 @@ def _top_transactions(
     limit: int,
 ) -> list[dict[str, Any]]:
     where, params = _period_where(from_ts, to_ts, account_id, bank)
+    accounts_join = accounts_join_sql(sources)
     rows = conn.execute(
         f"SELECT {TX_COLUMNS_SQL}, {CATEGORY_EXPR} AS category "
         f"FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
         f"ORDER BY ABS(tx.amount_minor) DESC, tx.ts DESC "
@@ -293,6 +309,7 @@ def _top_transactions(
 def _uncategorized_transactions(
     conn: sqlite3.Connection,
     union: str,
+    sources: DiscoveredSources,
     from_ts: int,
     to_ts: int,
     account_id: str | None,
@@ -309,11 +326,13 @@ def _uncategorized_transactions(
     the bucketed mode was meant to avoid.
     """
     where, params = _period_where(from_ts, to_ts, account_id, bank)
+    accounts_join = accounts_join_sql(sources)
     limit_sql = "LIMIT ?" if limit is not None else ""
     limit_params = [int(limit)] if limit is not None else []
     rows = conn.execute(
         f"SELECT {TX_COLUMNS_SQL}, NULL AS category "
         f"FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
         f"AND {CATEGORY_EXPR} IS NULL "
@@ -327,6 +346,7 @@ def _uncategorized_transactions(
 def _build_comparison(
     conn: sqlite3.Connection,
     union: str,
+    sources: DiscoveredSources,
     *,
     from_ts: int,
     to_ts: int,
@@ -341,6 +361,7 @@ def _build_comparison(
         "per_currency": _per_currency_comparison(
             conn,
             union,
+            sources,
             current=(from_ts, to_ts),
             previous=(prev_from, prev_to),
             account_id=account_id,
@@ -352,14 +373,15 @@ def _build_comparison(
 def _per_currency_comparison(
     conn: sqlite3.Connection,
     union: str,
+    sources: DiscoveredSources,
     *,
     current: tuple[int, int],
     previous: tuple[int, int],
     account_id: str | None,
     bank: str | None,
 ) -> list[CurrencyComparison]:
-    cur = _in_out_per_currency(conn, union, *current, account_id=account_id, bank=bank)
-    prev = _in_out_per_currency(conn, union, *previous, account_id=account_id, bank=bank)
+    cur = _in_out_per_currency(conn, union, sources, *current, account_id=account_id, bank=bank)
+    prev = _in_out_per_currency(conn, union, sources, *previous, account_id=account_id, bank=bank)
     currencies = sorted(set(cur.keys()) | set(prev.keys()))
     zero = PeriodSummary(in_minor=0, out_minor=0, tx_count=0)
     return [
@@ -375,6 +397,7 @@ def _per_currency_comparison(
 def _in_out_per_currency(
     conn: sqlite3.Connection,
     union: str,
+    sources: DiscoveredSources,
     from_ts: int,
     to_ts: int,
     *,
@@ -382,14 +405,16 @@ def _in_out_per_currency(
     bank: str | None,
 ) -> dict[int, PeriodSummary]:
     where, params = _period_where(from_ts, to_ts, account_id, bank)
+    accounts_join = accounts_join_sql(sources)
     rows = conn.execute(
-        f"SELECT tx.currency_code, "
+        f"SELECT acc.currency_code, "
         f"  SUM(CASE WHEN tx.amount_minor > 0 THEN tx.amount_minor ELSE 0 END) AS in_minor, "
         f"  SUM(CASE WHEN tx.amount_minor < 0 THEN tx.amount_minor ELSE 0 END) AS out_minor, "
         f"  COUNT(*) AS tx_count "
         f"FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"WHERE {' AND '.join(where)} "
-        f"GROUP BY tx.currency_code",
+        f"GROUP BY acc.currency_code",
         params,
     )
     return {
