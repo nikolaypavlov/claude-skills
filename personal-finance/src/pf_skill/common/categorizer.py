@@ -21,6 +21,7 @@ from .queries import (
     CATEGORY_EXPR,
     CATEGORY_JOIN_SQL,
     TX_COLUMNS_SQL,
+    accounts_join_sql,
 )
 from .rules import (
     DEFAULT_PRIORITY_BY_FIELD,
@@ -90,7 +91,9 @@ def apply_rules(
             from_ts=from_ts,
         )
 
-    pending = _fetch_uncategorized(conn, union, from_ts=from_ts)
+    pending = _fetch_uncategorized(
+        conn, union, accounts_join=accounts_join_sql(sources), from_ts=from_ts
+    )
     categorized = 0
     no_match = 0
     conn.execute("BEGIN")
@@ -157,6 +160,7 @@ def _fetch_uncategorized(
     conn: sqlite3.Connection,
     union: str,
     *,
+    accounts_join: str,
     from_ts: int | None,
 ) -> list[dict[str, Any]]:
     """Pull every uncategorized transaction in scope as plain dicts.
@@ -165,6 +169,10 @@ def _fetch_uncategorized(
     ``tx_category`` matches and ``category_overrides`` pins exclude the
     row. The ``id`` / ``mcc`` / ``description`` / ``counterparty``
     columns are all the categorizer needs.
+
+    ``accounts_join`` is required because ``TX_COLUMNS_SQL`` projects
+    ``acc.currency_code``; passing an empty string would produce a
+    "no such column" error at execute time.
     """
     where = [f"{CATEGORY_EXPR} IS NULL"]
     params: list[Any] = []
@@ -174,6 +182,7 @@ def _fetch_uncategorized(
     sql = (
         f"SELECT {TX_COLUMNS_SQL} "
         f"FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
         f"ORDER BY tx.ts DESC, tx.id"
@@ -235,9 +244,7 @@ def _summary(
     }
 
 
-def _matching_uncategorized(
-    conn: sqlite3.Connection, rule: Rule
-) -> list[dict[str, Any]]:
+def _matching_uncategorized(conn: sqlite3.Connection, rule: Rule) -> list[dict[str, Any]]:
     """Return uncategorized transactions in the store that the given
     rule would match. Used by both ``preview_rule`` and
     ``apply_rule_by_id`` so the discover/union/filter pipeline lives in
@@ -247,7 +254,7 @@ def _matching_uncategorized(
     union = build_tx_union_sql(sources)
     if union is None:
         return []
-    rows = _fetch_uncategorized(conn, union, from_ts=None)
+    rows = _fetch_uncategorized(conn, union, accounts_join=accounts_join_sql(sources), from_ts=None)
     return [
         row
         for row in rows

@@ -31,9 +31,20 @@ from .view import (
 # view. Used directly by ``get_transactions``, ``find_transactions``,
 # and the ``reports.py`` helpers - any column added here needs to also
 # appear in ``view.COMMON_TX_COLUMNS`` (and vice-versa).
+#
+# IMPORTANT: ``currency_code`` is sourced from ``acc.currency_code`` (the
+# ACCOUNT'S currency), NOT from ``tx.currency_code`` (the OPERATION
+# currency that ingest plugins store for cross-currency rows). That way
+# the public ``currency_code`` field is always denominationally consistent
+# with ``amount_minor`` - both are in the account currency. The
+# operation currency is still available per-row via ``op_currency_code``
+# / ``op_amount_minor`` when the merchant charged in something else.
+# Every query that uses this SELECT-list MUST include the accounts JOIN
+# from ``accounts_join_sql`` in its FROM clause - otherwise SQLite will
+# fail with "no such column: acc.currency_code".
 TX_COLUMNS_SQL = (
     "tx.id, tx.bank, tx.account_id, tx.ts, tx.amount_minor, "
-    "tx.currency_code, tx.op_amount_minor, tx.op_currency_code, "
+    "acc.currency_code, tx.op_amount_minor, tx.op_currency_code, "
     "tx.mcc, tx.description, tx.counterparty, tx.balance_minor, "
     "tx.imported_at"
 )
@@ -55,11 +66,18 @@ CATEGORY_JOIN_SQL = (
 # module scope so the supported keys are visible without diving into
 # the function body, and so a typo lands as a clean ValueError with
 # the canonical list in the message.
+#
+# ``currency`` resolves to the ACCOUNT currency (``acc.currency_code``),
+# not the operation currency: a Patreon charge on a UAH black card is
+# stored with ``tx.currency_code = 840`` (USD - the merchant's billing
+# currency), but ``amount_minor`` is in UAH kopecks. Grouping by the
+# operation currency would file that row under USD even though no USD
+# actually left the account. See the comment on ``TX_COLUMNS_SQL``.
 _GROUP_BY_EXPRESSIONS: dict[str, str] = {
     "category": CATEGORY_EXPR,
     "mcc": "tx.mcc",
     "counterparty": "tx.counterparty",
-    "currency": "tx.currency_code",
+    "currency": "acc.currency_code",
     "account": "tx.account_id",
     "bank": "tx.bank",
 }
@@ -85,6 +103,28 @@ def valid_uncategorized_group_by_keys() -> tuple[str, ...]:
     """Tuple of supported ``--group-by`` values for
     ``summarize_uncategorized``."""
     return tuple(_UNCATEGORIZED_GROUP_BY_EXPRESSIONS.keys())
+
+
+def accounts_join_sql(sources: DiscoveredSources) -> str:
+    """JOIN clause that exposes ``acc.currency_code`` (the account
+    currency, i.e. the denomination of ``amount_minor``) per tx row.
+
+    Strict INNER JOIN: a transaction whose ``account_id`` has no row in
+    the discovered ``<bank>_accounts`` UNION is dropped from the result
+    rather than silently NULL-bucketed. In practice every ingest plugin
+    owns both ``<bank>_transactions`` and ``<bank>_accounts`` per the
+    cross-plugin contract, so a missing match means the store is
+    half-synced (or a future bank-prefix added tx without accounts) -
+    failing loud is the right reaction.
+
+    Returns an empty string if no accounts tables are discovered; the
+    caller should short-circuit on ``build_tx_union_sql() is None``
+    before calling, so this branch is defensive only.
+    """
+    accounts_union = build_accounts_union_sql(sources)
+    if accounts_union is None:
+        return ""
+    return f"JOIN (\n{accounts_union}\n) AS acc ON acc.account_id = tx.account_id "
 
 
 def list_accounts(
@@ -151,6 +191,7 @@ def get_transactions(
     union = build_tx_union_sql(sources)
     if union is None:
         return []
+    accounts_join = accounts_join_sql(sources)
     where, params = _tx_filters(
         from_ts=from_ts,
         to_ts=to_ts,
@@ -168,6 +209,7 @@ def get_transactions(
     sql = (
         f"SELECT {TX_COLUMNS_SQL}, {CATEGORY_EXPR} AS category "
         f"FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"{CATEGORY_JOIN_SQL}"
         f"{where_sql} "
         f"ORDER BY tx.ts DESC, tx.id "
@@ -199,6 +241,7 @@ def summarize_spending(
     union = build_tx_union_sql(sources)
     if union is None:
         return []
+    accounts_join = accounts_join_sql(sources)
     where, params = _tx_filters(
         from_ts=from_ts,
         to_ts=to_ts,
@@ -207,15 +250,16 @@ def summarize_spending(
         currency_code=currency_code,
     )
     sql = (
-        f"SELECT {key_expr} AS key, tx.currency_code, "
+        f"SELECT {key_expr} AS key, acc.currency_code, "
         f"SUM(tx.amount_minor) AS total_minor, "
         f"COUNT(*) AS tx_count "
         f"FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
         # Repeat the expression rather than refer to the alias for
         # SQLite < 3.38 compatibility (no GROUP BY alias).
-        f"GROUP BY {key_expr}, tx.currency_code "
+        f"GROUP BY {key_expr}, acc.currency_code "
         f"ORDER BY total_minor"
     )
     rows = conn.execute(sql, params)
@@ -274,6 +318,7 @@ def summarize_uncategorized(
     union = build_tx_union_sql(sources)
     if union is None:
         return []
+    accounts_join = accounts_join_sql(sources)
     where, params = _tx_filters(
         from_ts=from_ts,
         to_ts=to_ts,
@@ -283,13 +328,14 @@ def summarize_uncategorized(
     )
     where.append(f"{CATEGORY_EXPR} IS NULL")
     sql = (
-        f"SELECT {key_expr} AS key, tx.currency_code, "
+        f"SELECT {key_expr} AS key, acc.currency_code, "
         f"COUNT(*) AS tx_count, "
         f"SUM(tx.amount_minor) AS total_minor "
         f"FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"{CATEGORY_JOIN_SQL} "
         f"WHERE {' AND '.join(where)} "
-        f"GROUP BY {key_expr}, tx.currency_code "
+        f"GROUP BY {key_expr}, acc.currency_code "
         f"ORDER BY tx_count DESC, key ASC"
     )
     rows = conn.execute(sql, params)
@@ -365,11 +411,13 @@ def find_transactions(
     union = build_tx_union_sql(sources)
     if union is None:
         return []
+    accounts_join = accounts_join_sql(sources)
     escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{escaped}%"
     sql = (
         f"SELECT {TX_COLUMNS_SQL}, {CATEGORY_EXPR} AS category "
         f"FROM (\n{union}\n) AS tx "
+        f"{accounts_join}"
         f"{CATEGORY_JOIN_SQL} "
         "WHERE (LOWER(COALESCE(tx.description, '')) LIKE LOWER(?) ESCAPE '\\' "
         "       OR LOWER(COALESCE(tx.counterparty, '')) LIKE LOWER(?) ESCAPE '\\') "
@@ -406,7 +454,13 @@ def _tx_filters(
         where.append("tx.bank = ?")
         params.append(bank)
     if currency_code is not None:
-        where.append("tx.currency_code = ?")
+        # Filter by ACCOUNT currency, not operation currency: a UAH-card
+        # / USD-merchant row has ``tx.currency_code = 840`` even though
+        # the user thinks of it as a UAH charge (that is what
+        # ``amount_minor`` is denominated in). Filtering on
+        # ``tx.currency_code`` would silently drop these rows from
+        # ``--currency UAH``.
+        where.append("acc.currency_code = ?")
         params.append(int(currency_code))
     return where, params
 

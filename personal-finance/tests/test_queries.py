@@ -281,9 +281,7 @@ def test_summarize_uncategorized_group_by_mcc(both_banks_db: Path) -> None:
 def test_summarize_uncategorized_time_range(both_banks_db: Path) -> None:
     """Bound the window so only a subset of fixture rows fall inside."""
     conn = store.open_db(both_banks_db)
-    buckets = queries.summarize_uncategorized(
-        conn, from_ts=1_700_001_500, to_ts=1_700_010_500
-    )
+    buckets = queries.summarize_uncategorized(conn, from_ts=1_700_001_500, to_ts=1_700_010_500)
     by = {b["key"]: b["tx_count"] for b in buckets}
     # mono_t3 (ts=1_700_002_000) + privat_h_1 (ts=1_700_010_000) only
     assert by == {"Salary": 1, "Privat shop": 1}
@@ -293,3 +291,126 @@ def test_summarize_uncategorized_unknown_group_by(both_banks_db: Path) -> None:
     conn = store.open_db(both_banks_db)
     with pytest.raises(ValueError, match="unsupported group_by"):
         queries.summarize_uncategorized(conn, group_by="bank")
+
+
+# Regression tests for the operation-vs-account currency fix.
+#
+# The bug: monobank stores ``currency_code`` on each transaction as the
+# OPERATION currency. A Patreon charge on a UAH card has
+# ``amount_minor`` in UAH kopecks but ``currency_code = 840`` (USD),
+# because the merchant billed in USD. Bucketing by ``tx.currency_code``
+# files that row under USD even though no USD actually left the account
+# and ``amount_minor`` is denominated in UAH. The fix sources the
+# bucket dimension from ``<bank>_accounts.currency_code`` instead.
+#
+# Each test below names the (account_currency, operation_currency,
+# expected_bucket) it exercises so a future contributor can extend the
+# fixture without losing the regression.
+
+
+def test_summarize_by_counterparty_uses_account_currency(
+    mixed_currency_db: Path,
+) -> None:
+    """UAH-card + USD-merchant Patreon row buckets to UAH (980), NOT
+    USD - even though ``tx.currency_code = 840``. This is the headline
+    bug: Patreon was being reported as $213.32 instead of 212.32 UAH."""
+    conn = store.open_db(mixed_currency_db)
+    buckets = queries.summarize_spending(
+        conn, from_ts=0, to_ts=2_000_000_000, group_by="counterparty"
+    )
+    patreon = next(b for b in buckets if b["key"] == "Patreon")
+    assert patreon["currency_code"] == 980  # UAH, the account currency
+    assert patreon["total_minor"] == -21232  # the UAH kopecks billed
+
+    apple = next(b for b in buckets if b["key"] == "Apple")
+    assert apple["currency_code"] == 980
+    assert apple["total_minor"] == -13226
+
+
+def test_summarize_by_counterparty_same_currency_unchanged(
+    mixed_currency_db: Path,
+) -> None:
+    """USD card + USD merchant (AWS) must STILL bucket to USD - the
+    fix must not regress the path where account and operation currencies
+    already agree."""
+    conn = store.open_db(mixed_currency_db)
+    buckets = queries.summarize_spending(
+        conn, from_ts=0, to_ts=2_000_000_000, group_by="counterparty"
+    )
+    aws = next(b for b in buckets if b["key"] == "Amazon")
+    assert aws["currency_code"] == 840  # account = operation = USD
+    assert aws["total_minor"] == -5500
+
+
+def test_summarize_group_by_currency_uses_account_currency(
+    mixed_currency_db: Path,
+) -> None:
+    """``--group-by currency`` yields one bucket per ACCOUNT currency,
+    not per operation currency. Fixture: 3 UAH-card rows (Patreon,
+    Apple, EU train), 2 USD-card rows (AWS, EU cafe), 1 EUR-jar row
+    (topup) - so we expect three buckets: 980, 840, 978."""
+    conn = store.open_db(mixed_currency_db)
+    buckets = queries.summarize_spending(conn, from_ts=0, to_ts=2_000_000_000, group_by="currency")
+    by_cur = {b["currency_code"]: b for b in buckets}
+    assert set(by_cur.keys()) == {980, 840, 978}
+    assert by_cur[980]["tx_count"] == 3
+    assert by_cur[840]["tx_count"] == 2
+    assert by_cur[978]["tx_count"] == 1
+    # UAH total = -21232 (Patreon) + -13226 (Apple) + -50000 (EU train)
+    assert by_cur[980]["total_minor"] == -84458
+    # USD total = -5500 (AWS) + -3300 (cafe)
+    assert by_cur[840]["total_minor"] == -8800
+
+
+def test_currency_filter_uses_account_currency(mixed_currency_db: Path) -> None:
+    """``currency_code=980`` (UAH) on ``get_transactions`` must return the
+    UAH-card rows including the USD-merchant Patreon charge - before the
+    fix it filtered on the operation currency and silently dropped
+    foreign-merchant rows from the UAH bucket."""
+    conn = store.open_db(mixed_currency_db)
+    uah = queries.get_transactions(conn, currency_code=980, limit=100)
+    ids = sorted(tx["id"] for tx in uah)
+    assert ids == ["uah_apple", "uah_eur", "uah_patreon"]
+    # Every returned row's projected currency_code matches the filter.
+    assert all(tx["currency_code"] == 980 for tx in uah)
+    # The operation currency is still visible per row.
+    by_id = {tx["id"]: tx for tx in uah}
+    assert by_id["uah_patreon"]["op_currency_code"] == 840
+    assert by_id["uah_patreon"]["op_amount_minor"] == -480
+
+    usd = queries.get_transactions(conn, currency_code=840, limit=100)
+    assert sorted(tx["id"] for tx in usd) == ["usd_aws", "usd_eur"]
+    # ``--currency USD`` must NOT pick up the UAH-card USD-merchant row.
+    assert "uah_patreon" not in {tx["id"] for tx in usd}
+
+
+def test_per_row_currency_code_is_account_currency(mixed_currency_db: Path) -> None:
+    """Per-row ``currency_code`` returned by ``get_transactions`` mirrors
+    the account currency so ``amount_minor`` and ``currency_code`` stay
+    denominationally consistent. Operation currency lives in
+    ``op_currency_code``."""
+    conn = store.open_db(mixed_currency_db)
+    by_id = {tx["id"]: tx for tx in queries.get_transactions(conn, limit=100)}
+    # UAH card / USD merchant: currency_code = UAH (account); op_* = USD.
+    assert by_id["uah_patreon"]["currency_code"] == 980
+    assert by_id["uah_patreon"]["op_currency_code"] == 840
+    # USD card / EUR merchant: currency_code = USD (account); op_* = EUR.
+    assert by_id["usd_eur"]["currency_code"] == 840
+    assert by_id["usd_eur"]["op_currency_code"] == 978
+    # Same-currency tx still has op_* NULL (mono convention).
+    assert by_id["usd_aws"]["currency_code"] == 840
+    assert by_id["usd_aws"]["op_currency_code"] is None
+
+
+def test_summarize_uncategorized_uses_account_currency(
+    mixed_currency_db: Path,
+) -> None:
+    """``summarize_uncategorized`` groups by account currency too -
+    otherwise the categorize-skill triage view double-reports foreign
+    merchants under both UAH and USD lines."""
+    conn = store.open_db(mixed_currency_db)
+    buckets = queries.summarize_uncategorized(conn, group_by="counterparty")
+    by = {b["key"]: b for b in buckets}
+    assert by["Patreon"]["currency_code"] == 980
+    assert by["Apple"]["currency_code"] == 980
+    assert by["Amazon"]["currency_code"] == 840
