@@ -1,15 +1,14 @@
 """``pf-budget`` CLI entry: budget management.
 
-PR1 scope (this file):
+Subcommands::
 
     pf-budget register-category --category NAME [--note NOTE]
-    pf-budget unregister-category --category NAME
+    pf-budget unregister-category --category NAME [--force]
     pf-budget list-categories [--include-declared]
-
-Future PRs (per budget-design.md) layer ``import``, ``show``,
-``diff``, ``export``, ``close``, ``reopen``, ``rename-category`` on
-top of the same parser. Keeping the script registered now means the
-plugin venv only needs one re-link as the surface grows.
+    pf-budget import <file> --period YYYY-MM
+                            [--unknown-categories reject|register]
+                            [--dry-run] [--force]
+                            [--sheet plans|baseline]
 
 Output contract matches the rest of the ``pf-*`` scripts via
 ``common.cli.run_subcommand``: success → JSON to stdout exit 0,
@@ -24,8 +23,10 @@ import sys
 import time
 from collections.abc import Sequence
 from contextlib import closing
+from pathlib import Path
 from typing import Any
 
+from .common import budget as bud
 from .common import queries as q
 from .common.cli import (
     CliError,
@@ -185,6 +186,195 @@ def cmd_unregister_category(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _parse_file_into_plan(args: argparse.Namespace) -> list[bud.PlanRow]:
+    """Decide which parser to use based on the file extension and (for
+    XLSX) on whether the workbook has a Baseline sheet alongside Plans.
+    Stamps period onto baseline rows; returns the merged plan rows for
+    ``args.period``."""
+    path = Path(args.source).expanduser()
+    if not path.exists():
+        raise CliError(f"file not found: {path}", kind="FileNotFound")
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        sheet = args.sheet or "plans"
+        if sheet == "plans":
+            rows = bud.parse_plans_csv(path)
+            return [r for r in rows if r.period == args.period]
+        if sheet == "baseline":
+            return bud.parse_baseline_csv(path, args.period)
+        raise CliError(
+            f"--sheet must be 'plans' or 'baseline' for CSV input; got {sheet!r}",
+            kind="BadArgument",
+        )
+    if suffix in (".xlsx", ".xlsm"):
+        baseline_raw, plans_raw = bud.parse_workbook_xlsx(path)
+        baseline_rows = [
+            bud._row_from_baseline(  # type: ignore[attr-defined]
+                d, args.period, source_row=d["__source_row__"]
+            )
+            for d in baseline_raw
+            if any((d.get(k) or "") for k in ("Category", "Currency", "Kind", "Monthly target"))
+        ]
+        plans_rows = [
+            bud._row_from_plans(  # type: ignore[attr-defined]
+                d, source_row=d["__source_row__"]
+            )
+            for d in plans_raw
+            if any((d.get(k) or "") for k in ("Period", "Category", "Currency", "Kind", "Amount"))
+        ]
+        return bud.merge_baseline_plans(baseline_rows, plans_rows, period=args.period)
+    raise CliError(
+        f"unsupported file type {suffix!r}; expected .csv, .xlsx, or .xlsm",
+        kind="BadArgument",
+    )
+
+
+def cmd_import(args: argparse.Namespace) -> dict[str, Any]:
+    """Import a budget plan from CSV/XLSX into ``budget`` and
+    ``budget_line`` tables.
+
+    Validation modes:
+    - ``reject`` (default): fail if any category is unknown, returning
+      the list with Levenshtein suggestions in the error payload so
+      the CLI can render it cleanly.
+    - ``register``: silently add every unknown to ``category_registry``
+      with ``declared_via='budget-import'`` and proceed.
+
+    ``--dry-run`` runs through parsing + validation + a synthetic
+    "what would change" diff against the existing budget (if any),
+    but never opens a write transaction.
+    """
+    if args.period is None:
+        raise CliError("--period is required (YYYY-MM)", kind="BadArgument")
+    if not bud.PERIOD_RE.match(args.period):
+        raise CliError(
+            f"--period={args.period!r} must match YYYY-MM", kind="BadArgument"
+        )
+    db_path = resolve_db_path(args.db)
+    try:
+        rows = _parse_file_into_plan(args)
+    except bud.BudgetParseError as exc:
+        raise CliError(str(exc), kind=exc.kind) from exc
+
+    if not rows:
+        return {
+            "ok": True,
+            "period": args.period,
+            "source": str(args.source),
+            "rows_parsed": 0,
+            "warning": "no rows matched the requested period",
+        }
+
+    with closing(open_db(db_path)) as conn:
+        try:
+            validation = bud.validate_categories(rows, conn)
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind) from exc
+
+        unknowns = validation.unknown
+        new_categories: list[str] = []
+        if unknowns:
+            if args.unknown_categories == "reject":
+                # Failure with structured payload so the caller can
+                # render suggestions per category.
+                err = CliError(
+                    f"{len(unknowns)} unknown categor"
+                    f"{'y' if len(unknowns) == 1 else 'ies'} in input; "
+                    "rerun with --unknown-categories register to add them, "
+                    "or fix the source",
+                    kind="UnknownCategories",
+                )
+                # Attach details to the exception for downstream parsing
+                # if the caller catches it. The CLI scaffolding doesn't
+                # surface arbitrary attributes today, so we also log
+                # them via err.args[0] above.
+                err.details = {  # type: ignore[attr-defined]
+                    "unknown": [
+                        {
+                            "category": cat,
+                            "suggestions": [
+                                {"candidate": s, "distance": d} for s, d in sugg
+                            ],
+                        }
+                        for cat, sugg in unknowns
+                    ]
+                }
+                raise err
+            if args.unknown_categories == "register":
+                if not args.dry_run:
+                    conn.execute("BEGIN")
+                    try:
+                        bud.register_unknowns(conn, [c for c, _ in unknowns])
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        raise
+                new_categories = [c for c, _ in unknowns]
+
+        if args.dry_run:
+            return _dry_run_summary(conn, args.period, rows, new_categories)
+
+        result = bud.materialise_budget(
+            conn,
+            period=args.period,
+            rows=rows,
+            source=str(args.source),
+            force=args.force,
+        )
+        total_added = sum(v["lines_added"] for v in result.by_currency.values())
+        total_replaced = sum(v["lines_replaced"] for v in result.by_currency.values())
+        run_id = bud.log_import_run(
+            conn,
+            source=str(args.source),
+            period=args.period,
+            lines_added=total_added,
+            lines_replaced=total_replaced,
+            new_categories=new_categories,
+        )
+    return {
+        "ok": True,
+        "period": args.period,
+        "source": str(args.source),
+        "rows_imported": len(rows),
+        "by_currency": result.by_currency,
+        "new_categories_registered": new_categories,
+        "import_run_id": run_id,
+    }
+
+
+def _dry_run_summary(
+    conn: sqlite3.Connection,
+    period: str,
+    rows: list[bud.PlanRow],
+    new_categories: list[str],
+) -> dict[str, Any]:
+    by_cur: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        slot = by_cur.setdefault(
+            r.currency_code, {"lines": 0, "total_minor": 0, "kinds": {}}
+        )
+        slot["lines"] += 1
+        slot["total_minor"] += r.amount_minor
+        slot["kinds"][r.kind] = slot["kinds"].get(r.kind, 0) + 1
+    existing: dict[int, dict[str, Any]] = {}
+    for cur, _info in by_cur.items():
+        row = conn.execute(
+            "SELECT id, status FROM budget WHERE period = ? AND currency_code = ?",
+            (period, cur),
+        ).fetchone()
+        if row is not None:
+            existing[cur] = {"budget_id": int(row[0]), "status": row[1]}
+    return {
+        "ok": True,
+        "dry_run": True,
+        "period": period,
+        "rows_parsed": len(rows),
+        "would_register": new_categories,
+        "by_currency": by_cur,
+        "existing_budgets": existing,
+    }
+
+
 def cmd_list_categories(args: argparse.Namespace) -> dict[str, Any]:
     """Mirror of ``pf-query categories`` for the ``pf-budget`` CLI.
 
@@ -253,6 +443,50 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_list.add_argument("--db", default=None)
     p_list.set_defaults(func=cmd_list_categories)
+
+    p_import = sub.add_parser(
+        "import",
+        help="Import a budget plan (CSV or XLSX) for a given period",
+    )
+    p_import.add_argument(
+        "source",
+        help="Path to CSV (.csv) or XLSX (.xlsx/.xlsm). CSV is the Plans-shape "
+        "by default; pass --sheet baseline to read a Baseline-shape CSV.",
+    )
+    p_import.add_argument(
+        "--period",
+        required=True,
+        help="Target period in YYYY-MM. Plans rows with other periods are ignored.",
+    )
+    p_import.add_argument(
+        "--unknown-categories",
+        choices=("reject", "register"),
+        default="reject",
+        help=(
+            "What to do with categories that don't exist yet. "
+            "'reject' (default): fail with suggestions. "
+            "'register': add to category_registry and proceed."
+        ),
+    )
+    p_import.add_argument(
+        "--sheet",
+        choices=("plans", "baseline"),
+        default=None,
+        help="For CSV input only: which sheet shape the file represents. "
+        "Defaults to 'plans'. Ignored for XLSX (which reads both sheets).",
+    )
+    p_import.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Parse, validate, and summarise the diff without writing.",
+    )
+    p_import.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite a closed budget for the period (rare).",
+    )
+    p_import.add_argument("--db", default=None)
+    p_import.set_defaults(func=cmd_import)
 
     return p
 
