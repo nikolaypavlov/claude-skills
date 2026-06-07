@@ -133,7 +133,7 @@ def cmd_summarize(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_categories(args: argparse.Namespace) -> dict[str, Any]:
     db_path = resolve_db_path(args.db)
     with closing(open_db(db_path)) as conn:
-        cats = q.list_categories(conn)
+        cats = q.list_categories(conn, include_declared=args.include_declared)
     return {
         "ok": True,
         "count": len(cats),
@@ -217,6 +217,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cats = sub.add_parser(
         "categories",
         help="List every category currently assigned to a transaction, with tx counts",
+    )
+    p_cats.add_argument(
+        "--include-declared",
+        action="store_true",
+        help=(
+            "Also include categories from category_registry that have no "
+            "matching transactions yet (tx_count=0, declared=true)"
+        ),
     )
     p_cats.add_argument("--db", default=None)
     p_cats.set_defaults(func=cmd_categories)

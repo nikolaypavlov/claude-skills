@@ -272,6 +272,46 @@ def test_categories_lists_after_assignment(
     assert by == {"Food": 2, "Salary": 1, "Manual": 1}
 
 
+def test_categories_include_declared_surfaces_registry_entries(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``pf-query categories --include-declared`` must surface
+    ``category_registry`` rows even when they have zero matching
+    transactions. Mirror coverage for the budget-import workflow."""
+    from pf_skill.common import store
+
+    conn = store.open_db(both_banks_db)
+    try:
+        conn.execute(
+            "INSERT INTO tx_category (tx_id, category, rule_id, set_at, set_by) "
+            "VALUES ('mono_t1', 'In-Use', NULL, 0, 'rule')"
+        )
+        conn.execute(
+            "INSERT INTO category_registry "
+            "(category, declared_at, declared_via) VALUES (?, ?, ?)",
+            ("Declared/Only", 1_700_000_000, "cli"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    # Without flag - declared-only category is hidden
+    rc, payload, err = _run(["categories", "--db", str(both_banks_db)], capsys)
+    assert rc == 0, err
+    names = {c["category"] for c in payload["categories"]}
+    assert "In-Use" in names
+    assert "Declared/Only" not in names
+    # With flag - it appears with tx_count=0 and declared=True
+    rc, payload, err = _run(
+        ["categories", "--include-declared", "--db", str(both_banks_db)], capsys
+    )
+    assert rc == 0, err
+    by_cat = {c["category"]: c for c in payload["categories"]}
+    assert by_cat["In-Use"]["declared"] is False
+    assert by_cat["In-Use"]["tx_count"] == 1
+    assert by_cat["Declared/Only"]["declared"] is True
+    assert by_cat["Declared/Only"]["tx_count"] == 0
+
+
 def test_summarize_uncategorized_default_group_by_description(
     both_banks_db: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

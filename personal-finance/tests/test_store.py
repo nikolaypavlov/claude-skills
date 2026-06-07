@@ -32,11 +32,19 @@ def test_open_db_brings_up_schema(empty_db: Path) -> None:
 
 
 def test_rerun_is_idempotent(empty_db: Path) -> None:
+    """Re-running ``ensure_pf_schema`` must not re-apply migrations
+    that already shipped: the row count must equal the number of
+    distinct applied versions, not double on each call."""
     conn = open_db(empty_db)
     ensure_pf_schema(conn)
     ensure_pf_schema(conn)
     n = conn.execute("SELECT COUNT(*) FROM pf_schema_version").fetchone()[0]
-    assert n == 1
+    assert n == EXPECTED_PF_SCHEMA_VERSION
+    # Spot-check the version row itself is unique per version.
+    distinct = conn.execute(
+        "SELECT COUNT(DISTINCT version) FROM pf_schema_version"
+    ).fetchone()[0]
+    assert distinct == EXPECTED_PF_SCHEMA_VERSION
 
 
 def test_split_statements_ignores_semicolons_in_comments() -> None:

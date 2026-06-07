@@ -1,7 +1,7 @@
 [project]
 name = "pf-skill"
-version = "0.3.1"
-description = "Personal finance umbrella skill - query / report / categorize over the shared ~/finances/data.db"
+version = "0.4.0"
+description = "Personal finance umbrella skill - query / report / categorize / budget over the shared ~/finances/data.db"
 authors = [
     { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },
 ]
@@ -26,6 +26,7 @@ pf-query = "pf_skill.query:main"
 pf-report = "pf_skill.report:main"
 pf-categorize = "pf_skill.categorize:main"
 pf-rules = "pf_skill.rules_cli:main"
+pf-budget = "pf_skill.budget_cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
