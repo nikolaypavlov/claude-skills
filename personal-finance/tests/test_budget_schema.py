@@ -105,6 +105,58 @@ def test_budget_line_cascades_on_budget_delete(empty_db: Path) -> None:
     assert n == 0
 
 
-# Closed-budget enforcement triggers ride with PR6 (close/reopen
-# lifecycle). They need BEGIN/END SQL blocks that ``_split_statements``
-# does not currently understand. See pf_002_budget.sql NOTE.
+def _make_budget_with_line(conn: sqlite3.Connection, period: str) -> int:
+    conn.execute(
+        "INSERT INTO budget (period, currency_code, status, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (period, 980, "active", 1700000000),
+    )
+    budget_id = conn.execute(
+        "SELECT id FROM budget WHERE period = ?", (period,)
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT INTO budget_line (budget_id, category, amount_minor, kind) "
+        "VALUES (?, ?, ?, ?)",
+        (budget_id, "Test/Cat", -1000, "baseline"),
+    )
+    return budget_id
+
+
+def test_budget_line_triggers_block_when_closed(empty_db: Path) -> None:
+    conn = open_db(empty_db)
+    conn.isolation_level = None
+    budget_id = _make_budget_with_line(conn, "2026-05")
+    conn.execute("UPDATE budget SET status = 'closed' WHERE id = ?", (budget_id,))
+
+    with pytest.raises(sqlite3.IntegrityError, match="parent budget is closed"):
+        conn.execute(
+            "INSERT INTO budget_line (budget_id, category, amount_minor, kind) "
+            "VALUES (?, ?, ?, ?)",
+            (budget_id, "Test/Other", -500, "one_time"),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="parent budget is closed"):
+        conn.execute(
+            "UPDATE budget_line SET amount_minor = -2000 WHERE budget_id = ?",
+            (budget_id,),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="parent budget is closed"):
+        conn.execute("DELETE FROM budget_line WHERE budget_id = ?", (budget_id,))
+
+
+def test_budget_line_triggers_allow_after_reopen(empty_db: Path) -> None:
+    """``status`` flip from closed → active is the reopen pathway and
+    must NOT be blocked by the triggers. After it lands, budget_line
+    edits become possible again."""
+    conn = open_db(empty_db)
+    conn.isolation_level = None
+    budget_id = _make_budget_with_line(conn, "2026-05")
+    conn.execute("UPDATE budget SET status = 'closed' WHERE id = ?", (budget_id,))
+    conn.execute("UPDATE budget SET status = 'active' WHERE id = ?", (budget_id,))
+    conn.execute(
+        "UPDATE budget_line SET amount_minor = -2000 WHERE budget_id = ?",
+        (budget_id,),
+    )
+    n = conn.execute(
+        "SELECT amount_minor FROM budget_line WHERE budget_id = ?", (budget_id,)
+    ).fetchone()[0]
+    assert n == -2000

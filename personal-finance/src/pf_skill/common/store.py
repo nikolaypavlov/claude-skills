@@ -22,12 +22,13 @@ import sqlite3
 from importlib import resources
 from pathlib import Path
 
-EXPECTED_PF_SCHEMA_VERSION = 2
+EXPECTED_PF_SCHEMA_VERSION = 3
 
 # Apply in order. Each entry: (version, filename inside pf_skill.schema).
 _MIGRATION_FILES: list[tuple[int, str]] = [
     (1, "pf_001_initial.sql"),
     (2, "pf_002_budget.sql"),
+    (3, "pf_003_budget_triggers.sql"),
 ]
 
 
@@ -99,9 +100,7 @@ def _read_applied_version(conn: sqlite3.Connection) -> int:
     (locked DB, corrupt DB, read-only filesystem) propagates so the
     caller sees the real cause instead of a misleading 0."""
     try:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(version), 0) FROM pf_schema_version"
-        ).fetchone()
+        row = conn.execute("SELECT COALESCE(MAX(version), 0) FROM pf_schema_version").fetchone()
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc).lower():
             raise
@@ -110,11 +109,7 @@ def _read_applied_version(conn: sqlite3.Connection) -> int:
 
 
 def _load_migration_sql(filename: str) -> str:
-    return (
-        resources.files("pf_skill.schema")
-        .joinpath(filename)
-        .read_text(encoding="utf-8")
-    )
+    return resources.files("pf_skill.schema").joinpath(filename).read_text(encoding="utf-8")
 
 
 def _split_statements(sql: str) -> list[str]:
@@ -122,16 +117,105 @@ def _split_statements(sql: str) -> list[str]:
 
     Strips ``-- ...`` line comments first so a ``;`` inside an inline
     comment (e.g. ``-- regex; for mcc``) doesn't fragment the statement
-    list. Does NOT understand block comments (``/* ... */``) or string
-    literals containing ``;`` - if a future migration introduces
-    either, swap this for ``sqlparse.split(sql)``.
+    list. Tracks two contexts so the splitter is not bitten by them:
+
+    - ``BEGIN ... END`` blocks (CREATE TRIGGER bodies): semicolons
+      inside the block are statement separators *within* the trigger,
+      not top-level. Block depth is incremented on each ``BEGIN`` and
+      decremented on each ``END`` (case-insensitive, whole-word match).
+    - Single-quoted string literals: a ``;`` inside ``'...'`` is data.
+      SQLite escapes a single quote inside a string by doubling it
+      (``''``); the scanner stays inside the string when it sees one.
+
+    Block comments (``/* ... */``) and double-quoted identifiers are
+    still unhandled - swap for ``sqlparse.split(sql)`` if a future
+    migration introduces them.
     """
+    # First strip ``--`` line comments so semicolons inside them
+    # cannot fragment statements.
     cleaned_lines: list[str] = []
     for line in sql.splitlines():
+        # ``--`` inside a single-quoted string isn't a comment, but
+        # we only need to be safe for the migrations we actually ship
+        # - none of which have ``--`` inside a string today. Add the
+        # in-string check here if that ever changes.
         idx = line.find("--")
         cleaned_lines.append(line if idx < 0 else line[:idx])
-    cleaned = "\n".join(cleaned_lines)
-    return [s.strip() for s in cleaned.split(";") if s.strip()]
+    text = "\n".join(cleaned_lines)
+
+    statements: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    in_string = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if in_string:
+            buf.append(ch)
+            if ch == "'":
+                if nxt == "'":
+                    # Doubled quote = escaped single quote inside string.
+                    buf.append(nxt)
+                    i += 2
+                    continue
+                in_string = False
+            i += 1
+            continue
+        if ch == "'":
+            in_string = True
+            buf.append(ch)
+            i += 1
+            continue
+        # Whole-word BEGIN / END detection (case insensitive). We
+        # require word boundaries on both sides so identifiers like
+        # ``begin_at`` don't false-fire. ``END;`` at top level of a
+        # CREATE TRIGGER body is what closes the block; the trailing
+        # ``;`` then becomes the statement terminator for the whole
+        # CREATE TRIGGER statement when depth returns to 0.
+        if _matches_keyword_at(text, i, "BEGIN"):
+            depth += 1
+            buf.append(text[i : i + 5])
+            i += 5
+            continue
+        if _matches_keyword_at(text, i, "END"):
+            if depth > 0:
+                depth -= 1
+            buf.append(text[i : i + 3])
+            i += 3
+            continue
+        if ch == ";" and depth == 0:
+            stmt = "".join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
+def _matches_keyword_at(text: str, i: int, keyword: str) -> bool:
+    """Whole-word, case-insensitive match for a SQL keyword at ``text[i]``.
+
+    Word boundary on the left (start of text or non-alphanumeric) AND
+    on the right (end of text or non-alphanumeric), so ``begin_at`` is
+    not seen as ``BEGIN`` and the trailing ``_at`` is not seen as a
+    new token after stripping ``BEGIN``.
+    """
+    end = i + len(keyword)
+    if end > len(text):
+        return False
+    if text[i:end].upper() != keyword:
+        return False
+    if i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_"):
+        return False
+    return not (end < len(text) and (text[end].isalnum() or text[end] == "_"))
 
 
 def schema_version(conn: sqlite3.Connection) -> int:

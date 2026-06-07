@@ -34,11 +34,23 @@ class CliError(Exception):
     payload + exit 1. Use for: bad argument shape, missing file,
     locked / corrupt DB, permission denied. Do NOT use for genuine
     programming bugs - let those crash to traceback + exit 2.
+
+    ``details`` is an optional structured payload (e.g. list of
+    unknown categories with suggestions) that the emitter merges
+    into the JSON error so the caller can render rich error messages
+    without parsing the text in ``error``.
     """
 
-    def __init__(self, message: str, *, kind: str = "ValueError") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "ValueError",
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.kind = kind
+        self.details: dict[str, Any] = details or {}
 
 
 def run_subcommand(
@@ -51,7 +63,7 @@ def run_subcommand(
     try:
         result = func(args)
     except CliError as exc:
-        _emit_error(str(exc), exc.kind)
+        _emit_error(str(exc), exc.kind, details=exc.details)
         return 1
     except Exception as exc:
         # Print the full traceback to stderr so the user (and Claude)
@@ -64,14 +76,13 @@ def run_subcommand(
     return 0
 
 
-def _emit_error(message: str, kind: str) -> None:
-    print(
-        json.dumps(
-            {"ok": False, "error": message, "type": kind},
-            ensure_ascii=False,
-        ),
-        file=sys.stderr,
-    )
+def _emit_error(
+    message: str, kind: str, *, details: dict[str, Any] | None = None
+) -> None:
+    payload: dict[str, Any] = {"ok": False, "error": message, "type": kind}
+    if details:
+        payload["details"] = details
+    print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
 
 
 def _json_default(obj: Any) -> Any:
