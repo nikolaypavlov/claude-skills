@@ -447,6 +447,448 @@ def materialise_budget(
     return result
 
 
+def fetch_budget(
+    conn: sqlite3.Connection, *, period: str, currency_code: int | None = None
+) -> list[dict[str, Any]]:
+    """Return budget rows + their lines for the period.
+
+    Shape::
+
+        [{period, currency_code, status, created_at, imported_from,
+          lines: [{category, kind, amount_minor, note}], total_minor}]
+
+    Sorted by currency_code so UAH (980) always comes before USD
+    (840) → no, sorted ASC numeric so UAH (980) comes after USD (840).
+    Use the alpha code in CLI rendering if the user-facing order
+    matters.
+    """
+    where = ["b.period = ?"]
+    params: list[Any] = [period]
+    if currency_code is not None:
+        where.append("b.currency_code = ?")
+        params.append(currency_code)
+    budgets = conn.execute(
+        "SELECT id, period, currency_code, status, created_at, imported_from "
+        f"FROM budget b WHERE {' AND '.join(where)} ORDER BY currency_code",
+        params,
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for bid, per, cur, status, created_at, imported_from in budgets:
+        lines = conn.execute(
+            "SELECT category, kind, amount_minor, note FROM budget_line "
+            "WHERE budget_id = ? ORDER BY amount_minor ASC",
+            (bid,),
+        ).fetchall()
+        line_dicts = [
+            {"category": c, "kind": k, "amount_minor": int(a), "note": n}
+            for c, k, a, n in lines
+        ]
+        out.append(
+            {
+                "budget_id": int(bid),
+                "period": per,
+                "currency_code": int(cur),
+                "status": status,
+                "created_at": int(created_at),
+                "imported_from": imported_from,
+                "lines": line_dicts,
+                "total_minor": sum(line["amount_minor"] for line in line_dicts),
+                "line_count": len(line_dicts),
+            }
+        )
+    return out
+
+
+def actuals_for_period(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    currency_code: int | None = None,
+    exclude_categories: tuple[str, ...] = ("Перекази/СвоїКартки",),
+) -> dict[tuple[int, str], int]:
+    """Sum actual transactions by (currency, category) for a period.
+
+    Uses the same UNION view + CATEGORY_EXPR / CATEGORY_JOIN_SQL +
+    account-currency join that ``summarize_spending`` does. Returns
+    ``{(currency_code, category): total_minor_signed}``.
+
+    ``exclude_categories`` defaults to the internal-transfer label so
+    actuals match the "real spending" convention used in pf-report.
+    """
+    from . import queries as q
+    from .view import discover_sources, build_accounts_union_sql, build_tx_union_sql
+
+    sources = discover_sources(conn)
+    tx_union = build_tx_union_sql(sources)
+    accounts_union = build_accounts_union_sql(sources)
+    if tx_union is None or accounts_union is None:
+        return {}
+    # Period boundaries: first second of month → first second of next month.
+    year, month = (int(p) for p in period.split("-"))
+    from_ts = int(time.mktime((year, month, 1, 0, 0, 0, 0, 0, 0))) - time.timezone
+    if month == 12:
+        next_year, next_month = year + 1, 1
+    else:
+        next_year, next_month = year, month + 1
+    to_ts = int(time.mktime((next_year, next_month, 1, 0, 0, 0, 0, 0, 0))) - time.timezone
+
+    where_cur = ""
+    params: list[Any] = [from_ts, to_ts]
+    if currency_code is not None:
+        where_cur = " AND acc.currency_code = ?"
+        params.append(currency_code)
+    placeholders = ",".join(["?"] * len(exclude_categories))
+    cat_filter = (
+        f" AND ({q.CATEGORY_EXPR} NOT IN ({placeholders}))"
+        if exclude_categories
+        else ""
+    )
+    params.extend(exclude_categories)
+
+    sql = (
+        f"SELECT acc.currency_code, {q.CATEGORY_EXPR} AS category, "
+        f"SUM(tx.amount_minor) AS total_minor "
+        f"FROM (\n{tx_union}\n) AS tx "
+        f"{q.CATEGORY_JOIN_SQL} "
+        f"JOIN (\n{accounts_union}\n) AS acc ON acc.account_id = tx.account_id "
+        f"WHERE tx.ts >= ? AND tx.ts < ?{where_cur}{cat_filter} "
+        f"GROUP BY acc.currency_code, {q.CATEGORY_EXPR}"
+    )
+    out: dict[tuple[int, str], int] = {}
+    for cur, cat, tot in conn.execute(sql, params):
+        if cat is None:
+            cat = "(uncategorized)"
+        out[(int(cur), str(cat))] = int(tot or 0)
+    return out
+
+
+def diff_budget_vs_actual(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    currency_code: int | None = None,
+) -> list[dict[str, Any]]:
+    """Join budgeted lines with actuals from ``actuals_for_period``.
+
+    Output is a list of per-currency blocks::
+
+        [{currency_code, status, lines: [{category, kind, target_minor,
+          actual_minor, delta_minor, pct_used}], totals: {...}}]
+
+    Categories that exist only in actuals (no budget line) are still
+    listed - the user wants to see what they spent that wasn't planned
+    for. Categories with target but no actual show ``actual_minor=0``.
+    """
+    budgets = fetch_budget(conn, period=period, currency_code=currency_code)
+    actuals = actuals_for_period(
+        conn, period=period, currency_code=currency_code
+    )
+
+    # Index actuals by currency for quick consumption per budget block.
+    actuals_by_cur: dict[int, dict[str, int]] = {}
+    for (cur, cat), amt in actuals.items():
+        actuals_by_cur.setdefault(cur, {})[cat] = amt
+
+    out: list[dict[str, Any]] = []
+    for b in budgets:
+        cur = b["currency_code"]
+        seen: set[str] = set()
+        # Aggregate budget targets per category (a category can have
+        # both baseline and one_time rows for the same period).
+        target_by_cat: dict[str, int] = {}
+        for line in b["lines"]:
+            target_by_cat[line["category"]] = (
+                target_by_cat.get(line["category"], 0) + line["amount_minor"]
+            )
+        cur_actuals = actuals_by_cur.get(cur, {})
+        rows: list[dict[str, Any]] = []
+        for cat, target in target_by_cat.items():
+            actual = cur_actuals.get(cat, 0)
+            delta = target - actual
+            pct = _pct_used(actual, target)
+            rows.append(
+                {
+                    "category": cat,
+                    "target_minor": target,
+                    "actual_minor": actual,
+                    "delta_minor": delta,
+                    "pct_used": pct,
+                    "in_budget": True,
+                }
+            )
+            seen.add(cat)
+        # Surface actuals that have no budgeted line.
+        for cat, actual in cur_actuals.items():
+            if cat in seen:
+                continue
+            rows.append(
+                {
+                    "category": cat,
+                    "target_minor": 0,
+                    "actual_minor": actual,
+                    "delta_minor": -actual,
+                    "pct_used": None,
+                    "in_budget": False,
+                }
+            )
+        rows.sort(key=lambda r: r["target_minor"])  # most-negative first
+        totals = {
+            "target_minor": sum(r["target_minor"] for r in rows),
+            "actual_minor": sum(r["actual_minor"] for r in rows),
+            "delta_minor": sum(r["delta_minor"] for r in rows),
+        }
+        out.append(
+            {
+                "currency_code": cur,
+                "status": b["status"],
+                "lines": rows,
+                "totals": totals,
+            }
+        )
+    # Surface actuals for currencies that have no budget at all.
+    seen_cur = {b["currency_code"] for b in budgets}
+    for cur, by_cat in actuals_by_cur.items():
+        if cur in seen_cur:
+            continue
+        rows = [
+            {
+                "category": cat,
+                "target_minor": 0,
+                "actual_minor": amt,
+                "delta_minor": -amt,
+                "pct_used": None,
+                "in_budget": False,
+            }
+            for cat, amt in sorted(by_cat.items(), key=lambda x: x[1])
+        ]
+        out.append(
+            {
+                "currency_code": cur,
+                "status": None,  # no budget
+                "lines": rows,
+                "totals": {
+                    "target_minor": 0,
+                    "actual_minor": sum(r["actual_minor"] for r in rows),
+                    "delta_minor": -sum(r["actual_minor"] for r in rows),
+                },
+            }
+        )
+    return out
+
+
+def _pct_used(actual: int, target: int) -> float | None:
+    """Percentage of target used so far. ``None`` when target == 0
+    (income lines or no baseline target). For outflows (negative
+    target), divide negative by negative so the result is positive.
+    """
+    if target == 0:
+        return None
+    return round(actual / target * 100.0, 1)
+
+
+@dataclass
+class StatusFlipResult:
+    matched: int             # how many budget rows existed
+    changed: list[dict[str, Any]]  # rows whose status actually flipped
+
+
+def set_status(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    currency_code: int | None,
+    new_status: str,
+) -> StatusFlipResult:
+    """Flip ``budget.status`` for the matching budgets. Returns
+    ``matched`` (how many rows existed) and ``changed`` (the rows
+    that actually moved). Distinguishing the two lets the CLI emit
+    ``NotFound`` only when nothing matched - flipping a closed budget
+    back to closed is a successful no-op."""
+    if new_status not in ("draft", "active", "closed"):
+        raise BudgetParseError(
+            f"new_status={new_status!r} must be one of draft|active|closed",
+            kind="BadStatus",
+        )
+    where = ["period = ?"]
+    params: list[Any] = [period]
+    if currency_code is not None:
+        where.append("currency_code = ?")
+        params.append(currency_code)
+    rows = conn.execute(
+        "SELECT id, period, currency_code, status FROM budget "
+        f"WHERE {' AND '.join(where)}",
+        params,
+    ).fetchall()
+    if not rows:
+        return StatusFlipResult(matched=0, changed=[])
+    changed: list[dict[str, Any]] = []
+    conn.execute("BEGIN")
+    try:
+        for budget_id, per, cur, status in rows:
+            if status == new_status:
+                continue
+            conn.execute(
+                "UPDATE budget SET status = ? WHERE id = ?",
+                (new_status, budget_id),
+            )
+            changed.append(
+                {
+                    "budget_id": int(budget_id),
+                    "period": per,
+                    "currency_code": int(cur),
+                    "old_status": status,
+                    "new_status": new_status,
+                }
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return StatusFlipResult(matched=len(rows), changed=changed)
+
+
+def delete_budget(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    currency_code: int | None,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    """Delete a budget (and its lines via cascade). Refuses to delete
+    closed budgets unless ``force=True`` - the lifecycle is meant to
+    be append-and-snapshot, not purge."""
+    where = ["period = ?"]
+    params: list[Any] = [period]
+    if currency_code is not None:
+        where.append("currency_code = ?")
+        params.append(currency_code)
+    rows = conn.execute(
+        "SELECT id, period, currency_code, status FROM budget "
+        f"WHERE {' AND '.join(where)}",
+        params,
+    ).fetchall()
+    if not rows:
+        return []
+    deleted: list[dict[str, Any]] = []
+    conn.execute("BEGIN")
+    try:
+        for budget_id, per, cur, status in rows:
+            if status == "closed" and not force:
+                conn.rollback()
+                raise BudgetParseError(
+                    f"budget {per}/{cur} is closed; pass --force to delete",
+                    kind="ClosedBudget",
+                )
+            if status == "closed" and force:
+                # Reopen so cascade deletion of budget_line passes the
+                # closed-budget trigger.
+                conn.execute(
+                    "UPDATE budget SET status = 'active' WHERE id = ?",
+                    (budget_id,),
+                )
+            conn.execute("DELETE FROM budget WHERE id = ?", (budget_id,))
+            deleted.append(
+                {
+                    "budget_id": int(budget_id),
+                    "period": per,
+                    "currency_code": int(cur),
+                    "was_status": status,
+                }
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return deleted
+
+
+def rename_category(
+    conn: sqlite3.Connection,
+    *,
+    old_name: str,
+    new_name: str,
+    update_tables: tuple[str, ...],
+) -> dict[str, int]:
+    """Rewrite ``category`` in the named tables. Returns per-table
+    affected-row counts. The trigger on ``budget_line`` allows the
+    UPDATE only when the parent budget is not closed, so renames on
+    closed budgets need ``pf-budget reopen`` first."""
+    allowed = {
+        "budget_line",
+        "tx_category",
+        "category_overrides",
+        "categorization_rules",
+        "category_registry",
+    }
+    bad = [t for t in update_tables if t not in allowed]
+    if bad:
+        raise BudgetParseError(
+            f"--update entries {bad} not allowed; "
+            f"must be a subset of {sorted(allowed)}",
+            kind="BadArgument",
+        )
+    counts: dict[str, int] = {}
+    conn.execute("BEGIN")
+    try:
+        for table in update_tables:
+            if table == "category_registry":
+                # PK is category itself - DELETE old + INSERT new (or
+                # just UPDATE if SQLite version supports it on PK).
+                # Try UPDATE first; fall back to delete-and-insert if
+                # a row already exists at new_name (UNIQUE collision).
+                existing_new = conn.execute(
+                    "SELECT 1 FROM category_registry WHERE category = ?",
+                    (new_name,),
+                ).fetchone()
+                if existing_new is not None:
+                    counts[table] = conn.execute(
+                        "DELETE FROM category_registry WHERE category = ?",
+                        (old_name,),
+                    ).rowcount
+                else:
+                    counts[table] = conn.execute(
+                        "UPDATE category_registry SET category = ? "
+                        "WHERE category = ?",
+                        (new_name, old_name),
+                    ).rowcount
+                continue
+            counts[table] = conn.execute(
+                f"UPDATE {table} SET category = ? WHERE category = ?",
+                (new_name, old_name),
+            ).rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return counts
+
+
+def list_budgets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Compact list of all budgets, line totals included, suitable for
+    the home-page-style overview."""
+    rows = conn.execute(
+        "SELECT b.id, b.period, b.currency_code, b.status, b.created_at, "
+        "       b.imported_from, "
+        "       COUNT(bl.id) AS line_count, "
+        "       COALESCE(SUM(bl.amount_minor), 0) AS total_minor "
+        "FROM budget b LEFT JOIN budget_line bl ON bl.budget_id = b.id "
+        "GROUP BY b.id ORDER BY b.period DESC, b.currency_code ASC"
+    ).fetchall()
+    return [
+        {
+            "budget_id": int(r[0]),
+            "period": r[1],
+            "currency_code": int(r[2]),
+            "status": r[3],
+            "created_at": int(r[4]),
+            "imported_from": r[5],
+            "line_count": int(r[6]),
+            "total_minor": int(r[7]),
+        }
+        for r in rows
+    ]
+
+
 def log_import_run(
     conn: sqlite3.Connection,
     *,

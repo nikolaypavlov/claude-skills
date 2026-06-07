@@ -393,6 +393,144 @@ def cmd_list_categories(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _parse_currency_or_cli_error(value: str | None) -> int | None:
+    if value is None:
+        return None
+    from .common.currencies import parse_currency_arg
+
+    try:
+        return parse_currency_arg(value)
+    except ValueError as exc:
+        raise CliError(str(exc), kind="ValueError") from exc
+
+
+def cmd_show(args: argparse.Namespace) -> dict[str, Any]:
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        budgets = bud.fetch_budget(
+            conn, period=args.period, currency_code=cur_code
+        )
+    if not budgets:
+        return {
+            "ok": True,
+            "period": args.period,
+            "currency": args.currency,
+            "budgets": [],
+            "warning": "no budget materialised for this period",
+        }
+    return {
+        "ok": True,
+        "period": args.period,
+        "currency": args.currency,
+        "budgets": budgets,
+    }
+
+
+def cmd_diff(args: argparse.Namespace) -> dict[str, Any]:
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        blocks = bud.diff_budget_vs_actual(
+            conn, period=args.period, currency_code=cur_code
+        )
+    return {
+        "ok": True,
+        "period": args.period,
+        "currency": args.currency,
+        "blocks": blocks,
+    }
+
+
+def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        items = bud.list_budgets(conn)
+    return {"ok": True, "count": len(items), "budgets": items}
+
+
+def cmd_close(args: argparse.Namespace) -> dict[str, Any]:
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            result = bud.set_status(
+                conn, period=args.period, currency_code=cur_code, new_status="closed"
+            )
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind) from exc
+    if result.matched == 0:
+        raise CliError(
+            f"no budget matched period={args.period} currency={args.currency}",
+            kind="NotFound",
+        )
+    return {"ok": True, "matched": result.matched, "changed": result.changed}
+
+
+def cmd_reopen(args: argparse.Namespace) -> dict[str, Any]:
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            result = bud.set_status(
+                conn, period=args.period, currency_code=cur_code, new_status="active"
+            )
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind) from exc
+    if result.matched == 0:
+        raise CliError(
+            f"no budget matched period={args.period} currency={args.currency}",
+            kind="NotFound",
+        )
+    return {
+        "ok": True,
+        "matched": result.matched,
+        "changed": result.changed,
+        "reason": args.reason,
+    }
+
+
+def cmd_delete(args: argparse.Namespace) -> dict[str, Any]:
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            deleted = bud.delete_budget(
+                conn,
+                period=args.period,
+                currency_code=cur_code,
+                force=args.force,
+            )
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind) from exc
+    if not deleted:
+        raise CliError(
+            f"no budget matched period={args.period} currency={args.currency}",
+            kind="NotFound",
+        )
+    return {"ok": True, "deleted": deleted}
+
+
+def cmd_rename_category(args: argparse.Namespace) -> dict[str, Any]:
+    old = _validate_category_name(args.old)
+    new = _validate_category_name(args.new)
+    if old == new:
+        raise CliError("--from and --to are identical", kind="BadArgument")
+    update_tables: tuple[str, ...] = tuple(args.update.split(","))
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            counts = bud.rename_category(
+                conn,
+                old_name=old,
+                new_name=new,
+                update_tables=update_tables,
+            )
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind) from exc
+    return {"ok": True, "old": old, "new": new, "counts": counts}
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pf-budget",
@@ -487,6 +625,75 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_import.add_argument("--db", default=None)
     p_import.set_defaults(func=cmd_import)
+
+    p_show = sub.add_parser(
+        "show", help="Show the budget plan materialised for a period"
+    )
+    p_show.add_argument("--period", required=True)
+    p_show.add_argument("--currency", default=None, help="UAH/USD/980/840/...")
+    p_show.add_argument("--db", default=None)
+    p_show.set_defaults(func=cmd_show)
+
+    p_diff = sub.add_parser(
+        "diff", help="Budget vs actuals for a period, per (currency, category)"
+    )
+    p_diff.add_argument("--period", required=True)
+    p_diff.add_argument("--currency", default=None)
+    p_diff.add_argument("--db", default=None)
+    p_diff.set_defaults(func=cmd_diff)
+
+    p_list_b = sub.add_parser(
+        "list", help="List every materialised budget with totals and status"
+    )
+    p_list_b.add_argument("--db", default=None)
+    p_list_b.set_defaults(func=cmd_list)
+
+    p_close = sub.add_parser("close", help="Mark a budget as closed (snapshot)")
+    p_close.add_argument("--period", required=True)
+    p_close.add_argument("--currency", default=None)
+    p_close.add_argument("--db", default=None)
+    p_close.set_defaults(func=cmd_close)
+
+    p_reopen = sub.add_parser("reopen", help="Flip a closed budget back to active")
+    p_reopen.add_argument("--period", required=True)
+    p_reopen.add_argument("--currency", default=None)
+    p_reopen.add_argument(
+        "--reason",
+        default=None,
+        help="Free-text reason for reopening; stored only in the command result, "
+        "not persisted (audit lands in a future PR if needed).",
+    )
+    p_reopen.add_argument("--db", default=None)
+    p_reopen.set_defaults(func=cmd_reopen)
+
+    p_delete = sub.add_parser(
+        "delete", help="Delete a budget and its lines (cascade)"
+    )
+    p_delete.add_argument("--period", required=True)
+    p_delete.add_argument("--currency", default=None)
+    p_delete.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow deleting a closed budget.",
+    )
+    p_delete.add_argument("--db", default=None)
+    p_delete.set_defaults(func=cmd_delete)
+
+    p_rename = sub.add_parser(
+        "rename-category",
+        help="Rewrite a category name across selected tables",
+    )
+    p_rename.add_argument("--from", dest="old", required=True)
+    p_rename.add_argument("--to", dest="new", required=True)
+    p_rename.add_argument(
+        "--update",
+        default="budget_line",
+        help="Comma-separated tables to rewrite. Allowed: "
+        "budget_line, tx_category, category_overrides, "
+        "categorization_rules, category_registry.",
+    )
+    p_rename.add_argument("--db", default=None)
+    p_rename.set_defaults(func=cmd_rename_category)
 
     return p
 
