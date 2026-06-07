@@ -46,13 +46,9 @@ def _seed_budget(db: Path, period: str = "2026-06") -> None:
 # --- show -------------------------------------------------------------------
 
 
-def test_show_returns_budget_with_lines(
-    empty_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_show_returns_budget_with_lines(empty_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _seed_budget(empty_db)
-    rc, out, err = _run(
-        ["show", "--period", "2026-06", "--db", str(empty_db)], capsys
-    )
+    rc, out, err = _run(["show", "--period", "2026-06", "--db", str(empty_db)], capsys)
     assert rc == 0, err
     assert len(out["budgets"]) == 1
     b = out["budgets"][0]
@@ -62,20 +58,14 @@ def test_show_returns_budget_with_lines(
     assert "Подорожі/Готелі" in cats
 
 
-def test_show_no_budget_for_period(
-    empty_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    rc, out, err = _run(
-        ["show", "--period", "2026-06", "--db", str(empty_db)], capsys
-    )
+def test_show_no_budget_for_period(empty_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rc, out, err = _run(["show", "--period", "2026-06", "--db", str(empty_db)], capsys)
     assert rc == 0, err
     assert out["budgets"] == []
     assert "no budget" in out["warning"]
 
 
-def test_show_filters_by_currency(
-    empty_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_show_filters_by_currency(empty_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _seed_budget(empty_db)
     # add a USD budget so we have two
     conn = open_db(empty_db)
@@ -113,29 +103,21 @@ def test_list_includes_status_and_totals(
 # --- close + reopen ---------------------------------------------------------
 
 
-def test_close_then_reopen_flow(
-    empty_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_close_then_reopen_flow(empty_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _seed_budget(empty_db, "2026-05")
-    rc, out, err = _run(
-        ["close", "--period", "2026-05", "--db", str(empty_db)], capsys
-    )
+    rc, out, err = _run(["close", "--period", "2026-05", "--db", str(empty_db)], capsys)
     assert rc == 0, err
     assert out["changed"][0]["new_status"] == "closed"
 
     # Re-import should fail without --force after closing
-    rc, _, err = _run(
-        ["close", "--period", "2026-05", "--db", str(empty_db)], capsys
-    )
+    rc, _, err = _run(["close", "--period", "2026-05", "--db", str(empty_db)], capsys)
     # second close on already-closed budget is a no-op (no rows changed)
     # set_status returns empty -> CLI reports NotFound-style? we want it
     # to succeed silently. let's check the contract here:
     # current implementation raises NotFound only when no rows matched
     # at all. A no-op for already-closed returns the matching budget
     # with no entries in `changed`. Verify behaviour.
-    rc, out, err = _run(
-        ["close", "--period", "2026-05", "--db", str(empty_db)], capsys
-    )
+    rc, out, err = _run(["close", "--period", "2026-05", "--db", str(empty_db)], capsys)
     # No-op close should succeed with empty changed list - the budget
     # exists, just nothing to flip.
     assert rc == 0
@@ -149,12 +131,8 @@ def test_close_then_reopen_flow(
     assert out["changed"][0]["new_status"] == "active"
 
 
-def test_close_unknown_period_404(
-    empty_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    rc, _, err = _run(
-        ["close", "--period", "2099-12", "--db", str(empty_db)], capsys
-    )
+def test_close_unknown_period_404(empty_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rc, _, err = _run(["close", "--period", "2099-12", "--db", str(empty_db)], capsys)
     assert rc == 1
     assert err["type"] == "NotFound"
 
@@ -162,13 +140,9 @@ def test_close_unknown_period_404(
 # --- delete -----------------------------------------------------------------
 
 
-def test_delete_active_budget(
-    empty_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_delete_active_budget(empty_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _seed_budget(empty_db, "2026-04")
-    rc, out, err = _run(
-        ["delete", "--period", "2026-04", "--db", str(empty_db)], capsys
-    )
+    rc, out, err = _run(["delete", "--period", "2026-04", "--db", str(empty_db)], capsys)
     assert rc == 0, err
     conn = sqlite3.connect(empty_db)
     try:
@@ -185,9 +159,7 @@ def test_delete_closed_refused_without_force(
 ) -> None:
     _seed_budget(empty_db, "2026-04")
     _run(["close", "--period", "2026-04", "--db", str(empty_db)], capsys)
-    rc, _, err = _run(
-        ["delete", "--period", "2026-04", "--db", str(empty_db)], capsys
-    )
+    rc, _, err = _run(["delete", "--period", "2026-04", "--db", str(empty_db)], capsys)
     assert rc == 1
     assert err["type"] == "ClosedBudget"
 
@@ -235,15 +207,13 @@ def test_diff_joins_with_actuals_via_category_resolution(
     )
     conn.close()
 
-    rc, out, err = _run(
-        ["diff", "--period", "2023-11", "--db", str(mixed_currency_db)], capsys
-    )
+    rc, out, err = _run(["diff", "--period", "2023-11", "--db", str(mixed_currency_db)], capsys)
     assert rc == 0, err
     blocks_by_cur = {b["currency_code"]: b for b in out["blocks"]}
     assert 980 in blocks_by_cur and 840 in blocks_by_cur
 
     uah = blocks_by_cur[980]
-    cats = {l["category"]: l for l in uah["lines"]}
+    cats = {line["category"]: line for line in uah["lines"]}
     assert cats["Підписки/Інше"]["actual_minor"] == -21232
 
 
@@ -263,12 +233,10 @@ def test_diff_surfaces_actuals_with_no_budget_line(
         source="seed",
     )
     conn.close()
-    rc, out, err = _run(
-        ["diff", "--period", "2023-11", "--db", str(mixed_currency_db)], capsys
-    )
+    rc, out, err = _run(["diff", "--period", "2023-11", "--db", str(mixed_currency_db)], capsys)
     assert rc == 0, err
     uah = next(b for b in out["blocks"] if b["currency_code"] == 980)
-    cats = {l["category"]: l for l in uah["lines"]}
+    cats = {line["category"]: line for line in uah["lines"]}
     patreon = cats["Підписки/Інше"]
     assert patreon["in_budget"] is False
     assert patreon["target_minor"] == 0
@@ -308,9 +276,7 @@ def test_rename_category_updates_budget_lines(
     assert row == (1,)
 
 
-def test_rename_category_multi_table(
-    empty_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_rename_category_multi_table(empty_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Multiple tables in --update get updated atomically. tx_category
     not exercised yet (no tx in empty_db) but should still report 0."""
     _seed_budget(empty_db)

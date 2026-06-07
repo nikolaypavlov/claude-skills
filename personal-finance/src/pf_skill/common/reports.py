@@ -146,6 +146,12 @@ def build_report_bundle(
         conn, union, sources, from_ts, to_ts, account_id, bank, limit=uncat_limit
     )
 
+    budget_period = _try_period_string(from_ts, to_ts)
+    if budget_period is not None:
+        budget_block = _budget_block_for_period(conn, budget_period)
+        if budget_block is not None:
+            bundle["budget"] = budget_block
+
     if comparison == "previous-period":
         bundle["comparison"] = _build_comparison(
             conn,
@@ -442,3 +448,45 @@ def _period_where(
         where.append("tx.bank = ?")
         params.append(bank)
     return where, params
+
+
+def _try_period_string(from_ts: int, to_ts: int) -> str | None:
+    """Return ``YYYY-MM`` when ``[from_ts, to_ts)`` exactly covers a
+    single calendar month in UTC. Returns ``None`` otherwise so the
+    caller can skip the budget block.
+    """
+    from datetime import UTC, datetime
+
+    start = datetime.fromtimestamp(from_ts, tz=UTC)
+    end = datetime.fromtimestamp(to_ts, tz=UTC)
+    if start.day != 1 or start.hour or start.minute or start.second or start.microsecond:
+        return None
+    if end.day != 1 or end.hour or end.minute or end.second or end.microsecond:
+        return None
+    if start.year == end.year:
+        if end.month - start.month != 1:
+            return None
+    else:
+        if not (end.year - start.year == 1 and start.month == 12 and end.month == 1):
+            return None
+    return f"{start.year:04d}-{start.month:02d}"
+
+
+def _budget_block_for_period(conn: sqlite3.Connection, period: str) -> dict[str, Any] | None:
+    """Pull the diff-block shape from ``budget.diff_budget_vs_actual``
+    and reshape it for the report bundle. Returns ``None`` when no
+    budget materialised for the period (so the caller can skip the
+    key entirely).
+    """
+    # Lazy import to avoid circular imports between common.budget and
+    # common.reports.
+    from . import budget as bud
+
+    blocks = bud.diff_budget_vs_actual(conn, period=period)
+    has_any_budget = any(b.get("status") is not None for b in blocks)
+    if not has_any_budget:
+        return None
+    return {
+        "period": period,
+        "blocks": blocks,
+    }

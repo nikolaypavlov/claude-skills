@@ -24,7 +24,6 @@ import pytest
 from pf_skill.budget_cli import main
 from pf_skill.common import budget as bud
 
-
 # --- helpers -----------------------------------------------------------------
 
 
@@ -206,8 +205,7 @@ def test_validate_categories_known_pass_through(empty_db: Path) -> None:
 
     conn = open_db(empty_db)
     conn.execute(
-        "INSERT INTO category_registry "
-        "(category, declared_at, declared_via) VALUES ('A', 0, 'cli')"
+        "INSERT INTO category_registry (category, declared_at, declared_via) VALUES ('A', 0, 'cli')"
     )
     rows = [bud.PlanRow("2026-06", "A", 980, "baseline", -100)]
     result = bud.validate_categories(rows, conn)
@@ -488,9 +486,7 @@ def test_cli_import_bad_period_arg(
     assert "YYYY-MM" in err["error"]
 
 
-def test_cli_import_file_not_found(
-    empty_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_cli_import_file_not_found(empty_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     rc, _, err = _run(
         ["import", "/no/such/path.csv", "--period", "2026-06", "--db", str(empty_db)],
         capsys,

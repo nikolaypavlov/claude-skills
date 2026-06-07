@@ -120,9 +120,7 @@ def parse_baseline_csv(path: Path, period: str) -> list[PlanRow]:
     _validate_period(period, "period")
     with path.open(encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        _check_columns(
-            reader.fieldnames, _BASELINE_REQUIRED, _BASELINE_OPTIONAL, sheet="Baseline"
-        )
+        _check_columns(reader.fieldnames, _BASELINE_REQUIRED, _BASELINE_OPTIONAL, sheet="Baseline")
         rows: list[PlanRow] = []
         for i, raw in enumerate(reader, start=2):
             if not any((raw.get(k) or "").strip() for k in _BASELINE_REQUIRED):
@@ -168,8 +166,7 @@ def parse_workbook_xlsx(path: Path) -> tuple[list[dict[str, Any]], list[dict[str
         # legitimately bad input that we want to surface via
         # _check_columns below.
         header: list[str] = [
-            h.strip() if isinstance(h, str) else str(h) if h is not None else ""
-            for h in raw_header
+            h.strip() if isinstance(h, str) else str(h) if h is not None else "" for h in raw_header
         ]
         _check_columns(header, required, optional, sheet=sheet_name)
         for i, values in enumerate(rows_iter, start=2):
@@ -206,9 +203,7 @@ def merge_baseline_plans(
       second, so deterministic ordering helps tests.
     """
     plans_for_period = [r for r in plans if r.period == period]
-    suppress = {
-        (r.category, r.currency_code, r.kind) for r in plans_for_period
-    }
+    suppress = {(r.category, r.currency_code, r.kind) for r in plans_for_period}
     out: list[PlanRow] = []
     for r in baseline:
         if r.period != period:
@@ -271,8 +266,8 @@ def levenshtein(a: str, b: str) -> int:
         for j, cb in enumerate(b, start=1):
             cost = 0 if ca == cb else 1
             curr[j] = min(
-                prev[j] + 1,         # deletion
-                curr[j - 1] + 1,     # insertion
+                prev[j] + 1,  # deletion
+                curr[j - 1] + 1,  # insertion
                 prev[j - 1] + cost,  # substitution
             )
         prev, curr = curr, prev
@@ -441,7 +436,9 @@ def materialise_budget(
             "budget_id": int(budget_id),
             "lines_added": len(items),
             "lines_replaced": int(replaced),
-            "status_after": "closed" if (existing and existing[1] == "closed" and force) else "active",
+            "status_after": "closed"
+            if (existing and existing[1] == "closed" and force)
+            else "active",
         }
 
     return result
@@ -480,8 +477,7 @@ def fetch_budget(
             (bid,),
         ).fetchall()
         line_dicts = [
-            {"category": c, "kind": k, "amount_minor": int(a), "note": n}
-            for c, k, a, n in lines
+            {"category": c, "kind": k, "amount_minor": int(a), "note": n} for c, k, a, n in lines
         ]
         out.append(
             {
@@ -516,7 +512,7 @@ def actuals_for_period(
     actuals match the "real spending" convention used in pf-report.
     """
     from . import queries as q
-    from .view import discover_sources, build_accounts_union_sql, build_tx_union_sql
+    from .view import build_accounts_union_sql, build_tx_union_sql, discover_sources
 
     sources = discover_sources(conn)
     tx_union = build_tx_union_sql(sources)
@@ -538,11 +534,7 @@ def actuals_for_period(
         where_cur = " AND acc.currency_code = ?"
         params.append(currency_code)
     placeholders = ",".join(["?"] * len(exclude_categories))
-    cat_filter = (
-        f" AND ({q.CATEGORY_EXPR} NOT IN ({placeholders}))"
-        if exclude_categories
-        else ""
-    )
+    cat_filter = f" AND ({q.CATEGORY_EXPR} NOT IN ({placeholders}))" if exclude_categories else ""
     params.extend(exclude_categories)
 
     sql = (
@@ -580,9 +572,7 @@ def diff_budget_vs_actual(
     for. Categories with target but no actual show ``actual_minor=0``.
     """
     budgets = fetch_budget(conn, period=period, currency_code=currency_code)
-    actuals = actuals_for_period(
-        conn, period=period, currency_code=currency_code
-    )
+    actuals = actuals_for_period(conn, period=period, currency_code=currency_code)
 
     # Index actuals by currency for quick consumption per budget block.
     actuals_by_cur: dict[int, dict[str, int]] = {}
@@ -688,7 +678,7 @@ def _pct_used(actual: int, target: int) -> float | None:
 
 @dataclass
 class StatusFlipResult:
-    matched: int             # how many budget rows existed
+    matched: int  # how many budget rows existed
     changed: list[dict[str, Any]]  # rows whose status actually flipped
 
 
@@ -715,8 +705,7 @@ def set_status(
         where.append("currency_code = ?")
         params.append(currency_code)
     rows = conn.execute(
-        "SELECT id, period, currency_code, status FROM budget "
-        f"WHERE {' AND '.join(where)}",
+        f"SELECT id, period, currency_code, status FROM budget WHERE {' AND '.join(where)}",
         params,
     ).fetchall()
     if not rows:
@@ -763,8 +752,7 @@ def delete_budget(
         where.append("currency_code = ?")
         params.append(currency_code)
     rows = conn.execute(
-        "SELECT id, period, currency_code, status FROM budget "
-        f"WHERE {' AND '.join(where)}",
+        f"SELECT id, period, currency_code, status FROM budget WHERE {' AND '.join(where)}",
         params,
     ).fetchall()
     if not rows:
@@ -823,8 +811,7 @@ def rename_category(
     bad = [t for t in update_tables if t not in allowed]
     if bad:
         raise BudgetParseError(
-            f"--update entries {bad} not allowed; "
-            f"must be a subset of {sorted(allowed)}",
+            f"--update entries {bad} not allowed; must be a subset of {sorted(allowed)}",
             kind="BadArgument",
         )
     counts: dict[str, int] = {}
@@ -847,8 +834,7 @@ def rename_category(
                     ).rowcount
                 else:
                     counts[table] = conn.execute(
-                        "UPDATE category_registry SET category = ? "
-                        "WHERE category = ?",
+                        "UPDATE category_registry SET category = ? WHERE category = ?",
                         (new_name, old_name),
                     ).rowcount
                 continue
@@ -887,6 +873,40 @@ def list_budgets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def export_variance_rows(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    currency_code: int | None = None,
+) -> list[dict[str, Any]]:
+    """Build the variance-sheet rows the CLI emits via ``pf-budget
+    export``. Schema matches budget-design.md `Variance` sheet:
+    ``Period, Category, Currency, Target, Actual, Delta, % used``.
+    Amounts come back in **major units** as floats so the file lands
+    Sheets-friendly without manual division.
+    """
+    blocks = diff_budget_vs_actual(conn, period=period, currency_code=currency_code)
+    from .currencies import alpha_for
+
+    out: list[dict[str, Any]] = []
+    for block in blocks:
+        cur_code = block["currency_code"]
+        cur_alpha = alpha_for(cur_code) or str(cur_code)
+        for line in block["lines"]:
+            out.append(
+                {
+                    "Period": period,
+                    "Category": line["category"],
+                    "Currency": cur_alpha,
+                    "Target": line["target_minor"] / 100.0,
+                    "Actual": line["actual_minor"] / 100.0,
+                    "Delta": line["delta_minor"] / 100.0,
+                    "% used": line["pct_used"],
+                }
+            )
+    return out
 
 
 def log_import_run(
@@ -937,21 +957,16 @@ def _check_columns(
     sheet: str,
 ) -> None:
     if not found:
-        raise BudgetParseError(
-            f"{sheet}: empty input (no header row)", kind="EmptyInput"
-        )
+        raise BudgetParseError(f"{sheet}: empty input (no header row)", kind="EmptyInput")
     found_set = {f for f in found if isinstance(f, str)}
     missing = [c for c in required if c not in found_set]
     if missing:
         raise BudgetParseError(
-            f"{sheet}: missing required columns {missing}; "
-            f"got {sorted(found_set)}",
+            f"{sheet}: missing required columns {missing}; got {sorted(found_set)}",
             kind="BadHeader",
             details={"missing": missing, "found": sorted(found_set)},
         )
-    extras = [
-        c for c in found_set if c not in required and c not in optional and c
-    ]
+    extras = [c for c in found_set if c not in required and c not in optional and c]
     # Extras are tolerated (sheets often have helper columns) but we
     # still report them in the details so the CLI can warn.
     if extras:
@@ -987,9 +1002,7 @@ def _row_from_plans(raw: dict[str, Any], *, source_row: str) -> PlanRow:
     )
 
 
-def _row_from_baseline(
-    raw: dict[str, Any], period: str, *, source_row: str
-) -> PlanRow:
+def _row_from_baseline(raw: dict[str, Any], period: str, *, source_row: str) -> PlanRow:
     category = _coerce_category(raw.get("Category"), source_row)
     currency = _coerce_currency(raw.get("Currency"), source_row)
     kind = _coerce_kind(raw.get("Kind"), source_row)
@@ -1014,9 +1027,7 @@ def _row_from_baseline(
 
 def _coerce_str(value: Any, field_label: str, source_row: str) -> str:
     if value is None:
-        raise BudgetParseError(
-            f"{source_row}: {field_label} is empty", kind="MissingField"
-        )
+        raise BudgetParseError(f"{source_row}: {field_label} is empty", kind="MissingField")
     return str(value).strip()
 
 
@@ -1024,9 +1035,7 @@ def _coerce_category(value: Any, source_row: str) -> str:
     raw = _coerce_str(value, "Category", source_row)
     stripped = raw.strip()
     if not stripped:
-        raise BudgetParseError(
-            f"{source_row}: Category is empty", kind="MissingField"
-        )
+        raise BudgetParseError(f"{source_row}: Category is empty", kind="MissingField")
     if "//" in stripped or stripped.startswith("/") or stripped.endswith("/"):
         raise BudgetParseError(
             f"{source_row}: Category {stripped!r} has empty hierarchy segments",
@@ -1060,9 +1069,7 @@ def _coerce_kind(value: Any, source_row: str) -> str:
 
 def _coerce_amount(value: Any, source_row: str, *, field_label: str = "Amount") -> int:
     if value is None or (isinstance(value, str) and not value.strip()):
-        raise BudgetParseError(
-            f"{source_row}: {field_label} is empty", kind="MissingField"
-        )
+        raise BudgetParseError(f"{source_row}: {field_label} is empty", kind="MissingField")
     try:
         amount = float(value)
     except (ValueError, TypeError) as exc:

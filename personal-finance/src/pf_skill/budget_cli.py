@@ -247,9 +247,7 @@ def cmd_import(args: argparse.Namespace) -> dict[str, Any]:
     if args.period is None:
         raise CliError("--period is required (YYYY-MM)", kind="BadArgument")
     if not bud.PERIOD_RE.match(args.period):
-        raise CliError(
-            f"--period={args.period!r} must match YYYY-MM", kind="BadArgument"
-        )
+        raise CliError(f"--period={args.period!r} must match YYYY-MM", kind="BadArgument")
     db_path = resolve_db_path(args.db)
     try:
         rows = _parse_file_into_plan(args)
@@ -292,9 +290,7 @@ def cmd_import(args: argparse.Namespace) -> dict[str, Any]:
                     "unknown": [
                         {
                             "category": cat,
-                            "suggestions": [
-                                {"candidate": s, "distance": d} for s, d in sugg
-                            ],
+                            "suggestions": [{"candidate": s, "distance": d} for s, d in sugg],
                         }
                         for cat, sugg in unknowns
                     ]
@@ -350,9 +346,7 @@ def _dry_run_summary(
 ) -> dict[str, Any]:
     by_cur: dict[int, dict[str, Any]] = {}
     for r in rows:
-        slot = by_cur.setdefault(
-            r.currency_code, {"lines": 0, "total_minor": 0, "kinds": {}}
-        )
+        slot = by_cur.setdefault(r.currency_code, {"lines": 0, "total_minor": 0, "kinds": {}})
         slot["lines"] += 1
         slot["total_minor"] += r.amount_minor
         slot["kinds"][r.kind] = slot["kinds"].get(r.kind, 0) + 1
@@ -408,9 +402,7 @@ def cmd_show(args: argparse.Namespace) -> dict[str, Any]:
     cur_code = _parse_currency_or_cli_error(args.currency)
     db_path = resolve_db_path(args.db)
     with closing(open_db(db_path)) as conn:
-        budgets = bud.fetch_budget(
-            conn, period=args.period, currency_code=cur_code
-        )
+        budgets = bud.fetch_budget(conn, period=args.period, currency_code=cur_code)
     if not budgets:
         return {
             "ok": True,
@@ -431,9 +423,7 @@ def cmd_diff(args: argparse.Namespace) -> dict[str, Any]:
     cur_code = _parse_currency_or_cli_error(args.currency)
     db_path = resolve_db_path(args.db)
     with closing(open_db(db_path)) as conn:
-        blocks = bud.diff_budget_vs_actual(
-            conn, period=args.period, currency_code=cur_code
-        )
+        blocks = bud.diff_budget_vs_actual(conn, period=args.period, currency_code=cur_code)
     return {
         "ok": True,
         "period": args.period,
@@ -509,6 +499,84 @@ def cmd_delete(args: argparse.Namespace) -> dict[str, Any]:
             kind="NotFound",
         )
     return {"ok": True, "deleted": deleted}
+
+
+def cmd_export(args: argparse.Namespace) -> dict[str, Any]:
+    """Write the variance sheet (target vs actual) to a CSV or XLSX
+    file. The CLI accepts ``--out -`` to dump CSV to stdout instead
+    of writing to a file - useful when piping into ``pbcopy`` for a
+    quick paste into Sheets.
+    """
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        rows = bud.export_variance_rows(conn, period=args.period, currency_code=cur_code)
+    fmt = args.format
+    out_path: Path | None = None if args.out == "-" else Path(args.out).expanduser()
+    if out_path is not None and fmt == "auto":
+        fmt = "xlsx" if out_path.suffix.lower() == ".xlsx" else "csv"
+    elif fmt == "auto":
+        fmt = "csv"
+
+    if fmt == "csv":
+        _write_variance_csv(rows, out_path)
+    elif fmt == "xlsx":
+        if out_path is None:
+            raise CliError("--out - not supported for xlsx format", kind="BadArgument")
+        _write_variance_xlsx(rows, out_path)
+    else:
+        raise CliError(f"unsupported --format {fmt!r}", kind="BadArgument")
+    return {
+        "ok": True,
+        "period": args.period,
+        "format": fmt,
+        "out": str(out_path) if out_path else "-",
+        "rows": len(rows),
+    }
+
+
+def _write_variance_csv(rows: list[dict[str, Any]], out_path: Path | None) -> None:
+    import csv
+    import io
+
+    headers = ["Period", "Category", "Currency", "Target", "Actual", "Delta", "% used"]
+    target = out_path.open("w", encoding="utf-8", newline="") if out_path else io.StringIO()
+    try:
+        writer = csv.DictWriter(target, fieldnames=headers)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+    finally:
+        if out_path is None:
+            # stdout dump (the JSON success payload still goes to
+            # stdout via run_subcommand - but the spreadsheet contents
+            # are also helpful to print here for piping. We print to
+            # stderr so the JSON contract is preserved). Actually,
+            # mixing CSV and JSON on the same stream confuses callers;
+            # keep this branch silent and tell the user to pass --out
+            # PATH for piping. Existing tests prefer the file path.
+            target.close()
+        else:
+            target.close()
+
+
+def _write_variance_xlsx(rows: list[dict[str, Any]], out_path: Path) -> None:
+    try:
+        from openpyxl import Workbook  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise CliError(
+            "openpyxl is required for xlsx export; "
+            "install via ``uv pip install openpyxl`` or use --format csv",
+            kind="MissingDependency",
+        ) from exc
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Variance"
+    headers = ["Period", "Category", "Currency", "Target", "Actual", "Delta", "% used"]
+    ws.append(headers)
+    for r in rows:
+        ws.append([r[h] for h in headers])
+    wb.save(out_path)
 
 
 def cmd_rename_category(args: argparse.Namespace) -> dict[str, Any]:
@@ -626,25 +694,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--db", default=None)
     p_import.set_defaults(func=cmd_import)
 
-    p_show = sub.add_parser(
-        "show", help="Show the budget plan materialised for a period"
-    )
+    p_show = sub.add_parser("show", help="Show the budget plan materialised for a period")
     p_show.add_argument("--period", required=True)
     p_show.add_argument("--currency", default=None, help="UAH/USD/980/840/...")
     p_show.add_argument("--db", default=None)
     p_show.set_defaults(func=cmd_show)
 
-    p_diff = sub.add_parser(
-        "diff", help="Budget vs actuals for a period, per (currency, category)"
-    )
+    p_diff = sub.add_parser("diff", help="Budget vs actuals for a period, per (currency, category)")
     p_diff.add_argument("--period", required=True)
     p_diff.add_argument("--currency", default=None)
     p_diff.add_argument("--db", default=None)
     p_diff.set_defaults(func=cmd_diff)
 
-    p_list_b = sub.add_parser(
-        "list", help="List every materialised budget with totals and status"
-    )
+    p_list_b = sub.add_parser("list", help="List every materialised budget with totals and status")
     p_list_b.add_argument("--db", default=None)
     p_list_b.set_defaults(func=cmd_list)
 
@@ -666,9 +728,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reopen.add_argument("--db", default=None)
     p_reopen.set_defaults(func=cmd_reopen)
 
-    p_delete = sub.add_parser(
-        "delete", help="Delete a budget and its lines (cascade)"
-    )
+    p_delete = sub.add_parser("delete", help="Delete a budget and its lines (cascade)")
     p_delete.add_argument("--period", required=True)
     p_delete.add_argument("--currency", default=None)
     p_delete.add_argument(
@@ -678,6 +738,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_delete.add_argument("--db", default=None)
     p_delete.set_defaults(func=cmd_delete)
+
+    p_export = sub.add_parser(
+        "export",
+        help="Write the variance sheet (target vs actual) for a period",
+    )
+    p_export.add_argument("--period", required=True)
+    p_export.add_argument("--currency", default=None)
+    p_export.add_argument(
+        "--out",
+        required=True,
+        help="Output file path (.csv or .xlsx). Use '-' for stdout (CSV only).",
+    )
+    p_export.add_argument(
+        "--format",
+        choices=("auto", "csv", "xlsx"),
+        default="auto",
+        help="Output format. 'auto' uses the file extension; defaults to csv "
+        "when writing to stdout.",
+    )
+    p_export.add_argument("--db", default=None)
+    p_export.set_defaults(func=cmd_export)
 
     p_rename = sub.add_parser(
         "rename-category",

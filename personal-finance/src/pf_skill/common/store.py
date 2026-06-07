@@ -100,9 +100,7 @@ def _read_applied_version(conn: sqlite3.Connection) -> int:
     (locked DB, corrupt DB, read-only filesystem) propagates so the
     caller sees the real cause instead of a misleading 0."""
     try:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(version), 0) FROM pf_schema_version"
-        ).fetchone()
+        row = conn.execute("SELECT COALESCE(MAX(version), 0) FROM pf_schema_version").fetchone()
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc).lower():
             raise
@@ -111,11 +109,7 @@ def _read_applied_version(conn: sqlite3.Connection) -> int:
 
 
 def _load_migration_sql(filename: str) -> str:
-    return (
-        resources.files("pf_skill.schema")
-        .joinpath(filename)
-        .read_text(encoding="utf-8")
-    )
+    return resources.files("pf_skill.schema").joinpath(filename).read_text(encoding="utf-8")
 
 
 def _split_statements(sql: str) -> list[str]:
@@ -221,9 +215,7 @@ def _matches_keyword_at(text: str, i: int, keyword: str) -> bool:
         return False
     if i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_"):
         return False
-    if end < len(text) and (text[end].isalnum() or text[end] == "_"):
-        return False
-    return True
+    return not (end < len(text) and (text[end].isalnum() or text[end] == "_"))
 
 
 def schema_version(conn: sqlite3.Connection) -> int:
