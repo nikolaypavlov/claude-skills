@@ -350,7 +350,11 @@ def summarize_uncategorized(
     ]
 
 
-def list_categories(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def list_categories(
+    conn: sqlite3.Connection,
+    *,
+    include_declared: bool = False,
+) -> list[dict[str, Any]]:
     """Return every category currently assigned to at least one
     transaction, with the count of transactions resolving to it.
 
@@ -361,8 +365,8 @@ def list_categories(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
     Result shape::
 
-        [{"category": "Food", "tx_count": 42},
-         {"category": "Gifts", "tx_count": 3},
+        [{"category": "Food", "tx_count": 42, "declared": false},
+         {"category": "Gifts", "tx_count": 3, "declared": false},
          ...]
 
     Sorted by ``tx_count`` desc, then ``category`` asc for stable
@@ -371,6 +375,12 @@ def list_categories(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     transaction - the goal is "what taxonomy is already in use", which
     is more useful when picking a name for a new rule than the full
     seed set (which can be enumerated via ``pf-rules list`` instead).
+
+    ``include_declared``: when True, also surface entries from
+    ``category_registry`` that have no matching transactions yet. They
+    appear with ``tx_count = 0`` and ``declared = True`` so callers
+    (notably ``pf-budget`` validation) can treat "declared-but-unused"
+    as legitimate without conflating it with "I made up a typo".
     """
     sql = (
         "SELECT category, COUNT(*) AS tx_count FROM ("
@@ -384,8 +394,30 @@ def list_categories(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         "GROUP BY category "
         "ORDER BY tx_count DESC, category ASC"
     )
-    rows = conn.execute(sql)
-    return [{"category": r[0], "tx_count": int(r[1])} for r in rows]
+    in_use_rows = list(conn.execute(sql))
+    results = [
+        {"category": r[0], "tx_count": int(r[1]), "declared": False}
+        for r in in_use_rows
+    ]
+    if not include_declared:
+        return results
+    in_use_names = {r["category"] for r in results}
+    try:
+        declared_rows = list(
+            conn.execute("SELECT category FROM category_registry ORDER BY category ASC")
+        )
+    except sqlite3.OperationalError as exc:
+        # ``category_registry`` was added in migration v2. Surface a
+        # clear error if the table is missing rather than silently
+        # ignoring --include-declared.
+        if "no such table" not in str(exc).lower():
+            raise
+        return results
+    for (name,) in declared_rows:
+        if name in in_use_names:
+            continue
+        results.append({"category": name, "tx_count": 0, "declared": True})
+    return results
 
 
 def find_transactions(
