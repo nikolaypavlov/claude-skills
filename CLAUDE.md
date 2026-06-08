@@ -14,7 +14,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **iCloud MCP** (`icloud-mcp/`) -- Local Rust MCP server for Apple iCloud Calendar (CalDAV via `libdav`) and Mail (IMAP via `async-imap` + `tokio-rustls`). Read + create-only: events can be created; mail can only be saved as drafts via IMAP APPEND (no SMTP). Credentials via `APPLE_ID`/`APPLE_APP_PASSWORD` env vars with macOS Keychain fallback.
 - **Monobank MCP** (`monobank-mcp/`) -- Local Rust MCP server + CLI for the Monobank Personal API. Ingest plugin in the personal-finance design: owns `mono_*` tables in the shared `~/finances/data.db` SQLite store. Tool surface, CLI, and configuration are documented in the "Monobank MCP Development" section below.
 - **Privat24 Skill** (`privat24-skill/`) -- `uv`-managed Python skill that imports Privat24 web-cabinet XLSX statement exports into the shared `~/finances/data.db`. Owns `privat_*` tables. Standalone (works without monobank-mcp or the personal-finance umbrella). Package layout and conventions are in the "Privat24 Skill Development" section below.
-- **Personal Finance** (`personal-finance/`) -- `uv`-managed Python umbrella skill for query / report / categorize over the shared `~/finances/data.db`. Owns `pf_*` tables (categorization rules, manual overrides). Reads `<bank>_transactions` tables via runtime UNION ALL discovery so it works with any subset of ingest plugins installed. Four CLI entry points (`pf-query`, `pf-report`, `pf-categorize`, `pf-rules`) follow the same JSON-output contract as the ingest plugins. Layout and rule-loading conventions are in the "Personal Finance Umbrella Development" section below.
+- **Personal Finance** (`personal-finance/`) -- `uv`-managed Python umbrella skill for query / report / categorize / budget over the shared `~/finances/data.db`. Owns the `pf_*` family of tables (categorization rules + overrides, budgets + drafts, category registry, import audit). Reads `<bank>_transactions` via runtime UNION ALL discovery so it works with any subset of ingest plugins installed. Budget planning is conversation-driven - DB is source of truth, Google Sheets is an on-demand rendered view. Five CLI entry points (`pf-query`, `pf-report`, `pf-categorize`, `pf-rules`, `pf-budget`) follow the same JSON-output contract as the ingest plugins. Layout and rule-loading conventions are in the "Personal Finance Umbrella Development" section below.
 
 **Cross-plugin contract**: `docs/transactions-schema.md` (v1.0) is the row-shape contract that monobank-mcp and privat24-skill follow for their `<bank>_transactions` tables; personal-finance reads through it.
 
@@ -171,43 +171,56 @@ privat24-skill/
 
 ## Personal Finance Umbrella Development
 
-Python skill, `uv`-managed. Read-and-write side of the personal-finance loop: owns `pf_*` tables (categorization rules + manual overrides), reads ingest plugins' `<bank>_transactions` tables through a runtime-discovered UNION ALL view. Four CLI entry points exposed via `[project.scripts]`; SKILL.md tells Claude which one to invoke for each user phrase.
+Python skill, `uv`-managed. Read-and-write side of the personal-finance loop: owns the `pf_*` family of tables (categorization rules + overrides, budgets + drafts, category registry, import audit), reads ingest plugins' `<bank>_transactions` tables through a runtime-discovered UNION ALL view. Five CLI entry points exposed via `[project.scripts]`; SKILL.md tells Claude which one to invoke for each user phrase.
 
 **Build / test:**
 ```bash
 cd personal-finance && uv sync
-uv run pytest -q                          # 116 tests
+uv sync --extra sheets                    # add openpyxl for XLSX paths
+uv run pytest -q
 uv run ruff check src tests
 ```
 
 **Package layout:**
 ```
 personal-finance/
-  pyproject.toml                          # uv-managed; deps: pyyaml; Python >= 3.13
+  pyproject.toml                          # uv-managed; deps: pyyaml;
+                                          # optional [sheets] extra: openpyxl.
+                                          # Python >= 3.13
   skills/personal-finance/SKILL.md        # trigger phrases + invocation cookbook
   commands/categorize.md                  # /personal-finance:categorize workflow
   src/pf_skill/
     query.py        report.py             # read-only CLI entry points
-    categorize.py   rules_cli.py          # write CLI entry points (PR#4)
-    schema/pf_001_initial.sql             # in-package, importlib.resources
+    categorize.py   rules_cli.py
+    budget_cli.py                         # write CLI entry points
+    schema/                               # pf_001 .. pf_005 .sql migrations,
+                                          # in-package via importlib.resources
     rules/{mcc.json,description.yaml}     # bundled seed rules, importlib.resources
     common/
-      store.py     view.py                # SQLite + runtime UNION discovery
+      store.py     view.py                # SQLite + runtime UNION discovery +
+                                          # state-machine SQL splitter
       queries.py   reports.py             # read helpers + report bundle
+                                          # (with auto-attached budget block)
       rules.py     categorizer.py         # 4-source rule loader + apply pass
+      budget.py                           # planning + lifecycle + scanner +
+                                          # CSV/XLSX parsing + family view
       cli.py       currencies.py types.py
   tests/                                  # store / view / queries / reports /
-                                          # rules / categorizer + end-to-end CLI
+                                          # rules / categorizer / budget
+                                          # (schema, import, planning, signals,
+                                          # family, export, lifecycle) +
+                                          # end-to-end CLI
 ```
 
 **Conventions specific to this skill:**
 - Same atomicity contract as the ingest plugins: `isolation_level = None`, explicit `BEGIN`/`COMMIT`, individual `conn.execute` calls (NEVER `executescript`). Rule pass + overrides import are two SEPARATE transactions inside `apply_rules` - both idempotent (`INSERT OR IGNORE` on `tx_category`, `INSERT OR REPLACE` on `category_overrides`) so a crash between them is safe to retry.
-- Rule priority is unified in `common/rules.py::DEFAULT_PRIORITY_BY_FIELD` (description 100 < counterparty 200 < mcc 300 < explicit DB priority). Lower wins; ties broken by source then pattern.
-- `pf-rules add` validates regex via `re.compile` BEFORE the INSERT (MCC patterns skipped - they are exact integer matches). A typo lands as a clean CliError instead of a silently-non-matching rule.
-- `preview_rule` and `apply_rule_by_id` count UNCATEGORIZED rows only - exactly what a subsequent apply would write. Already-categorized transactions show `would_affect_count: 0` even when the pattern matches them.
-- `Rule.matches` swallows `re.error` (returns False, treats as non-match) so a single bad rule in the DB does not break the whole `pf-categorize` pass.
+- Rule priority is unified in `common/rules.py::DEFAULT_PRIORITY_BY_FIELD` (counterparty 100 < description 200 < mcc 300 < explicit DB priority). Lower wins; ties broken by source then pattern. `pf-rules add` validates regex via `re.compile` BEFORE the INSERT (MCC patterns skipped - they are exact integer matches). `Rule.matches` swallows `re.error` so a single bad rule does not break the whole `pf-categorize` pass.
 - Local YAMLs at `$DATA_DIR/rules/counterparty.local.yaml` and `$DATA_DIR/rules/overrides.local.yaml` are gitignored and silently optional. Overrides are UPSERTed into `category_overrides` on every `pf-categorize` run.
-- Output contract is shared across every `pf-*` script: success → JSON stdout exit 0; `CliError` → `{"ok": false, "error": ..., "type": ...}` stderr exit 1; uncaught → traceback + structured error stderr exit 2. `common/cli.py::run_subcommand` is the gate.
+- `common/store.py::_split_statements` is a state-machine SQL splitter that tracks `BEGIN ... END` block depth and single-quoted string literals. It's used by every migration; new migrations with triggers or string-embedded `;` ride on the same code path.
+- Budget data lives in `budget` (one row per `(period, currency_code, status)`), `budget_line`, `budget_draft_edit` (per-draft undo log), `category_registry`, `budget_import_run`. Closed-budget triggers block `budget_line` INSERT/UPDATE/DELETE while parent `status='closed'`. Drafts and active budgets coexist for the same `(period, currency_code)` during planning; `commit_draft` swaps them atomically.
+- Currency semantics: `amount_minor` is in the **account** currency. The summary path joins to `<bank>_accounts.currency_code` rather than reading `<bank>_transactions.currency_code` (which is the operation currency). Foreign-merchant rows on a UAH card stay in UAH totals.
+- Output contract is shared across every `pf-*` script: success → JSON stdout exit 0; `CliError` → `{"ok": false, "error": ..., "type": ..., "details": {...}}` stderr exit 1; uncaught → traceback + structured error stderr exit 2. `common/cli.py::run_subcommand` is the gate. `details` carries structured payloads (e.g. unknown-category suggestions on budget import) for callers to render rich error messages.
+- Budget planning is conversation-driven. The CLI emits structured signals (`pf-budget plan suggest`) for Claude to phrase; Claude records each user decision as a single `plan add/update/remove` call. `pf-budget import` exists as a side-door for bulk migration but is NOT the conversation path - the planning loop uses single-line edits exclusively.
 
 ## Jira Manager Development
 

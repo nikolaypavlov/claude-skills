@@ -2,39 +2,41 @@
 name: personal-finance
 description: |
   Use this skill when the user asks for a financial report, spending
-  summary, category breakdown, or transaction lookup over their personal
-  finance data combined across Monobank and Privat24. Triggers in any
-  of the following shapes (Ukrainian or English):
+  summary, category breakdown, budget plan, or transaction lookup
+  over their personal finance data combined across Monobank and
+  Privat24. Triggers in any of the following shapes (Ukrainian or
+  English):
   - "звіт за <період>", "report for <month>", "spending report"
   - "скільки я витратив", "how much did I spend"
   - "покажи транзакції", "list transactions", "show transactions"
   - "розбий витрати по категоріях", "spending by category"
   - "знайди транзакцію", "find transaction", "пошук по описам"
   - "list accounts", "які в мене рахунки"
+  - "плануємо <місяць>", "plan <month>", "як я по бюджету"
   Reads ~/finances/data.db; needs monobank-mcp (for inline incremental
   sync before reports) and at least one ingest plugin installed.
 allowed-tools: Bash, Read
 ---
 
-# Personal finance: query, report, categorize
+# Personal finance: query, report, categorize, budget
 
 ## Pre-flight before any report or summary
 
 1. Call the MCP tool `mcp__monobank__ensure_synced` with `max_wait_seconds=90` so Mono data is fresh. If the response includes `partial: true`, tell the user up-front ("Mono sync вийшов partial, можу продовжити з тим що є або зачекати - як зручніше?") and let them choose before continuing.
 2. Privat24 has no API. Do NOT try to sync it - the user uploads XLSX exports manually via privat24-skill. Reports use whatever Privat data is already in the store; if `last_sync_ts.privat` in the report bundle looks stale, mention it but do not auto-import.
 
-The pre-flight does NOT apply to "find a transaction" lookups or "list my accounts" - those are cheap and we don't want to add 60-90s of latency for a one-line answer.
+The pre-flight does NOT apply to "find a transaction" lookups, "list my accounts", budget planning, or any `pf-budget plan` operation - those are local and we don't want to add 60-90s of latency for a one-line answer.
 
 ## Invocation form
 
-Entry points are exposed as `[project.scripts]` in the plugin's `pyproject.toml`. Invoke them via `uv run --directory <plugin-root> pf-query ...` / `uv run --directory <plugin-root> pf-report ...`. `<plugin-root>` is wherever the plugin was installed (typically under `~/.claude/plugins/cache/<marketplace>/personal-finance/<version>/`). uv handles the project's venv (`uv sync` on first call as needed).
+Entry points are exposed as `[project.scripts]` in the plugin's `pyproject.toml`. Invoke them via `uv run --directory <plugin-root> pf-query ...` / `uv run --directory <plugin-root> pf-report ...` / etc. `<plugin-root>` is wherever the plugin was installed (typically under `~/.claude/plugins/cache/<marketplace>/personal-finance/<version>/`). uv handles the project's venv (`uv sync` on first call as needed).
 
-## Tool invocations (all read-only in PR#3 scope)
+## Read commands
 
 ### List accounts across all banks
 
 ```bash
-uv run --directory <plugin-root> pf-query accounts
+pf-query accounts
 ```
 
 Returns `{ok, detected_banks, accounts: [{bank, account_id, label, currency_code, ...}]}`. If no ingest plugin has populated tables, you'll see `warning: "no transaction sources detected..."` - tell the user which plugins to install.
@@ -42,7 +44,7 @@ Returns `{ok, detected_banks, accounts: [{bank, account_id, label, currency_code
 ### Filtered transaction list
 
 ```bash
-uv run --directory <plugin-root> pf-query list \
+pf-query list \
   --from 2026-04-01 --to 2026-05-01 \
   [--bank mono|privat] [--account <id>] [--category Food] \
   [--currency UAH] [--limit 500] [--offset 0]
@@ -53,18 +55,18 @@ uv run --directory <plugin-root> pf-query list \
 ### Aggregate by a dimension
 
 ```bash
-uv run --directory <plugin-root> pf-query summarize \
+pf-query summarize \
   --from 2026-04-01 --to 2026-05-01 \
   --group-by category    # or: mcc | counterparty | currency | account | bank
   [--bank mono] [--currency UAH]
 ```
 
-Returns `buckets: [{key, currency_code, total_minor, tx_count}]` sorted by `total_minor` ascending (so the biggest outflows appear first - signed minor units).
+Returns `buckets: [{key, currency_code, total_minor, tx_count}]` sorted by `total_minor` ascending (so the biggest outflows appear first - signed minor units). The `currency_code` is the ACCOUNT's currency, not the operation currency - cross-border purchases (e.g. Patreon on a UAH card) are denominated in the card's currency.
 
 ### Substring search
 
 ```bash
-uv run --directory <plugin-root> pf-query find --query "GLOVO" [--limit 100]
+pf-query find --query "GLOVO" [--limit 100]
 ```
 
 Case-insensitive LIKE over `description` and `counterparty`.
@@ -72,31 +74,32 @@ Case-insensitive LIKE over `description` and `counterparty`.
 ### Enumerate categories in use
 
 ```bash
-uv run --directory <plugin-root> pf-query categories
+pf-query categories [--include-declared]
 ```
 
-Returns `{ok, count, categories: [{category, tx_count}]}` sorted by `tx_count` desc. Use this before proposing a new category name (during categorization, or when answering "what taxonomy am I using?") so suggestions stay consistent with the user's existing categories. Resolution: override beats rule-assigned; categories that exist only in rules but have never matched a transaction are not listed (use `pf-rules list` for those).
+Returns `{ok, count, categories: [{category, tx_count, declared}]}` sorted by `tx_count` desc. With `--include-declared`, categories from `category_registry` that have no matching transactions yet are surfaced with `tx_count: 0, declared: true`. Use this before proposing a new category name so suggestions stay consistent with the user's existing taxonomy.
 
 ### Cluster uncategorized transactions
 
 ```bash
-uv run --directory <plugin-root> pf-query summarize-uncategorized \
+pf-query summarize-uncategorized \
   [--group-by description|counterparty|mcc] \
   [--from <date>] [--to <date>] [--bank mono|privat]
 ```
 
 Returns `buckets: [{key, currency_code, tx_count, total_minor}]` for transactions whose resolved category is NULL. Default grouping is `description`; time bounds are optional (default = all time). Use this in the categorize flow when you need to show the user "here's what needs a rule" without dumping raw rows.
 
-### Full report bundle (for narrative reports)
+### Full report bundle (narrative reports)
 
 ```bash
-uv run --directory <plugin-root> pf-report \
+pf-report \
   --from 2026-04-01 --to 2026-05-01 \
   [--comparison previous-period] \
   [--account <id>] [--bank mono|privat]
 ```
 
 Returns a structured bundle with:
+
 - `period`, `accounts`, `currencies_seen`
 - `transactions[]` for periods up to 90 days; `monthly_buckets[]` + `top_transactions[]` (largest by absolute amount) for longer periods
 - `uncategorized_transactions[]` always (so you can prompt the user to add rules)
@@ -105,7 +108,7 @@ Returns a structured bundle with:
 
 The `comparison` block (when requested) gives `per_currency.current` vs `per_currency.previous` for a symmetrical window immediately before `--from`.
 
-A `budget` block appears automatically when the period covers exactly one calendar month AND a budget has been materialised for it. Shape:
+A `budget` block appears automatically when the period covers exactly one calendar month AND an active budget has been materialised for it:
 
 ```
 "budget": {
@@ -124,9 +127,9 @@ A `budget` block appears automatically when the period covers exactly one calend
 
 `in_budget=false` lines are categories you spent on without planning for - surface them prominently in narrative ("you spent 4.5k on Покупки/Інше not in your June plan").
 
-## Budget planning - conversation-driven flow (v0.6.0+)
+## Budget planning (conversation-driven)
 
-Since v0.6.0, planning a month is a conversation, not a CSV import. The user says "плануємо <month>"; you drive a structured dialogue, recording each decision as a single CLI call against the shared DB. Sheets are exports, not the editing surface.
+Planning a month is a conversation, not a CSV import. The user says "плануємо <month>"; you drive a structured dialogue, recording each decision as a single CLI call against the shared DB. Sheets are exports, not the editing surface.
 
 ### How a planning conversation goes
 
@@ -146,20 +149,22 @@ Since v0.6.0, planning a month is a conversation, not a CSV import. The user say
 
 5. **Confirm and commit.** When the user signals they're done ("Зафіксувати", "Готово"), summarise what's planned, then call `pf-budget plan commit --period YYYY-MM`. The draft replaces any existing active for the same period atomically.
 
-6. **Optional Family export.** Ask "Експортувати для дружини?" Run `pf-budget export --period YYYY-MM --view family --out <path>.xlsx`. Family view has two tabs: `Огляд` (pretty grouped, with SUM formulas) and `Деталі` (full flat list). Do NOT auto-export - only on the user's go-ahead.
+6. **Optional Family export.** Ask "Експортувати для дружини?" Run `pf-budget export --period YYYY-MM --view family --out <path>.xlsx`. Family view has two tabs: `Огляд` (pretty grouped, with SUM formulas so spouse-side edits live-recompute) and `Деталі` (full flat list). Do NOT auto-export - only on the user's go-ahead.
 
 ### Conversation idioms
 
-- "плануємо липень" → start session
-- "так до всього" → apply every batched suggestion
-- "Дружина 18000" → update (composite key resolved from context)
-- "додай $300 на ремонт авто" → add (one_time)
-- "стоп, поверни школу" → undo
-- "забудь все" → cancel
-- "Зафіксувати" / "Готово" → commit
-- "експорт для дружини" → export family
+| User says | Subcommand |
+|---|---|
+| "плануємо липень" | `plan start --period 2026-07` |
+| "так до всього" | apply every batched suggestion |
+| "Дружина 18000" | `plan update` (composite key) |
+| "додай $300 на ремонт авто" | `plan add --currency USD --kind one_time` |
+| "стоп, поверни школу" | `plan undo` |
+| "забудь все" | `plan cancel` |
+| "Зафіксувати" / "Готово" | `plan commit` |
+| "експорт для дружини" | `export --view family` |
 
-### Subcommand reference
+### Planning subcommand reference
 
 ```bash
 pf-budget plan start    --period 2026-07 [--copy-from 2026-06]
@@ -179,46 +184,14 @@ Composite-key addressing (`--category` + `--currency` + `--kind`) must match exa
 
 `pf-budget export --period YYYY-MM --view family --out plan.xlsx` produces a styled workbook:
 
-- **Огляд**: per-currency block with navy header total + light-yellow group headers (Житло / Харчування / ...) + indented line rows with banding. Group subtotals and currency totals are SUM formulas, so if the spouse adjusts a number in Sheets the totals recompute.
+- **Огляд**: per-currency block with navy header total + light-yellow group headers (Житло / Харчування / Транспорт / Підписки / ...) + indented line rows with banding. Group subtotals and currency totals are SUM formulas, so if the spouse adjusts a number in Sheets the totals recompute.
 - **Деталі**: flat table with `Період / Група / Категорія / Валюта / Тип / Сума / Нотатка` for "що це за стаття?".
 
 The Ukrainian renderer maps internal taxonomy keys to display names: `Покупки/Дім` becomes `Покупки → Дім`, `kind=baseline` becomes `звичайне`, etc.
 
-### What NOT to do during a planning conversation
+## Budget read and lifecycle commands
 
-- Do NOT silently register unknown categories - if the user introduces a new category, call `pf-budget register-category` only after explicit confirmation. Once registered, it's in the taxonomy.
-- Do NOT auto-commit the draft. The user's explicit "Зафіксувати" is the only trigger.
-- Do NOT auto-export. Even after commit, ask before generating the Family XLSX.
-- Do NOT mix currencies into a single total in narrative. UAH and USD always stay separate.
-- Do NOT bulk-import via `pf-budget import` during a conversation. That subcommand is for one-shot migration from CSV; the conversation path uses `plan add/update/remove` exclusively.
-
-## Other budget commands (v0.5.0+)
-
-### Import a budget from CSV / XLSX
-
-```bash
-uv run --directory <plugin-root> pf-budget import <file> --period 2026-06 \
-  [--unknown-categories reject|register] \
-  [--dry-run] [--force] [--sheet plans|baseline]
-```
-
-- CSV defaults to the Plans-shape: `Period, Category, Currency, Kind, Amount, Note`.
-- XLSX is read as a two-sheet workbook: `Baseline` + `Plans`; merge happens automatically (Plans rows for `--period` override Baseline rows for the same `(category, currency, kind)`).
-- `--unknown-categories reject` (default) fails with structured payload: each unknown gets up to 3 Levenshtein-closest known categories so the user sees probable typos vs legitimate new categories.
-- `--unknown-categories register` adds every unknown to `category_registry` with `declared_via=budget-import` and proceeds.
-- `--dry-run` validates without writing (no budget rows, no registry rows, no audit log).
-- `--force` overwrites a `status=closed` budget. Rare. Tell the user before doing this.
-
-The unknown-category JSON shape (use it to render a useful prompt back to the user):
-
-```
-{"ok": false, "error": "...", "type": "UnknownCategories",
- "details": {"unknown": [
-    {"category": "Підиски/AI",
-     "suggestions": [{"candidate": "Підписки/AI", "distance": 1}, ...]
-    }, ...
- ]}}
-```
+These are non-planning operations - inspecting, comparing, closing, renaming. Safe to call without an active conversation.
 
 ### Inspect a materialised budget
 
@@ -243,7 +216,7 @@ pf-budget reopen --period 2026-05  [--currency UAH] [--reason "..."]
 pf-budget delete --period 2026-04  [--currency UAH] [--force]
 ```
 
-Closing flips `status='closed'`; subsequent `pf-budget import` for the period refuses without `--force`. `budget_line` mutations on closed budgets are blocked at the trigger level too. Reopen restores `status='active'`.
+Closing flips `status='closed'`; `budget_line` mutations on closed budgets are blocked at the trigger level. Reopen restores `status='active'`. Delete refuses closed budgets without `--force`.
 
 ### Rename a category across tables
 
@@ -252,13 +225,14 @@ pf-budget rename-category --from 'Покупки/Дім' --to 'Покупки/Б
                           --update budget_line,tx_category,categorization_rules,category_overrides,category_registry
 ```
 
-`--update` is a comma-separated subset of allowed tables. Atomic per call. Rename will fail if it would touch a `budget_line` row whose parent budget is closed - reopen first.
+`--update` is a comma-separated subset of allowed tables. Atomic per call. Rename fails if it would touch a `budget_line` row whose parent budget is closed - reopen first.
 
-### Export variance to spreadsheet
+### Export views
 
 ```bash
-pf-budget export --period 2026-06 --out variance.csv  [--currency UAH]
-pf-budget export --period 2026-06 --out variance.xlsx --format auto
+pf-budget export --period 2026-06 --out variance.csv                       # default: variance
+pf-budget export --period 2026-06 --out plan.xlsx     --view plan
+pf-budget export --period 2026-06 --out family.xlsx   --view family        # XLSX only
 ```
 
 CSV uses stdlib; XLSX requires the `sheets` optional dependency (install via `uv pip install pf-skill[sheets]`).
@@ -273,10 +247,50 @@ pf-budget list-categories     [--include-declared]
 
 The registry is the explicit "this category exists" contract. `register-category` is idempotent. `unregister-category` refuses when the category is referenced in `tx_category` / `category_overrides` / `categorization_rules` / `budget_line` (use `--force` only after cleaning up the references).
 
+### Bulk CSV/XLSX import (side door)
+
+`pf-budget import` exists as a one-shot bulk loader - useful when migrating a plan from elsewhere or restoring from a CSV. The conversation path uses `plan add/update/remove` exclusively; do not reach for `import` mid-dialogue.
+
+```bash
+pf-budget import <file> --period 2026-06 \
+  [--unknown-categories reject|register] \
+  [--dry-run] [--force] [--sheet plans|baseline]
+```
+
+Unknown-category JSON shape (use to render typo suggestions back to the user):
+
+```
+{"ok": false, "error": "...", "type": "UnknownCategories",
+ "details": {"unknown": [
+    {"category": "Підиски/AI",
+     "suggestions": [{"candidate": "Підписки/AI", "distance": 1}, ...]
+    }, ...
+ ]}}
+```
+
+## Categorization commands
+
+`pf-categorize` runs the rule pass over uncategorized transactions; `pf-rules` manages the rule table directly.
+
+```bash
+pf-categorize --scope all|last-n-days [--n 30]
+
+pf-rules add --match-field description|counterparty|mcc \
+             --pattern "..." --category "Their/Name" \
+             [--priority N] [--source S] [--apply]
+
+pf-rules apply        --rule-id N [--dry-run]
+pf-rules set-category --tx-id ID --category C
+pf-rules set-override --tx-id ID --category C [--note T]
+pf-rules list         [--enabled-only] [--source S]
+```
+
+Rule priority is lower-wins: seed rules sit at 200-300; user rules need priority `< 100` to override (use 10-20 for clear intent). `pf-rules add --apply` only backfills uncategorized rows - to remap rows already pinned to an old category, use `pf-rules set-category --tx-id <id>`.
+
 ## Output contract
 
 - Success: JSON payload on stdout, exit 0. Parse it directly.
-- Validation / IO / permission error: stderr line is `{"ok": false, "error": "...", "type": "..."}`, exit 1. Read it and explain in plain language.
+- Known failure (bad args, IO, locked DB, unknown categories, ...): single-line JSON on stderr - `{"ok": false, "error": "...", "type": "...", "details": {...}}`, exit 1. Read it and explain in plain language.
 - Uncaught crash: traceback on stderr, exit 2. Tell the user and stop - do NOT retry blindly.
 
 ## Narrative report structure (when user asks for a report)
@@ -289,8 +303,9 @@ After calling `pf-report` and getting the bundle, compose the narrative roughly 
 4. Top counterparties (top 5-10).
 5. Recurring: monthly-cadence outflows that show up across multiple `year_month` buckets in similar amounts.
 6. Anomalies: outsized transactions vs the typical bucket size, new merchants in big categories.
-7. Uncategorized review: walk through `uncategorized_transactions[]`, suggest a category, ask the user to confirm. (Mutation commands land in PR#4.)
-8. Insights: free-form prose.
+7. Budget vs actuals: when the period covers one calendar month and a `budget` block is present, surface overspending and any `in_budget=false` rows.
+8. Uncategorized review: walk through `uncategorized_transactions[]`, propose categories, ask the user to confirm before adding rules.
+9. Insights: free-form prose.
 
 Never invent numbers. If the bundle is empty or partial, say so.
 
@@ -298,7 +313,9 @@ Never invent numbers. If the bundle is empty or partial, say so.
 
 - Do NOT write raw SQL against `~/finances/data.db`. Always go through the `pf-*` scripts so the cross-bank UNION discovery stays consistent.
 - Do NOT touch `mono_*` or `privat_*` tables directly. They are owned by their ingest plugins.
-- Do NOT mix currencies into a single total. Report per-currency. The user's design choice.
-- Do NOT auto-categorize or auto-add rules in PR#3 scope - those commands arrive in PR#4. For now, list the uncategorized transactions and explain that the user will need to categorize them once PR#4 lands.
+- Do NOT mix currencies into a single total in narrative. Report per-currency.
+- Do NOT auto-commit a budget draft. The user's explicit "Зафіксувати" / "Готово" is the only trigger.
+- Do NOT auto-export. Even after commit, ask before generating the Family XLSX.
+- Do NOT silently register unknown categories - run with default `reject` mode first, show the Levenshtein suggestions, and ask before re-running with `register`. Typos look identical to legitimate new categories in the input - the user is the only one who can tell them apart.
+- Do NOT reach for `pf-budget import` during a planning conversation. That subcommand is for bulk migration; the conversation path uses `plan add/update/remove` exclusively.
 - Do NOT delete or move source data files. The query / report paths are read-only; only the budget / rules / categorize paths mutate the `pf_*` and `budget*` tables, and they own only those.
-- Do NOT call `pf-budget import` with `--unknown-categories register` silently. If the user did not approve adding new categories to the registry, run with the default `reject` mode first, show the Levenshtein suggestions, and ask before re-running with `register`. Typos look identical to legitimate new categories in the input - the user is the only one who can tell them apart.

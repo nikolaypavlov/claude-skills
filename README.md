@@ -139,17 +139,18 @@ Python Claude Code skill that imports Privat24 web-cabinet statement exports (XL
 
 ### Personal Finance
 
-Python umbrella skill in the personal-finance family. Queries, reports, and categorizes transactions written by the ingest plugins (`monobank-mcp`, `privat24-skill`) into the shared `~/finances/data.db` SQLite store. Owns `pf_*` tables (categorization rules, manual overrides) and reads `<bank>_transactions` via runtime UNION ALL discovery, so it works with any subset of ingest plugins installed.
+Python umbrella skill in the personal-finance family. Queries, reports, categorizes, and plans budgets over transactions written by the ingest plugins (`monobank-mcp`, `privat24-skill`) into the shared `~/finances/data.db` SQLite store. Owns the `pf_*` family of tables (categorization rules + overrides, budgets + drafts, category registry, import audit) and reads `<bank>_transactions` via runtime UNION ALL discovery, so it works with any subset of ingest plugins installed.
 
 **Features:**
-- 4 CLI entry points: `pf-query` (accounts, list, summarize, find), `pf-report` (full or bucketed bundle with previous-period comparison), `pf-categorize` (rule-based pass over uncategorized rows), `pf-rules` (add, apply, set-category, set-override, list, reload)
-- 4-source rule loader with unified priority (description regex 100 < counterparty 200 < MCC 300 < explicit DB priority); bundled seed rules ship inside the package, user-local YAMLs at `~/finances/rules/` are gitignored and silently optional
+- 5 CLI entry points: `pf-query` (accounts, list, summarize, summarize-uncategorized, categories, find), `pf-report` (full or bucketed bundle with previous-period comparison and auto-attached budget block for single-month windows), `pf-categorize` (rule-based pass over uncategorized rows), `pf-rules` (add, apply, set-category, set-override, list), `pf-budget` (planning + lifecycle + export)
+- Budget planning is conversation-driven - the user says "плануємо <month>" and Claude walks a structured dialogue (`plan start / suggest / add / update / undo / commit`); the DB is the source of truth, Google Sheets is an on-demand rendered view
+- 4-source rule loader with lower-wins priority (counterparty 100 < description 200 < MCC 300 < explicit DB priority); bundled seed rules ship inside the package, user-local YAMLs at `$DATA_DIR/rules/` are gitignored and silently optional
 - Manual overrides are UPSERTed into `category_overrides` on every `pf-categorize` run; rule pass and overrides import are two separate transactions, both idempotent, safe to retry after a crash
-- `pf-rules add` validates regex via `re.compile` BEFORE the INSERT - a typo lands as a clean error instead of a silently non-matching rule
-- Same JSON-on-stdout output contract as the ingest plugins (success exit 0; `CliError` JSON on stderr exit 1; uncaught traceback + structured error exit 2)
-- 116 pytest tests covering store, view discovery, queries, reports, rules, categorizer, and end-to-end CLI
+- Per-currency summaries always denominate `amount_minor` in the account's currency (not the operation currency), so foreign-merchant purchases on a UAH card stay in UAH totals
+- Family export view renders a styled XLSX workbook (`Огляд` + `Деталі`) with Ukrainian labels, grouped categories, and SUM formulas for live spousal edits
+- Same JSON-on-stdout output contract as the ingest plugins (success exit 0; `{"ok": false, ...}` on stderr exit 1; uncaught traceback + structured error exit 2)
 
-**Requirements:** `uv` and Python >= 3.13. At least one ingest plugin (`monobank-mcp` and/or `privat24-skill`) installed and populated; the umbrella is read-only against `<bank>_transactions` tables.
+**Requirements:** `uv` and Python >= 3.13. At least one ingest plugin (`monobank-mcp` and/or `privat24-skill`) installed and populated. The `sheets` optional extra (`uv pip install pf-skill[sheets]`) pulls `openpyxl` for XLSX import/export paths; CSV paths are stdlib.
 
 ## Installation
 
@@ -220,7 +221,7 @@ Once installed, plugins are automatically available in Claude Code.
 
 **Privat24 Skill**: Export the XLSX from Privat24 (open <https://next.privat24.ua/wallet>, click the card, stay on **Історія**, click the **"Експорт у XLS"** icon between the search field and **Фільтр** - see [Exporting a statement](./privat24-skill/README.md#exporting-a-statement) for the click-by-click flow). Drop the file into `~/finances/inbox/` and tell Claude "import privat". The skill runs `privat24-import import-inbox`, dedupes against prior runs by SHA, parses the file, and archives the source under `~/finances/archive/YYYY-MM-DD/`.
 
-**Personal Finance umbrella**: install the `personal-finance` skill alongside one or both ingest plugins. It auto-detects whichever `<bank>_transactions` tables are present; ask Claude things like "звіт за квітень", "скільки витратив на каву минулого місяця", "категоризуй транзакції". See [personal-finance README](./personal-finance/README.md) for the full CLI surface (`pf-query`, `pf-report`, `pf-categorize`, `pf-rules`).
+**Personal Finance umbrella**: install the `personal-finance` skill alongside one or both ingest plugins. It auto-detects whichever `<bank>_transactions` tables are present; ask Claude things like "звіт за квітень", "скільки витратив на каву минулого місяця", "плануємо липень", "як я по бюджету". See [personal-finance README](./personal-finance/README.md) for the full CLI surface (`pf-query`, `pf-report`, `pf-categorize`, `pf-rules`, `pf-budget`).
 
 ## Structure
 
@@ -300,18 +301,21 @@ claude-skills/
 │   ├── tests/                    # 35 pytest tests
 │   └── examples/workflow.md
 ├── personal-finance/             # Personal Finance umbrella plugin (Python)
-│   ├── pyproject.toml            # pyyaml; Python >= 3.13
+│   ├── pyproject.toml            # pyyaml; openpyxl under [sheets] extra; Python >= 3.13
 │   ├── src/pf_skill/
 │   │   ├── query.py report.py    # read CLI entry points
-│   │   ├── categorize.py rules_cli.py  # write CLI entry points
-│   │   ├── schema/               # pf_001_initial.sql + __init__.py
+│   │   ├── categorize.py rules_cli.py budget_cli.py  # write CLI entry points
+│   │   ├── schema/               # pf_001 .. pf_005 migrations + __init__.py
 │   │   ├── rules/                # mcc.json + description.yaml seed
 │   │   └── common/               # store, view, queries, reports, rules,
-│   │                             # categorizer, cli, currencies, types
+│   │                             # categorizer, budget, cli, currencies, types
 │   ├── skills/personal-finance/SKILL.md
 │   ├── commands/categorize.md
 │   ├── examples/                 # backup_db.sh + launchd plist (opt-in)
-│   └── tests/                    # 116 pytest tests
+│   └── tests/                    # pytest suite (store / view / queries /
+│                                 # reports / rules / categorizer /
+│                                 # budget import / planning / export +
+│                                 # end-to-end CLI)
 ├── docs/
 │   ├── transactions-schema.md   # Cross-plugin row-shape contract
 │   └── pre-publish-checklist.md
