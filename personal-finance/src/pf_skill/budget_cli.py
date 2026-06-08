@@ -579,6 +579,159 @@ def _write_variance_xlsx(rows: list[dict[str, Any]], out_path: Path) -> None:
     wb.save(out_path)
 
 
+def _coerce_amount_to_minor(raw: str) -> int:
+    try:
+        return int(round(float(raw) * 100))
+    except (ValueError, TypeError) as exc:
+        raise CliError(f"--amount={raw!r} is not numeric", kind="BadAmount") from exc
+
+
+def cmd_plan_start(args: argparse.Namespace) -> dict[str, Any]:
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            result = bud.start_draft(
+                conn,
+                period=args.period,
+                copy_from=args.copy_from,
+            )
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind, details=exc.details) from exc
+    return result
+
+
+def cmd_plan_commit(args: argparse.Namespace) -> dict[str, Any]:
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            return bud.commit_draft(conn, period=args.period)
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind) from exc
+
+
+def cmd_plan_cancel(args: argparse.Namespace) -> dict[str, Any]:
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            return bud.cancel_draft(conn, period=args.period)
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind) from exc
+
+
+def cmd_plan_show(args: argparse.Namespace) -> dict[str, Any]:
+    """Read the current draft for a period (if any). Falls back to the
+    active budget when no draft is present so the user can use the
+    same command throughout."""
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        drafts = conn.execute(
+            "SELECT id FROM budget WHERE period = ? AND status = 'draft' "
+            + ("AND currency_code = ? " if cur_code is not None else "")
+            + "LIMIT 1",
+            ([args.period, cur_code] if cur_code is not None else [args.period]),
+        ).fetchone()
+        if drafts is not None:
+            # Reuse fetch_budget but filter to drafts only - we want to
+            # see the work-in-progress, not the active twin.
+            blocks = bud.fetch_budget(
+                conn, period=args.period, currency_code=cur_code
+            )
+            draft_blocks = [b for b in blocks if b["status"] == "draft"]
+            return {
+                "ok": True,
+                "period": args.period,
+                "currency": args.currency,
+                "viewing": "draft",
+                "budgets": draft_blocks,
+                "edit_log_size": conn.execute(
+                    "SELECT COUNT(*) FROM budget_draft_edit bde "
+                    "JOIN budget b ON b.id = bde.budget_id "
+                    "WHERE b.period = ? AND b.status = 'draft'",
+                    (args.period,),
+                ).fetchone()[0],
+            }
+        # No draft - fall through to active
+        blocks = bud.fetch_budget(conn, period=args.period, currency_code=cur_code)
+        active_blocks = [b for b in blocks if b["status"] == "active"]
+        return {
+            "ok": True,
+            "period": args.period,
+            "currency": args.currency,
+            "viewing": "active" if active_blocks else "none",
+            "budgets": active_blocks,
+            "edit_log_size": 0,
+        }
+
+
+def cmd_plan_add(args: argparse.Namespace) -> dict[str, Any]:
+    _validate_category_name(args.category)
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    if cur_code is None:
+        raise CliError("--currency is required", kind="BadArgument")
+    amount = _coerce_amount_to_minor(args.amount)
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            return bud.add_line(
+                conn,
+                period=args.period,
+                category=args.category,
+                currency_code=cur_code,
+                kind=args.kind,
+                amount_minor=amount,
+                note=args.note,
+            )
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind) from exc
+
+
+def cmd_plan_update(args: argparse.Namespace) -> dict[str, Any]:
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    amount = (
+        _coerce_amount_to_minor(args.amount) if args.amount is not None else None
+    )
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            return bud.update_line(
+                conn,
+                period=args.period,
+                line_id=args.line_id,
+                category=args.category,
+                currency_code=cur_code,
+                kind=args.kind,
+                amount_minor=amount,
+                note=args.note,
+                note_unset=args.note_unset,
+            )
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind, details=exc.details) from exc
+
+
+def cmd_plan_remove(args: argparse.Namespace) -> dict[str, Any]:
+    cur_code = _parse_currency_or_cli_error(args.currency)
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            return bud.remove_line(
+                conn,
+                period=args.period,
+                line_id=args.line_id,
+                category=args.category,
+                currency_code=cur_code,
+                kind=args.kind,
+            )
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind, details=exc.details) from exc
+
+
+def cmd_plan_undo(args: argparse.Namespace) -> dict[str, Any]:
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        return bud.undo_last(conn, period=args.period)
+
+
 def cmd_rename_category(args: argparse.Namespace) -> dict[str, Any]:
     old = _validate_category_name(args.old)
     new = _validate_category_name(args.new)
@@ -759,6 +912,95 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_export.add_argument("--db", default=None)
     p_export.set_defaults(func=cmd_export)
+
+    # --- plan subcommand group ---------------------------------------
+    p_plan = sub.add_parser(
+        "plan",
+        help="Conversation-driven planning (draft, edit, undo, commit)",
+    )
+    plan_sub = p_plan.add_subparsers(dest="plan_cmd", required=True)
+
+    pps = plan_sub.add_parser(
+        "start", help="Create a draft for the period, copying from prior month"
+    )
+    pps.add_argument("--period", required=True)
+    pps.add_argument(
+        "--copy-from",
+        default=None,
+        help="Source period to copy baseline from. Default: most recent "
+        "active period. Pass empty string to start blank.",
+    )
+    pps.add_argument("--db", default=None)
+    pps.set_defaults(func=cmd_plan_start)
+
+    ppc = plan_sub.add_parser("commit", help="Flip draft to active (atomic replace)")
+    ppc.add_argument("--period", required=True)
+    ppc.add_argument("--db", default=None)
+    ppc.set_defaults(func=cmd_plan_commit)
+
+    ppx = plan_sub.add_parser("cancel", help="Delete the draft for a period")
+    ppx.add_argument("--period", required=True)
+    ppx.add_argument("--db", default=None)
+    ppx.set_defaults(func=cmd_plan_cancel)
+
+    ppshow = plan_sub.add_parser(
+        "show",
+        help="Show the draft (or active when no draft) for a period",
+    )
+    ppshow.add_argument("--period", required=True)
+    ppshow.add_argument("--currency", default=None)
+    ppshow.add_argument("--db", default=None)
+    ppshow.set_defaults(func=cmd_plan_show)
+
+    ppadd = plan_sub.add_parser("add", help="Add a line to the draft")
+    ppadd.add_argument("--period", required=True)
+    ppadd.add_argument("--category", required=True)
+    ppadd.add_argument("--currency", required=True)
+    ppadd.add_argument("--kind", required=True, choices=("baseline", "one_time", "income"))
+    ppadd.add_argument("--amount", required=True, help="Major units, signed (-5300 for outflow)")
+    ppadd.add_argument("--note", default=None)
+    ppadd.add_argument("--db", default=None)
+    ppadd.set_defaults(func=cmd_plan_add)
+
+    ppupd = plan_sub.add_parser("update", help="Update a draft line")
+    ppupd.add_argument("--period", required=True)
+    ppupd.add_argument("--line-id", type=int, default=None)
+    ppupd.add_argument("--category", default=None)
+    ppupd.add_argument("--currency", default=None)
+    ppupd.add_argument(
+        "--kind",
+        default=None,
+        choices=("baseline", "one_time", "income"),
+    )
+    ppupd.add_argument("--amount", default=None, help="New amount (major units)")
+    ppupd.add_argument("--note", default=None)
+    ppupd.add_argument(
+        "--note-unset",
+        action="store_true",
+        help="Explicitly clear the note (use instead of --note '')",
+    )
+    ppupd.add_argument("--db", default=None)
+    ppupd.set_defaults(func=cmd_plan_update)
+
+    pprem = plan_sub.add_parser("remove", help="Remove a draft line")
+    pprem.add_argument("--period", required=True)
+    pprem.add_argument("--line-id", type=int, default=None)
+    pprem.add_argument("--category", default=None)
+    pprem.add_argument("--currency", default=None)
+    pprem.add_argument(
+        "--kind",
+        default=None,
+        choices=("baseline", "one_time", "income"),
+    )
+    pprem.add_argument("--db", default=None)
+    pprem.set_defaults(func=cmd_plan_remove)
+
+    ppundo = plan_sub.add_parser("undo", help="Undo the most recent draft edit")
+    ppundo.add_argument("--period", required=True)
+    ppundo.add_argument("--db", default=None)
+    ppundo.set_defaults(func=cmd_plan_undo)
+
+    # --- end plan group -------------------------------------------------
 
     p_rename = sub.add_parser(
         "rename-category",

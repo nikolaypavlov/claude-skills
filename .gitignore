@@ -83,3 +83,7 @@ data.db-shm
 *.local.*
 inbox/
 archive/
+
+# Local scratch (snapshots of finances DB, draft design docs)
+.backup/
+/budget-design.md
