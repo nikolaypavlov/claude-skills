@@ -14,11 +14,12 @@
 -- ``budget`` in their WHEN clauses, so we drop them before the
 -- table swap and recreate them afterwards.
 --
--- ``defer_foreign_keys`` defers the FK check from
--- ``budget_line.budget_id`` until COMMIT, so the temporary
--- drop-and-rename within the migration transaction is safe.
-
-PRAGMA defer_foreign_keys = ON;
+-- Foreign-key enforcement is OFF for the duration of this migration
+-- (driven by store.py::ensure_pf_schema). Without that, the
+-- ``DROP TABLE budget`` step would fire ``ON DELETE CASCADE`` on
+-- every ``budget_line`` row, wiping the data we're trying to
+-- preserve. ``foreign_key_check`` runs after COMMIT to confirm
+-- nothing is left dangling.
 
 DROP TRIGGER IF EXISTS budget_line_no_insert_when_closed;
 DROP TRIGGER IF EXISTS budget_line_no_update_when_closed;

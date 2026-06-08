@@ -79,6 +79,17 @@ def ensure_pf_schema(conn: sqlite3.Connection) -> None:
     the SELECT raises ``OperationalError: no such table`` which we
     catch (and ONLY that variant) and treat as ``applied = 0``. Other
     operational failures (locked / corrupt / read-only DB) propagate.
+
+    Foreign-key enforcement is toggled OFF around each migration's
+    transaction. This is the only way to safely rebuild a table that
+    has FK references pointing at it: ``DROP TABLE parent`` fires
+    ``ON DELETE CASCADE`` on every child row otherwise, wiping data
+    that the migration intended to preserve. ``defer_foreign_keys``
+    only defers validation - it does NOT suppress cascade actions, so
+    it isn't enough on its own. After each migration commits, we run
+    ``PRAGMA foreign_key_check`` so a bug in the migration SQL
+    (leaving an orphan reference behind) surfaces immediately
+    instead of poisoning future operations.
     """
     applied = _read_applied_version(conn)
     for version, filename in _MIGRATION_FILES:
@@ -86,14 +97,32 @@ def ensure_pf_schema(conn: sqlite3.Connection) -> None:
             continue
         sql = _load_migration_sql(filename)
         statements = _split_statements(sql)
-        conn.execute("BEGIN")
+        fk_was_on = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+        if fk_was_on:
+            conn.execute("PRAGMA foreign_keys = OFF")
         try:
-            for stmt in statements:
-                conn.execute(stmt)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+            conn.execute("BEGIN")
+            try:
+                for stmt in statements:
+                    conn.execute(stmt)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            # After a successful migration, ensure the new schema
+            # leaves no dangling FK references. A migration that
+            # rebuilds a table with FK children needs to either
+            # preserve ids correctly or recreate the children too;
+            # foreign_key_check catches either kind of slip.
+            violations = list(conn.execute("PRAGMA foreign_key_check"))
+            if violations:
+                raise sqlite3.IntegrityError(
+                    f"pf migration {version} ({filename}) left "
+                    f"foreign key violations: {violations}"
+                )
+        finally:
+            if fk_was_on:
+                conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _read_applied_version(conn: sqlite3.Connection) -> int:

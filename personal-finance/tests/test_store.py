@@ -152,6 +152,101 @@ def test_migration_rolls_back_on_failure(
         conn.close()
 
 
+def test_v5_rebuild_preserves_budget_line_data(empty_db: Path) -> None:
+    """Regression test for the migration v5 cascade bug.
+
+    Migration v5 rebuilds the ``budget`` table to loosen the UNIQUE
+    constraint. ``budget_line`` has ``ON DELETE CASCADE`` against
+    ``budget(id)``, so the ``DROP TABLE budget`` step inside the
+    migration would wipe every ``budget_line`` row unless foreign
+    keys are disabled for the duration of the migration. The fix
+    landed in ``ensure_pf_schema``: it toggles ``PRAGMA
+    foreign_keys = OFF`` around each migration's transaction. This
+    test simulates the actual upgrade path by inserting data after
+    v4 then triggering v5, and asserts that the lines survive.
+    """
+    # Apply migrations up through v4 by hand.
+    conn = sqlite3.connect(empty_db)
+    conn.isolation_level = None
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        # Snapshot the real migration list, then truncate to v4.
+        original = store._MIGRATION_FILES
+        try:
+            store._MIGRATION_FILES = [m for m in original if m[0] <= 4]
+            ensure_pf_schema(conn)
+        finally:
+            store._MIGRATION_FILES = original
+        # Seed a budget + child lines under the v4 schema.
+        conn.execute(
+            "INSERT INTO budget (period, currency_code, status, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("2026-06", 980, "active", 1700000000),
+        )
+        budget_id = conn.execute(
+            "SELECT id FROM budget WHERE period = '2026-06'"
+        ).fetchone()[0]
+        for category, amount in (("Test/A", -100), ("Test/B", -200), ("Test/C", -300)):
+            conn.execute(
+                "INSERT INTO budget_line (budget_id, category, amount_minor, kind) "
+                "VALUES (?, ?, ?, ?)",
+                (budget_id, category, amount, "baseline"),
+            )
+        before_lines = conn.execute(
+            "SELECT COUNT(*) FROM budget_line"
+        ).fetchone()[0]
+        assert before_lines == 3
+        # Now run the full migration list - v5 will rebuild the table.
+        ensure_pf_schema(conn)
+        after_lines = conn.execute(
+            "SELECT COUNT(*) FROM budget_line WHERE budget_id = ?", (budget_id,)
+        ).fetchone()[0]
+        assert after_lines == 3, "v5 rebuild dropped budget_line via cascade"
+        # And the new UNIQUE constraint is in place: a draft for the
+        # same (period, currency) coexists with the active row.
+        conn.execute(
+            "INSERT INTO budget (period, currency_code, status, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("2026-06", 980, "draft", 1700100000),
+        )
+    finally:
+        conn.close()
+
+
+def test_migration_runner_catches_orphan_fk(
+    empty_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A migration that leaves a dangling FK reference must fail at
+    the foreign_key_check gate after COMMIT. This regression-tests
+    the safety net we added alongside disabling FK during the
+    transaction."""
+    bad_sql = (
+        "CREATE TABLE pf_schema_version "
+        "(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);\n"
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY);\n"
+        "CREATE TABLE child (id INTEGER PRIMARY KEY, "
+        " parent_id INTEGER NOT NULL REFERENCES parent(id));\n"
+        "INSERT INTO parent (id) VALUES (1);\n"
+        "INSERT INTO child (id, parent_id) VALUES (10, 1);\n"
+        # The migration intentionally orphans the child: drop the parent
+        # row but leave the child's reference behind. With FKs disabled
+        # during the tx this INSERT/DELETE pair commits cleanly; the
+        # safety net should fire afterwards.
+        "DELETE FROM parent WHERE id = 1;\n"
+        "INSERT INTO pf_schema_version VALUES (1, 0);\n"
+    )
+    monkeypatch.setattr(store, "_load_migration_sql", lambda _name: bad_sql)
+    monkeypatch.setattr(store, "_MIGRATION_FILES", [(1, "bad.sql")])
+    conn = sqlite3.connect(empty_db)
+    conn.isolation_level = None
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError, match="foreign key violations"):
+            ensure_pf_schema(conn)
+    finally:
+        conn.close()
+
+
 def test_default_db_path_honours_env(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
