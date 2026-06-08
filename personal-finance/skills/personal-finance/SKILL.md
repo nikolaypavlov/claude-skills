@@ -124,9 +124,75 @@ A `budget` block appears automatically when the period covers exactly one calend
 
 `in_budget=false` lines are categories you spent on without planning for - surface them prominently in narrative ("you spent 4.5k on Покупки/Інше not in your June plan").
 
-## Budget commands
+## Budget planning - conversation-driven flow (v0.6.0+)
 
-Available since v0.5.0. Read shapes (`show`, `diff`, `list`) are safe to call without sync; mutating commands write to ``budget`` / ``budget_line`` / ``category_registry`` / ``budget_import_run`` tables in the shared store.
+Since v0.6.0, planning a month is a conversation, not a CSV import. The user says "плануємо <month>"; you drive a structured dialogue, recording each decision as a single CLI call against the shared DB. Sheets are exports, not the editing surface.
+
+### How a planning conversation goes
+
+1. **Start the session.** Call `pf-budget plan start --period YYYY-MM`. Behaviour:
+   - If `existing_draft: true`, ask the user: continue / cancel / merge. Do NOT silently continue.
+   - Otherwise the draft is created by copying `kind=baseline` lines from the most recent prior active month. `copied_from` is in the response.
+
+2. **Gather suggestions.** Call `pf-budget plan suggest --period YYYY-MM`. This returns history signals - seasonal gaps, monotonic trends, quarterly cadences, one-off deviations, excluded one_time items. Phrase them back as a small batch. Example:
+   > Стартую з червневого baseline. Помітив 3 речі:
+   > 1. Школа (15 600) - у червні був останній платіж. У липні-серпні зазвичай 0?
+   > 2. Зарядка авто в червні була пів місяця через відпустку - повертаємо до 3 000?
+   > 3. Готелі (27k) - one-time відпустки, виключаю з шаблону.
+
+3. **Walk through the dialogue.** When the user replies with a number (e.g. "Дружина 18000"), translate to `pf-budget plan update`. When they confirm a batch, apply all those changes. When they introduce a new category, call `pf-budget plan add`. When they say "стоп, поверни X" or "передумав", call `pf-budget plan undo`. When they say "забудь все" or "почнемо спочатку", call `pf-budget plan cancel`.
+
+4. **Multi-currency in one session.** The user can say "додай $300 на ремонт авто" and you call `pf-budget plan add --currency USD ...` on the same period's draft. The CLI creates the USD draft budget on demand. The user thinks of it as one plan.
+
+5. **Confirm and commit.** When the user signals they're done ("Зафіксувати", "Готово"), summarise what's planned, then call `pf-budget plan commit --period YYYY-MM`. The draft replaces any existing active for the same period atomically.
+
+6. **Optional Family export.** Ask "Експортувати для дружини?" Run `pf-budget export --period YYYY-MM --view family --out <path>.xlsx`. Family view has two tabs: `Огляд` (pretty grouped, with SUM formulas) and `Деталі` (full flat list). Do NOT auto-export - only on the user's go-ahead.
+
+### Conversation idioms
+
+- "плануємо липень" → start session
+- "так до всього" → apply every batched suggestion
+- "Дружина 18000" → update (composite key resolved from context)
+- "додай $300 на ремонт авто" → add (one_time)
+- "стоп, поверни школу" → undo
+- "забудь все" → cancel
+- "Зафіксувати" / "Готово" → commit
+- "експорт для дружини" → export family
+
+### Subcommand reference
+
+```bash
+pf-budget plan start    --period 2026-07 [--copy-from 2026-06]
+pf-budget plan suggest  --period 2026-07 [--lookback 6]
+pf-budget plan add      --period 2026-07 --category X --currency UAH --kind baseline --amount -9000 [--note]
+pf-budget plan update   --period 2026-07 --category X --currency UAH --kind baseline --amount -10000
+pf-budget plan remove   --period 2026-07 --category X --currency UAH --kind baseline
+pf-budget plan undo     --period 2026-07
+pf-budget plan show     --period 2026-07 [--currency UAH]    # shows draft if any, else active
+pf-budget plan commit   --period 2026-07
+pf-budget plan cancel   --period 2026-07
+```
+
+Composite-key addressing (`--category` + `--currency` + `--kind`) must match exactly one line. When multiple match (e.g. several `one_time` hotels in one month), the response includes `candidate_line_ids` in `details`; re-issue with `--line-id <N>`.
+
+### Family export shape
+
+`pf-budget export --period YYYY-MM --view family --out plan.xlsx` produces a styled workbook:
+
+- **Огляд**: per-currency block with navy header total + light-yellow group headers (Житло / Харчування / ...) + indented line rows with banding. Group subtotals and currency totals are SUM formulas, so if the spouse adjusts a number in Sheets the totals recompute.
+- **Деталі**: flat table with `Період / Група / Категорія / Валюта / Тип / Сума / Нотатка` for "що це за стаття?".
+
+The Ukrainian renderer maps internal taxonomy keys to display names: `Покупки/Дім` becomes `Покупки → Дім`, `kind=baseline` becomes `звичайне`, etc.
+
+### What NOT to do during a planning conversation
+
+- Do NOT silently register unknown categories - if the user introduces a new category, call `pf-budget register-category` only after explicit confirmation. Once registered, it's in the taxonomy.
+- Do NOT auto-commit the draft. The user's explicit "Зафіксувати" is the only trigger.
+- Do NOT auto-export. Even after commit, ask before generating the Family XLSX.
+- Do NOT mix currencies into a single total in narrative. UAH and USD always stay separate.
+- Do NOT bulk-import via `pf-budget import` during a conversation. That subcommand is for one-shot migration from CSV; the conversation path uses `plan add/update/remove` exclusively.
+
+## Other budget commands (v0.5.0+)
 
 ### Import a budget from CSV / XLSX
 

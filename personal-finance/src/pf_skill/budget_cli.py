@@ -502,15 +502,16 @@ def cmd_delete(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_export(args: argparse.Namespace) -> dict[str, Any]:
-    """Write the variance sheet (target vs actual) to a CSV or XLSX
-    file. The CLI accepts ``--out -`` to dump CSV to stdout instead
-    of writing to a file - useful when piping into ``pbcopy`` for a
-    quick paste into Sheets.
+    """Write a budget view (variance / family / plan) to CSV or XLSX.
+
+    Views:
+      - ``variance``: target vs actual per category (default)
+      - ``family``:  pretty-printed grouped view for non-technical
+                     readers (the user's spouse). XLSX only.
+      - ``plan``:    raw plan dump - what's in the active budget.
     """
     cur_code = _parse_currency_or_cli_error(args.currency)
     db_path = resolve_db_path(args.db)
-    with closing(open_db(db_path)) as conn:
-        rows = bud.export_variance_rows(conn, period=args.period, currency_code=cur_code)
     fmt = args.format
     out_path: Path | None = None if args.out == "-" else Path(args.out).expanduser()
     if out_path is not None and fmt == "auto":
@@ -518,21 +519,282 @@ def cmd_export(args: argparse.Namespace) -> dict[str, Any]:
     elif fmt == "auto":
         fmt = "csv"
 
-    if fmt == "csv":
-        _write_variance_csv(rows, out_path)
-    elif fmt == "xlsx":
-        if out_path is None:
-            raise CliError("--out - not supported for xlsx format", kind="BadArgument")
-        _write_variance_xlsx(rows, out_path)
-    else:
-        raise CliError(f"unsupported --format {fmt!r}", kind="BadArgument")
+    with closing(open_db(db_path)) as conn:
+        if args.view == "variance":
+            rows = bud.export_variance_rows(conn, period=args.period, currency_code=cur_code)
+            row_count = len(rows)
+            if fmt == "csv":
+                _write_variance_csv(rows, out_path)
+            elif fmt == "xlsx":
+                if out_path is None:
+                    raise CliError("--out - not supported for xlsx", kind="BadArgument")
+                _write_variance_xlsx(rows, out_path)
+            else:
+                raise CliError(f"unsupported --format {fmt!r}", kind="BadArgument")
+        elif args.view == "family":
+            if fmt != "xlsx":
+                raise CliError(
+                    "family view requires --format xlsx (pretty styling depends on it)",
+                    kind="BadArgument",
+                )
+            if out_path is None:
+                raise CliError("--out - not supported for family view", kind="BadArgument")
+            data = bud.family_view_rows(conn, period=args.period)
+            row_count = sum(len(g["lines"]) for c in data["currencies"] for g in c["groups"])
+            _write_family_xlsx(data, out_path)
+        elif args.view == "plan":
+            blocks = bud.fetch_budget(conn, period=args.period, currency_code=cur_code)
+            # Show only active budgets in the plan view; drafts go
+            # through `pf-budget plan show`.
+            active_only = [b for b in blocks if b["status"] == "active"]
+            rows = []
+            from .common.currencies import alpha_for
+
+            for b in active_only:
+                cur_alpha = alpha_for(b["currency_code"]) or str(b["currency_code"])
+                for line in b["lines"]:
+                    rows.append(
+                        {
+                            "Period": args.period,
+                            "Category": line["category"],
+                            "Currency": cur_alpha,
+                            "Kind": line["kind"],
+                            "Amount": line["amount_minor"] / 100.0,
+                            "Note": line["note"] or "",
+                        }
+                    )
+            row_count = len(rows)
+            if fmt == "csv":
+                _write_plan_csv(rows, out_path)
+            elif fmt == "xlsx":
+                if out_path is None:
+                    raise CliError("--out - not supported for xlsx", kind="BadArgument")
+                _write_plan_xlsx(rows, out_path)
+            else:
+                raise CliError(f"unsupported --format {fmt!r}", kind="BadArgument")
+        else:
+            raise CliError(
+                f"unsupported --view {args.view!r}; expected variance / family / plan",
+                kind="BadArgument",
+            )
+
     return {
         "ok": True,
         "period": args.period,
+        "view": args.view,
         "format": fmt,
         "out": str(out_path) if out_path else "-",
-        "rows": len(rows),
+        "rows": row_count,
     }
+
+
+def _write_plan_csv(rows: list[dict[str, Any]], out_path: Path | None) -> None:
+    import csv as _csv
+
+    headers = ["Period", "Category", "Currency", "Kind", "Amount", "Note"]
+    target = out_path.open("w", encoding="utf-8", newline="") if out_path else None
+    if target is None:
+        return  # stdout path not exercised
+    try:
+        writer = _csv.DictWriter(target, fieldnames=headers)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+    finally:
+        target.close()
+
+
+def _write_plan_xlsx(rows: list[dict[str, Any]], out_path: Path) -> None:
+    try:
+        from openpyxl import Workbook
+    except ImportError as exc:
+        raise CliError(
+            "openpyxl required for xlsx export; install pf-skill[sheets] or use --format csv",
+            kind="MissingDependency",
+        ) from exc
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Plan"
+    headers = ["Period", "Category", "Currency", "Kind", "Amount", "Note"]
+    ws.append(headers)
+    for r in rows:
+        ws.append([r[h] for h in headers])
+    wb.save(out_path)
+
+
+def _write_family_xlsx(data: dict[str, Any], out_path: Path) -> None:
+    """Render the Family view as a styled XLSX.
+
+    Two sheets:
+      - ``Огляд``: grouped pretty view with SUM formulas so totals
+        recompute if the spouse adjusts a number in Sheets.
+      - ``Деталі``: full flat list with notes for "що це за стаття?"
+    """
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    except ImportError as exc:
+        raise CliError(
+            "openpyxl required for family view; install pf-skill[sheets]",
+            kind="MissingDependency",
+        ) from exc
+
+    wb = Workbook()
+    overview = wb.active
+    overview.title = "Огляд"
+    details = wb.create_sheet("Деталі")
+
+    HEADER_FONT = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
+    HEADER_FILL = PatternFill("solid", fgColor="1F4E79")  # navy
+    GROUP_FONT = Font(name="Calibri", size=11, bold=True, color="000000")
+    GROUP_FILL = PatternFill("solid", fgColor="FFF2CC")  # light yellow
+    SUBTOTAL_FONT = Font(name="Calibri", size=11, bold=True, italic=True)
+    BAND = PatternFill("solid", fgColor="F5F5F5")
+    THIN = Side(border_style="thin", color="B0B0B0")
+    BOX = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+
+    # ---- Overview sheet ----
+    row = 1
+    period_cell = overview.cell(row=row, column=1, value=f"Бюджет на період {data['period']}")
+    period_cell.font = Font(size=16, bold=True)
+    overview.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+    row += 2
+
+    for currency in data["currencies"]:
+        # Currency header
+        cur_cell = overview.cell(
+            row=row,
+            column=1,
+            value=f"{currency['alpha']} - заплановано",
+        )
+        cur_cell.font = HEADER_FONT
+        cur_cell.fill = HEADER_FILL
+        cur_cell.alignment = Alignment(horizontal="left", vertical="center")
+        overview.cell(row=row, column=2).fill = HEADER_FILL
+        # Currency total cell uses SUM over the group subtotal column we'll fill
+        cur_total_cell = overview.cell(row=row, column=3, value=0)
+        cur_total_cell.font = HEADER_FONT
+        cur_total_cell.fill = HEADER_FILL
+        cur_total_cell.alignment = Alignment(horizontal="right", vertical="center")
+        cur_total_first_subtotal_row: int | None = None
+        cur_total_last_subtotal_row: int | None = None
+        row += 1
+
+        for group in currency["groups"]:
+            group_start_row = row + 1  # lines start one below the group header
+            # Group header row
+            gh = overview.cell(row=row, column=1, value=f"  {group['title']}")
+            gh.font = GROUP_FONT
+            gh.fill = GROUP_FILL
+            overview.cell(row=row, column=2).fill = GROUP_FILL
+            subtotal_cell = overview.cell(row=row, column=3, value=0)
+            subtotal_cell.font = SUBTOTAL_FONT
+            subtotal_cell.fill = GROUP_FILL
+            subtotal_cell.number_format = "#,##0.00;[Red]-#,##0.00"
+            subtotal_cell.alignment = Alignment(horizontal="right")
+            group_header_row = row
+            row += 1
+
+            for i, line in enumerate(group["lines"]):
+                line_label_cell = overview.cell(
+                    row=row, column=1, value=f"      {line['category_display']}"
+                )
+                amt_cell = overview.cell(row=row, column=3, value=line["amount_major"])
+                amt_cell.number_format = "#,##0.00;[Red]-#,##0.00"
+                amt_cell.alignment = Alignment(horizontal="right")
+                if i % 2 == 1:
+                    line_label_cell.fill = BAND
+                    overview.cell(row=row, column=2).fill = BAND
+                    amt_cell.fill = BAND
+                row += 1
+
+            # SUM formula for the group subtotal
+            if row - 1 >= group_start_row:
+                subtotal_cell.value = f"=SUM(C{group_start_row}:C{row - 1})"
+            if cur_total_first_subtotal_row is None:
+                cur_total_first_subtotal_row = group_header_row
+            cur_total_last_subtotal_row = group_header_row
+            row += 1  # blank line between groups
+
+        # Currency total = sum of all subtotal cells in this currency block
+        if cur_total_first_subtotal_row is not None and cur_total_last_subtotal_row is not None:
+            # Each group subtotal lives at column C of group_header_row.
+            # Use a range that includes only those rows. Simplest: build
+            # a comma-separated list of cells since they're not contiguous.
+            cell_refs = []
+            scan_row = cur_total_first_subtotal_row
+            while scan_row <= cur_total_last_subtotal_row:
+                cell_refs.append(f"C{scan_row}")
+                # Move to the next group header: skip past lines + blank row
+                # Find next non-empty C cell that's a subtotal (formula) -
+                # simpler heuristic: just walk row by row and look for cells
+                # whose value starts with '=SUM(' below us.
+                scan_row += 1
+                while scan_row <= cur_total_last_subtotal_row:
+                    val = overview.cell(row=scan_row, column=3).value
+                    if isinstance(val, str) and val.startswith("=SUM("):
+                        break
+                    scan_row += 1
+            cur_total_cell.value = "=" + "+".join(cell_refs) if cell_refs else 0
+            cur_total_cell.number_format = "#,##0.00;[Red]-#,##0.00"
+
+        row += 2  # spacing before next currency
+
+    # Column widths for overview
+    overview.column_dimensions["A"].width = 38
+    overview.column_dimensions["B"].width = 4
+    overview.column_dimensions["C"].width = 16
+    overview.freeze_panes = "A4"
+
+    # ---- Details sheet ----
+    headers = ["Період", "Група", "Категорія", "Валюта", "Тип", "Сума", "Нотатка"]
+    details.append(headers)
+    for col_idx in range(1, len(headers) + 1):
+        c = details.cell(row=1, column=col_idx)
+        c.font = HEADER_FONT
+        c.fill = HEADER_FILL
+        c.alignment = Alignment(horizontal="left", vertical="center")
+        c.border = BOX
+    details.freeze_panes = "A2"
+
+    for currency in data["currencies"]:
+        for group in currency["groups"]:
+            for line in group["lines"]:
+                # Map kinds list to a single human label
+                kinds = line.get("kinds", [])
+                if kinds == ["baseline"]:
+                    kind_label = "звичайне"
+                elif kinds == ["one_time"]:
+                    kind_label = "одноразове"
+                elif kinds == ["income"]:
+                    kind_label = "дохід"
+                elif set(kinds) == {"baseline", "one_time"}:
+                    kind_label = "звичайне + одноразове"
+                else:
+                    kind_label = ", ".join(kinds)
+                details.append(
+                    [
+                        data["period"],
+                        group["title"],
+                        line["category_display"],
+                        currency["alpha"],
+                        kind_label,
+                        line["amount_major"],
+                        line.get("note") or "",
+                    ]
+                )
+
+    widths = {"A": 10, "B": 18, "C": 36, "D": 8, "E": 22, "F": 14, "G": 40}
+    for col, w in widths.items():
+        details.column_dimensions[col].width = w
+    # Amount column formatting in Details
+    for r in range(2, details.max_row + 1):
+        details.cell(row=r, column=6).number_format = "#,##0.00;[Red]-#,##0.00"
+
+    # Total at top of Overview - link to TOTAL.
+    # (Already populated as we walked groups.)
+
+    wb.save(out_path)
 
 
 def _write_variance_csv(rows: list[dict[str, Any]], out_path: Path | None) -> None:
@@ -634,9 +896,7 @@ def cmd_plan_show(args: argparse.Namespace) -> dict[str, Any]:
         if drafts is not None:
             # Reuse fetch_budget but filter to drafts only - we want to
             # see the work-in-progress, not the active twin.
-            blocks = bud.fetch_budget(
-                conn, period=args.period, currency_code=cur_code
-            )
+            blocks = bud.fetch_budget(conn, period=args.period, currency_code=cur_code)
             draft_blocks = [b for b in blocks if b["status"] == "draft"]
             return {
                 "ok": True,
@@ -688,9 +948,7 @@ def cmd_plan_add(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_plan_update(args: argparse.Namespace) -> dict[str, Any]:
     cur_code = _parse_currency_or_cli_error(args.currency)
-    amount = (
-        _coerce_amount_to_minor(args.amount) if args.amount is not None else None
-    )
+    amount = _coerce_amount_to_minor(args.amount) if args.amount is not None else None
     db_path = resolve_db_path(args.db)
     with closing(open_db(db_path)) as conn:
         try:
@@ -730,6 +988,28 @@ def cmd_plan_undo(args: argparse.Namespace) -> dict[str, Any]:
     db_path = resolve_db_path(args.db)
     with closing(open_db(db_path)) as conn:
         return bud.undo_last(conn, period=args.period)
+
+
+def cmd_plan_suggest(args: argparse.Namespace) -> dict[str, Any]:
+    """Return suggestion signals from the history scanner. Claude
+    phrases them back to the user; the CLI just emits the structured
+    facts."""
+    db_path = resolve_db_path(args.db)
+    with closing(open_db(db_path)) as conn:
+        try:
+            signals = bud.scan_history_for_signals(
+                conn,
+                target_period=args.period,
+                lookback_months=args.lookback,
+            )
+        except bud.BudgetParseError as exc:
+            raise CliError(str(exc), kind=exc.kind) from exc
+    return {
+        "ok": True,
+        "period": args.period,
+        "lookback_months": args.lookback,
+        "signals": signals,
+    }
 
 
 def cmd_rename_category(args: argparse.Namespace) -> dict[str, Any]:
@@ -894,7 +1174,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_export = sub.add_parser(
         "export",
-        help="Write the variance sheet (target vs actual) for a period",
+        help="Write a budget view (variance / family / plan) for a period",
     )
     p_export.add_argument("--period", required=True)
     p_export.add_argument("--currency", default=None)
@@ -909,6 +1189,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Output format. 'auto' uses the file extension; defaults to csv "
         "when writing to stdout.",
+    )
+    p_export.add_argument(
+        "--view",
+        choices=("variance", "family", "plan"),
+        default="variance",
+        help="What to export. 'variance' (default): target vs actual. "
+        "'family': pretty grouped view for non-technical readers (xlsx only). "
+        "'plan': raw active-budget dump.",
     )
     p_export.add_argument("--db", default=None)
     p_export.set_defaults(func=cmd_export)
@@ -999,6 +1287,20 @@ def _build_parser() -> argparse.ArgumentParser:
     ppundo.add_argument("--period", required=True)
     ppundo.add_argument("--db", default=None)
     ppundo.set_defaults(func=cmd_plan_undo)
+
+    ppsug = plan_sub.add_parser(
+        "suggest",
+        help="Scan prior months and return planning hints for the period",
+    )
+    ppsug.add_argument("--period", required=True)
+    ppsug.add_argument(
+        "--lookback",
+        type=int,
+        default=6,
+        help="How many months of history to scan (default 6)",
+    )
+    ppsug.add_argument("--db", default=None)
+    ppsug.set_defaults(func=cmd_plan_suggest)
 
     # --- end plan group -------------------------------------------------
 

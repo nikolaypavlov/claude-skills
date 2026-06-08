@@ -161,17 +161,31 @@ def test_update_line_ambiguous_composite_requires_line_id(empty_db: Path) -> Non
     bud.start_draft(conn, period="2026-07", copy_from="")
     # Two one_time lines with the same category - vacation hotels
     bud.add_line(
-        conn, period="2026-07", category="Подорожі/Готелі",
-        currency_code=980, kind="one_time", amount_minor=-13000, note="IF",
+        conn,
+        period="2026-07",
+        category="Подорожі/Готелі",
+        currency_code=980,
+        kind="one_time",
+        amount_minor=-13000,
+        note="IF",
     )
     bud.add_line(
-        conn, period="2026-07", category="Подорожі/Готелі",
-        currency_code=980, kind="one_time", amount_minor=-12600, note="Lviv",
+        conn,
+        period="2026-07",
+        category="Подорожі/Готелі",
+        currency_code=980,
+        kind="one_time",
+        amount_minor=-12600,
+        note="Lviv",
     )
     with pytest.raises(bud.BudgetParseError, match="match composite key"):
         bud.update_line(
-            conn, period="2026-07", category="Подорожі/Готелі",
-            currency_code=980, kind="one_time", amount_minor=-99999,
+            conn,
+            period="2026-07",
+            category="Подорожі/Готелі",
+            currency_code=980,
+            kind="one_time",
+            amount_minor=-99999,
         )
     conn.close()
 
@@ -180,8 +194,12 @@ def test_undo_reverses_add(empty_db: Path) -> None:
     conn = open_db(empty_db)
     bud.start_draft(conn, period="2026-07", copy_from="")
     bud.add_line(
-        conn, period="2026-07", category="Х", currency_code=980,
-        kind="baseline", amount_minor=-100,
+        conn,
+        period="2026-07",
+        category="Х",
+        currency_code=980,
+        kind="baseline",
+        amount_minor=-100,
     )
     result = bud.undo_last(conn, period="2026-07")
     n_lines = conn.execute("SELECT COUNT(*) FROM budget_line").fetchone()[0]
@@ -196,8 +214,12 @@ def test_undo_reverses_update(empty_db: Path) -> None:
     conn = open_db(empty_db)
     bud.start_draft(conn, period="2026-07")
     bud.update_line(
-        conn, period="2026-07", category="X", currency_code=980,
-        kind="baseline", amount_minor=-9999,
+        conn,
+        period="2026-07",
+        category="X",
+        currency_code=980,
+        kind="baseline",
+        amount_minor=-9999,
     )
     bud.undo_last(conn, period="2026-07")
     amt = conn.execute(
@@ -213,9 +235,7 @@ def test_undo_reverses_remove(empty_db: Path) -> None:
     _seed_active(empty_db, "2026-06", ("X", 980, "baseline", -100))
     conn = open_db(empty_db)
     bud.start_draft(conn, period="2026-07")
-    bud.remove_line(
-        conn, period="2026-07", category="X", currency_code=980, kind="baseline"
-    )
+    bud.remove_line(conn, period="2026-07", category="X", currency_code=980, kind="baseline")
     bud.undo_last(conn, period="2026-07")
     n = conn.execute(
         "SELECT COUNT(*) FROM budget_line bl "
@@ -241,17 +261,17 @@ def test_commit_draft_promotes_to_active(empty_db: Path) -> None:
     conn = open_db(empty_db)
     bud.start_draft(conn, period="2026-07", copy_from="")
     bud.add_line(
-        conn, period="2026-07", category="X", currency_code=980,
-        kind="baseline", amount_minor=-100,
+        conn,
+        period="2026-07",
+        category="X",
+        currency_code=980,
+        kind="baseline",
+        amount_minor=-100,
     )
     result = bud.commit_draft(conn, period="2026-07")
     assert result["committed"][0]["replaced_active_id"] is None
-    status = conn.execute(
-        "SELECT status FROM budget WHERE period = '2026-07'"
-    ).fetchone()[0]
-    log = conn.execute(
-        "SELECT COUNT(*) FROM budget_draft_edit"
-    ).fetchone()[0]
+    status = conn.execute("SELECT status FROM budget WHERE period = '2026-07'").fetchone()[0]
+    log = conn.execute("SELECT COUNT(*) FROM budget_draft_edit").fetchone()[0]
     conn.close()
     assert status == "active"
     assert log == 0  # edit log cleared on commit
@@ -262,8 +282,12 @@ def test_commit_replaces_existing_active(empty_db: Path) -> None:
     conn = open_db(empty_db)
     bud.start_draft(conn, period="2026-07", copy_from="")
     bud.add_line(
-        conn, period="2026-07", category="New", currency_code=980,
-        kind="baseline", amount_minor=-100,
+        conn,
+        period="2026-07",
+        category="New",
+        currency_code=980,
+        kind="baseline",
+        amount_minor=-100,
     )
     result = bud.commit_draft(conn, period="2026-07")
     assert result["committed"][0]["replaced_active_id"] is not None
@@ -284,8 +308,12 @@ def test_cancel_draft_removes_it(empty_db: Path) -> None:
     conn = open_db(empty_db)
     bud.start_draft(conn, period="2026-07", copy_from="")
     bud.add_line(
-        conn, period="2026-07", category="X", currency_code=980,
-        kind="baseline", amount_minor=-100,
+        conn,
+        period="2026-07",
+        category="X",
+        currency_code=980,
+        kind="baseline",
+        amount_minor=-100,
     )
     bud.cancel_draft(conn, period="2026-07")
     n = conn.execute("SELECT COUNT(*) FROM budget").fetchone()[0]
@@ -303,8 +331,12 @@ def test_cancel_preserves_category_registry(empty_db: Path) -> None:
         "VALUES ('Покупки/Сад', 0, 'budget-import')"
     )
     bud.add_line(
-        conn, period="2026-07", category="Покупки/Сад", currency_code=980,
-        kind="one_time", amount_minor=-3000,
+        conn,
+        period="2026-07",
+        category="Покупки/Сад",
+        currency_code=980,
+        kind="one_time",
+        amount_minor=-3000,
     )
     bud.cancel_draft(conn, period="2026-07")
     registered = conn.execute(
@@ -324,16 +356,19 @@ def test_multicurrency_planning_session(empty_db: Path) -> None:
     bud.start_draft(conn, period="2026-07")
     # User adds a USD one-time
     bud.add_line(
-        conn, period="2026-07", category="Транспорт/Ремонт",
-        currency_code=840, kind="one_time", amount_minor=-30000,
+        conn,
+        period="2026-07",
+        category="Транспорт/Ремонт",
+        currency_code=840,
+        kind="one_time",
+        amount_minor=-30000,
         note="ремонт авто",
     )
     bud.commit_draft(conn, period="2026-07")
     cur_codes = sorted(
         r[0]
         for r in conn.execute(
-            "SELECT currency_code FROM budget "
-            "WHERE period = '2026-07' AND status = 'active'"
+            "SELECT currency_code FROM budget WHERE period = '2026-07' AND status = 'active'"
         )
     )
     conn.close()
@@ -347,18 +382,26 @@ def test_cli_plan_full_flow(empty_db: Path, capsys: pytest.CaptureFixture[str]) 
     """End-to-end: start (copy from active June) → update → commit."""
     _seed_active(empty_db, "2026-06", ("Їжа/Ресторани", 980, "baseline", -900000))
 
-    rc, out, err = _run(
-        ["plan", "start", "--period", "2026-07", "--db", str(empty_db)], capsys
-    )
+    rc, out, err = _run(["plan", "start", "--period", "2026-07", "--db", str(empty_db)], capsys)
     assert rc == 0, err
     assert out["copied_from"] == "2026-06"
 
     rc, out, err = _run(
         [
-            "plan", "update", "--period", "2026-07",
-            "--category", "Їжа/Ресторани", "--currency", "UAH",
-            "--kind", "baseline", "--amount", "-15000",
-            "--db", str(empty_db),
+            "plan",
+            "update",
+            "--period",
+            "2026-07",
+            "--category",
+            "Їжа/Ресторани",
+            "--currency",
+            "UAH",
+            "--kind",
+            "baseline",
+            "--amount",
+            "-15000",
+            "--db",
+            str(empty_db),
         ],
         capsys,
     )
@@ -366,15 +409,11 @@ def test_cli_plan_full_flow(empty_db: Path, capsys: pytest.CaptureFixture[str]) 
     assert out["before"]["amount_minor"] == -900000
     assert out["after"]["amount_minor"] == -1500000
 
-    rc, out, err = _run(
-        ["plan", "show", "--period", "2026-07", "--db", str(empty_db)], capsys
-    )
+    rc, out, err = _run(["plan", "show", "--period", "2026-07", "--db", str(empty_db)], capsys)
     assert rc == 0
     assert out["viewing"] == "draft"
 
-    rc, out, err = _run(
-        ["plan", "commit", "--period", "2026-07", "--db", str(empty_db)], capsys
-    )
+    rc, out, err = _run(["plan", "commit", "--period", "2026-07", "--db", str(empty_db)], capsys)
     assert rc == 0, err
     assert out["committed"][0]["line_count"] == 1
 
@@ -387,31 +426,39 @@ def test_cli_plan_undo_via_chat_like_sequence(
     _run(["plan", "start", "--period", "2026-07", "--db", str(empty_db)], capsys)
     _run(
         [
-            "plan", "update", "--period", "2026-07",
-            "--category", "Освіта/Школа", "--currency", "UAH",
-            "--kind", "baseline", "--amount", "0",
-            "--db", str(empty_db),
+            "plan",
+            "update",
+            "--period",
+            "2026-07",
+            "--category",
+            "Освіта/Школа",
+            "--currency",
+            "UAH",
+            "--kind",
+            "baseline",
+            "--amount",
+            "0",
+            "--db",
+            str(empty_db),
         ],
         capsys,
     )
-    rc, out, err = _run(
-        ["plan", "undo", "--period", "2026-07", "--db", str(empty_db)], capsys
-    )
+    rc, out, err = _run(["plan", "undo", "--period", "2026-07", "--db", str(empty_db)], capsys)
     assert rc == 0, err
     assert out["undone"]["op"] == "update"
-    amt = sqlite3.connect(empty_db).execute(
-        "SELECT amount_minor FROM budget_line bl "
-        "JOIN budget b ON b.id = bl.budget_id "
-        "WHERE b.period = '2026-07' AND bl.category = 'Освіта/Школа'"
-    ).fetchone()[0]
+    amt = (
+        sqlite3.connect(empty_db)
+        .execute(
+            "SELECT amount_minor FROM budget_line bl "
+            "JOIN budget b ON b.id = bl.budget_id "
+            "WHERE b.period = '2026-07' AND bl.category = 'Освіта/Школа'"
+        )
+        .fetchone()[0]
+    )
     assert amt == -1560000  # restored
 
 
-def test_cli_plan_cancel_unknown_period(
-    empty_db: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    rc, _, err = _run(
-        ["plan", "cancel", "--period", "2099-12", "--db", str(empty_db)], capsys
-    )
+def test_cli_plan_cancel_unknown_period(empty_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rc, _, err = _run(["plan", "cancel", "--period", "2099-12", "--db", str(empty_db)], capsys)
     assert rc == 1
     assert err["type"] == "NotFound"

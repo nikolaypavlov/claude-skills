@@ -562,8 +562,7 @@ def start_draft(
                 (period, cur_code, ts, f"copy:{copy_from}"),
             )
             new_id = conn.execute(
-                "SELECT id FROM budget WHERE period = ? AND currency_code = ? "
-                "AND status = 'draft'",
+                "SELECT id FROM budget WHERE period = ? AND currency_code = ? AND status = 'draft'",
                 (period, cur_code),
             ).fetchone()[0]
             copied = conn.execute(
@@ -605,8 +604,7 @@ def _ensure_draft_budget(
     an empty one if absent. Used by add_line so the conversation can
     introduce a new currency mid-planning."""
     row = conn.execute(
-        "SELECT id FROM budget "
-        "WHERE period = ? AND currency_code = ? AND status = 'draft'",
+        "SELECT id FROM budget WHERE period = ? AND currency_code = ? AND status = 'draft'",
         (period, currency_code),
     ).fetchone()
     if row is not None:
@@ -618,8 +616,7 @@ def _ensure_draft_budget(
         (period, currency_code, now_ts),
     )
     new_id = conn.execute(
-        "SELECT id FROM budget WHERE period = ? AND currency_code = ? "
-        "AND status = 'draft'",
+        "SELECT id FROM budget WHERE period = ? AND currency_code = ? AND status = 'draft'",
         (period, currency_code),
     ).fetchone()[0]
     return int(new_id)
@@ -801,9 +798,7 @@ def update_line(
                 budget_id,
                 "update",
                 json.dumps(payload_before, ensure_ascii=False),
-                json.dumps(payload_after, ensure_ascii=False)
-                if payload_after
-                else None,
+                json.dumps(payload_after, ensure_ascii=False) if payload_after else None,
                 ts,
             ),
         )
@@ -1013,8 +1008,7 @@ def cancel_draft(conn: sqlite3.Connection, *, period: str) -> dict[str, Any]:
     registry entries created during the draft are intentionally NOT
     touched."""
     drafts = conn.execute(
-        "SELECT id, currency_code FROM budget "
-        "WHERE period = ? AND status = 'draft'",
+        "SELECT id, currency_code FROM budget WHERE period = ? AND status = 'draft'",
         (period,),
     ).fetchall()
     if not drafts:
@@ -1471,6 +1465,341 @@ def list_budgets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def scan_history_for_signals(
+    conn: sqlite3.Connection,
+    *,
+    target_period: str,
+    lookback_months: int = 6,
+) -> list[dict[str, Any]]:
+    """Inspect the previous ``lookback_months`` active budgets and
+    return planning hints for ``target_period``.
+
+    Each signal is a dict the CLI emits as JSON for Claude to phrase
+    back to the user. Shape::
+
+        {"type": "seasonal_gap",
+         "category": "Освіта/Школа",
+         "currency_code": 980,
+         "evidence": {...},
+         "suggestion": "consider zeroing for the summer"}
+
+    Signal types:
+      - ``one_time_excluded``: line of kind=one_time in most recent
+        active budget; will be excluded from the copy
+      - ``seasonal_gap``: category present in some months and absent
+        in others (school-shaped)
+      - ``monotonic_trend``: amount monotonically growing or shrinking
+        over 3+ months
+      - ``quarterly_cadence``: same category reappears at regular
+        ~3-month intervals (taxes, insurance premiums)
+      - ``one_off_deviation``: most recent month deviated > 30% from
+        prior monthly median (vacation-half-month-charging shaped)
+    """
+    _validate_period(target_period, "target_period")
+    # Walk back from target_period to assemble lookback periods.
+    year, month = (int(x) for x in target_period.split("-"))
+    periods: list[str] = []
+    for _ in range(lookback_months):
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+        periods.append(f"{year:04d}-{month:02d}")
+    periods.reverse()  # oldest first
+
+    if not periods:
+        return []
+
+    placeholders = ",".join(["?"] * len(periods))
+    rows = conn.execute(
+        f"SELECT b.period, b.currency_code, bl.category, bl.kind, "
+        f"       bl.amount_minor "
+        f"FROM budget_line bl JOIN budget b ON b.id = bl.budget_id "
+        f"WHERE b.status IN ('active', 'closed') "
+        f"AND b.period IN ({placeholders}) "
+        f"ORDER BY b.period",
+        periods,
+    ).fetchall()
+    if not rows:
+        return []
+
+    most_recent = periods[-1]
+    signals: list[dict[str, Any]] = []
+    seen_signatures: set[tuple] = set()
+
+    # Index by (category, currency_code) → period → (kind, amount)
+    history: dict[tuple[str, int], dict[str, list[tuple[str, int]]]] = {}
+    for period, cur, cat, kind, amt in rows:
+        history.setdefault((cat, cur), {}).setdefault(period, []).append((kind, int(amt)))
+
+    def add(sig: dict[str, Any]) -> None:
+        # Dedup on (type, category, currency_code) so two flavours of
+        # the same insight don't both fire.
+        key = (sig["type"], sig.get("category"), sig.get("currency_code"))
+        if key in seen_signatures:
+            return
+        seen_signatures.add(key)
+        signals.append(sig)
+
+    for (cat, cur), per_period in history.items():
+        # ---- one_time_excluded
+        recent_kinds = per_period.get(most_recent, [])
+        for kind, amt in recent_kinds:
+            if kind == "one_time":
+                add(
+                    {
+                        "type": "one_time_excluded",
+                        "category": cat,
+                        "currency_code": cur,
+                        "evidence": {"recent_period": most_recent, "amount_minor": amt},
+                        "suggestion": (
+                            f"line was one_time in {most_recent}; excluded from "
+                            "the template - re-add if needed this month"
+                        ),
+                    }
+                )
+                break
+
+        # ---- seasonal_gap
+        active_months = set(per_period.keys())
+        if 0 < len(active_months) < len(periods):
+            missing = [p for p in periods if p not in active_months]
+            present = sorted(active_months)
+            if len(missing) >= 1 and len(present) >= 2:
+                add(
+                    {
+                        "type": "seasonal_gap",
+                        "category": cat,
+                        "currency_code": cur,
+                        "evidence": {
+                            "present_in": present,
+                            "missing_in": missing,
+                        },
+                        "suggestion": (
+                            f"present in {len(present)} of {len(periods)} months - "
+                            "ask whether it applies this month"
+                        ),
+                    }
+                )
+
+        # ---- monotonic_trend (baseline-only)
+        amounts_by_period_baseline: list[tuple[str, int]] = []
+        for period in sorted(per_period.keys()):
+            for kind, amt in per_period[period]:
+                if kind == "baseline":
+                    amounts_by_period_baseline.append((period, amt))
+                    break
+        if len(amounts_by_period_baseline) >= 3:
+            amounts = [a for _, a in amounts_by_period_baseline]
+            if all(amounts[i] < amounts[i + 1] for i in range(len(amounts) - 1)):
+                direction = "growing"
+            elif all(amounts[i] > amounts[i + 1] for i in range(len(amounts) - 1)):
+                direction = "shrinking"
+            else:
+                direction = None
+            if direction is not None:
+                # Only flag when the change is at least 5% over the span
+                first, last = amounts[0], amounts[-1]
+                if first != 0 and abs(last - first) / abs(first) >= 0.05:
+                    add(
+                        {
+                            "type": "monotonic_trend",
+                            "category": cat,
+                            "currency_code": cur,
+                            "evidence": {
+                                "direction": direction,
+                                "series": amounts_by_period_baseline,
+                            },
+                            "suggestion": (
+                                f"baseline {direction} over {len(amounts)} months - "
+                                "continue the trend or pin?"
+                            ),
+                        }
+                    )
+
+        # ---- quarterly_cadence
+        sorted_periods = sorted(active_months)
+        if len(sorted_periods) >= 2:
+            gaps = []
+            prev_idx = None
+            for p in sorted_periods:
+                idx = periods.index(p)
+                if prev_idx is not None:
+                    gaps.append(idx - prev_idx)
+                prev_idx = idx
+            if gaps and all(g in (2, 3, 4) for g in gaps) and max(gaps) - min(gaps) <= 1:
+                # Project the next quarterly hit
+                next_idx = periods.index(sorted_periods[-1]) + gaps[-1]
+                target_idx = len(periods)  # target_period sits one beyond the lookback
+                if next_idx == target_idx:
+                    add(
+                        {
+                            "type": "quarterly_cadence",
+                            "category": cat,
+                            "currency_code": cur,
+                            "evidence": {"prior_hits": sorted_periods, "gap": gaps[-1]},
+                            "suggestion": (
+                                "appears on a quarterly cadence; next instance "
+                                f"projects to {target_period}"
+                            ),
+                        }
+                    )
+
+        # ---- one_off_deviation
+        baseline_amounts = [a for _, a in amounts_by_period_baseline]
+        if len(baseline_amounts) >= 3:
+            recent = baseline_amounts[-1]
+            prior = sorted(baseline_amounts[:-1])
+            median = prior[len(prior) // 2]
+            if median != 0 and abs(recent - median) / abs(median) >= 0.3:
+                add(
+                    {
+                        "type": "one_off_deviation",
+                        "category": cat,
+                        "currency_code": cur,
+                        "evidence": {
+                            "recent_amount": recent,
+                            "prior_median": median,
+                            "delta_pct": round((recent - median) / median * 100, 1),
+                        },
+                        "suggestion": (
+                            f"{most_recent} deviated >30% from prior median; "
+                            "ask whether to revert or hold the new value"
+                        ),
+                    }
+                )
+
+    return signals
+
+
+# Top-level grouping for the Family export view. Order shapes how
+# groups appear in the spreadsheet (largest first within each group,
+# but groups in this order). Categories not in this list fall to
+# "Інше" at the bottom.
+_FAMILY_GROUP_ORDER: tuple[tuple[str, str, list[str]], ...] = (
+    ("housing", "Житло", ["Житло", "Перекази/Дружина"]),
+    ("food", "Харчування", ["Їжа"]),
+    ("transport", "Транспорт", ["Транспорт"]),
+    ("subs", "Підписки", ["Підписки"]),
+    ("shopping", "Покупки", ["Покупки", "Подарунки"]),
+    ("health_beauty", "Здоров'я і краса", ["Здоров'я", "Краса"]),
+    ("education", "Освіта", ["Освіта"]),
+    ("travel", "Подорожі", ["Подорожі"]),
+    ("entertainment", "Розваги", ["Розваги"]),
+    ("taxes", "Податки і збори", ["Податки"]),
+    ("donations", "Донати", ["Донати"]),
+    ("transfers", "Перекази", ["Перекази"]),
+    ("connectivity", "Зв'язок", ["Зв'язок"]),
+    ("cash", "Готівка", ["Готівка"]),
+    ("invest", "Інвестиції", ["Інвестиції"]),
+    ("income", "Дохід", ["Дохід"]),
+)
+
+
+def _classify_family_group(category: str) -> tuple[str, str]:
+    """Return (group_key, group_title) for the given category. Falls
+    back to ('other', 'Інше') for categories outside the known map."""
+    for key, title, prefixes in _FAMILY_GROUP_ORDER:
+        for prefix in prefixes:
+            if category == prefix or category.startswith(prefix + "/"):
+                return key, title
+    return "other", "Інше"
+
+
+def family_view_rows(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+) -> dict[str, Any]:
+    """Build the rendered Family-view structure for ``period``.
+
+    Returns a dict the export writer can walk to produce the styled
+    XLSX. Shape::
+
+        {"period": str,
+         "currencies": [
+            {"currency_code": int, "alpha": str, "total_major": float,
+             "groups": [{"key": str, "title": str, "subtotal_major": float,
+                         "lines": [{"category_display": str,
+                                    "amount_major": float,
+                                    "note": str|None,
+                                    "kind": str}, ...]}, ...]}, ...]}
+    """
+    blocks = fetch_budget(conn, period=period)
+    from .currencies import alpha_for
+
+    currencies: list[dict[str, Any]] = []
+    for b in blocks:
+        if b["status"] != "active":
+            continue  # Family view is only for committed plans
+        from collections import defaultdict
+
+        # Aggregate by full category (so one_time + baseline on the
+        # same category combine for the user's eyes).
+        per_cat: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {"amount_minor": 0, "notes": [], "kinds": set()}
+        )
+        for line in b["lines"]:
+            slot = per_cat[line["category"]]
+            slot["amount_minor"] += line["amount_minor"]
+            if line["note"]:
+                slot["notes"].append(line["note"])
+            slot["kinds"].add(line["kind"])
+
+        # Now bucket categories into groups
+        groups_map: dict[str, dict[str, Any]] = {}
+        for cat, agg in per_cat.items():
+            group_key, group_title = _classify_family_group(cat)
+            if group_key not in groups_map:
+                groups_map[group_key] = {
+                    "key": group_key,
+                    "title": group_title,
+                    "subtotal_major": 0.0,
+                    "lines": [],
+                }
+            groups_map[group_key]["subtotal_major"] += agg["amount_minor"] / 100.0
+            groups_map[group_key]["lines"].append(
+                {
+                    "category": cat,
+                    "category_display": _humanise_category(cat),
+                    "amount_major": agg["amount_minor"] / 100.0,
+                    "note": "; ".join(agg["notes"]) if agg["notes"] else None,
+                    "kinds": sorted(agg["kinds"]),
+                }
+            )
+
+        # Sort lines within group: most-negative first (= biggest spend)
+        for grp in groups_map.values():
+            grp["lines"].sort(key=lambda r: r["amount_major"])
+
+        # Order groups per _FAMILY_GROUP_ORDER, then "other" last
+        ordered_groups: list[dict[str, Any]] = []
+        for key, _title, _prefixes in _FAMILY_GROUP_ORDER:
+            if key in groups_map:
+                ordered_groups.append(groups_map[key])
+        if "other" in groups_map:
+            ordered_groups.append(groups_map["other"])
+
+        currencies.append(
+            {
+                "currency_code": b["currency_code"],
+                "alpha": alpha_for(b["currency_code"]) or str(b["currency_code"]),
+                "total_major": sum(g["subtotal_major"] for g in ordered_groups),
+                "groups": ordered_groups,
+            }
+        )
+
+    return {"period": period, "currencies": currencies}
+
+
+def _humanise_category(category: str) -> str:
+    """Render a slash-delimited taxonomy key as ``TopGroup → Sub``."""
+    parts = category.split("/", 1)
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[0]} → {parts[1]}"
 
 
 def export_variance_rows(
