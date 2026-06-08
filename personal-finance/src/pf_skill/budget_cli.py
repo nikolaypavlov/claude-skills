@@ -648,7 +648,6 @@ def _write_family_xlsx(data: dict[str, Any], out_path: Path) -> None:
     HEADER_FILL = PatternFill("solid", fgColor="1F4E79")  # navy
     GROUP_FONT = Font(name="Calibri", size=11, bold=True, color="000000")
     GROUP_FILL = PatternFill("solid", fgColor="FFF2CC")  # light yellow
-    SUBTOTAL_FONT = Font(name="Calibri", size=11, bold=True, italic=True)
     BAND = PatternFill("solid", fgColor="F5F5F5")
     THIN = Side(border_style="thin", color="B0B0B0")
     BOX = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -661,7 +660,8 @@ def _write_family_xlsx(data: dict[str, Any], out_path: Path) -> None:
     row += 2
 
     for currency in data["currencies"]:
-        # Currency header
+        # Currency header. The total cell is set after the line block
+        # is laid out so we know which row range to SUM over.
         cur_cell = overview.cell(
             row=row,
             column=1,
@@ -671,28 +671,22 @@ def _write_family_xlsx(data: dict[str, Any], out_path: Path) -> None:
         cur_cell.fill = HEADER_FILL
         cur_cell.alignment = Alignment(horizontal="left", vertical="center")
         overview.cell(row=row, column=2).fill = HEADER_FILL
-        # Currency total cell uses SUM over the group subtotal column we'll fill
         cur_total_cell = overview.cell(row=row, column=3, value=0)
         cur_total_cell.font = HEADER_FONT
         cur_total_cell.fill = HEADER_FILL
         cur_total_cell.alignment = Alignment(horizontal="right", vertical="center")
-        cur_total_first_subtotal_row: int | None = None
-        cur_total_last_subtotal_row: int | None = None
         row += 1
 
+        first_line_row: int | None = None
+        last_line_row: int | None = None
+
         for group in currency["groups"]:
-            group_start_row = row + 1  # lines start one below the group header
-            # Group header row
+            # Group title row (header only, no subtotal column)
             gh = overview.cell(row=row, column=1, value=f"  {group['title']}")
             gh.font = GROUP_FONT
             gh.fill = GROUP_FILL
             overview.cell(row=row, column=2).fill = GROUP_FILL
-            subtotal_cell = overview.cell(row=row, column=3, value=0)
-            subtotal_cell.font = SUBTOTAL_FONT
-            subtotal_cell.fill = GROUP_FILL
-            subtotal_cell.number_format = "#,##0.00;[Red]-#,##0.00"
-            subtotal_cell.alignment = Alignment(horizontal="right")
-            group_header_row = row
+            overview.cell(row=row, column=3).fill = GROUP_FILL
             row += 1
 
             for i, line in enumerate(group["lines"]):
@@ -700,43 +694,25 @@ def _write_family_xlsx(data: dict[str, Any], out_path: Path) -> None:
                     row=row, column=1, value=f"      {line['category_display']}"
                 )
                 amt_cell = overview.cell(row=row, column=3, value=line["amount_major"])
-                amt_cell.number_format = "#,##0.00;[Red]-#,##0.00"
+                amt_cell.number_format = "#,##0.00"
                 amt_cell.alignment = Alignment(horizontal="right")
                 if i % 2 == 1:
                     line_label_cell.fill = BAND
                     overview.cell(row=row, column=2).fill = BAND
                     amt_cell.fill = BAND
+                if first_line_row is None:
+                    first_line_row = row
+                last_line_row = row
                 row += 1
 
-            # SUM formula for the group subtotal
-            if row - 1 >= group_start_row:
-                subtotal_cell.value = f"=SUM(C{group_start_row}:C{row - 1})"
-            if cur_total_first_subtotal_row is None:
-                cur_total_first_subtotal_row = group_header_row
-            cur_total_last_subtotal_row = group_header_row
             row += 1  # blank line between groups
 
-        # Currency total = sum of all subtotal cells in this currency block
-        if cur_total_first_subtotal_row is not None and cur_total_last_subtotal_row is not None:
-            # Each group subtotal lives at column C of group_header_row.
-            # Use a range that includes only those rows. Simplest: build
-            # a comma-separated list of cells since they're not contiguous.
-            cell_refs = []
-            scan_row = cur_total_first_subtotal_row
-            while scan_row <= cur_total_last_subtotal_row:
-                cell_refs.append(f"C{scan_row}")
-                # Move to the next group header: skip past lines + blank row
-                # Find next non-empty C cell that's a subtotal (formula) -
-                # simpler heuristic: just walk row by row and look for cells
-                # whose value starts with '=SUM(' below us.
-                scan_row += 1
-                while scan_row <= cur_total_last_subtotal_row:
-                    val = overview.cell(row=scan_row, column=3).value
-                    if isinstance(val, str) and val.startswith("=SUM("):
-                        break
-                    scan_row += 1
-            cur_total_cell.value = "=" + "+".join(cell_refs) if cell_refs else 0
-            cur_total_cell.number_format = "#,##0.00;[Red]-#,##0.00"
+        # Currency total = SUM over all line cells in this block.
+        # The range is contiguous (group title rows have empty
+        # column-C cells) so SUM ignores them.
+        if first_line_row is not None and last_line_row is not None:
+            cur_total_cell.value = f"=SUM(C{first_line_row}:C{last_line_row})"
+            cur_total_cell.number_format = "#,##0.00"
 
         row += 2  # spacing before next currency
 
@@ -789,7 +765,7 @@ def _write_family_xlsx(data: dict[str, Any], out_path: Path) -> None:
         details.column_dimensions[col].width = w
     # Amount column formatting in Details
     for r in range(2, details.max_row + 1):
-        details.cell(row=r, column=6).number_format = "#,##0.00;[Red]-#,##0.00"
+        details.cell(row=r, column=6).number_format = "#,##0.00"
 
     # Total at top of Overview - link to TOTAL.
     # (Already populated as we walked groups.)
