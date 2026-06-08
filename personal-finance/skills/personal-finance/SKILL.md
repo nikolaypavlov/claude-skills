@@ -20,10 +20,17 @@ allowed-tools: Bash, Read
 
 # Personal finance: query, report, categorize, budget
 
-## Pre-flight before any report or summary
+## Pre-flight before any report, summary, or budget diff
 
 1. Call the MCP tool `mcp__monobank__ensure_synced` with `max_wait_seconds=90` so Mono data is fresh. If the response includes `partial: true`, tell the user up-front ("Mono sync вийшов partial, можу продовжити з тим що є або зачекати - як зручніше?") and let them choose before continuing.
 2. Privat24 has no API. Do NOT try to sync it - the user uploads XLSX exports manually via privat24-skill. Reports use whatever Privat data is already in the store; if `last_sync_ts.privat` in the report bundle looks stale, mention it but do not auto-import.
+3. **Run the categorizer pass** if new transactions just landed (Mono sync returned `rows_added > 0` on any account, OR Privat XLSX was just imported with `rows_inserted > 0`). Ingest plugins write to `<bank>_transactions` only; `tx_category` rows are populated by `pf-categorize`, and `pf-report` / `pf-budget diff` / `pf-query summarize` resolve category through `tx_category`. Without this pass, freshly-ingested transactions surface as `(uncategorized)` even when existing rules would match them. The call is cheap (~1s for the typical month) and idempotent:
+
+   ```bash
+   pf-categorize --scope last-n-days --n 30
+   ```
+
+   Widen `--n` if the user is asking about an older window. For a backfill or rule overhaul, use `--scope all`.
 
 The pre-flight does NOT apply to "find a transaction" lookups, "list my accounts", budget planning, or any `pf-budget plan` operation - those are local and we don't want to add 60-90s of latency for a one-line answer.
 
