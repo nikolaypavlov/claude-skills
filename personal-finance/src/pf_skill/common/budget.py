@@ -1762,7 +1762,7 @@ def family_view_rows(
             groups_map[group_key]["lines"].append(
                 {
                     "category": cat,
-                    "category_display": _humanise_category(cat),
+                    "category_display": _family_sub_label(cat),
                     "amount_major": agg["amount_minor"] / 100.0,
                     "note": "; ".join(agg["notes"]) if agg["notes"] else None,
                     "kinds": sorted(agg["kinds"]),
@@ -1793,12 +1793,15 @@ def family_view_rows(
     return {"period": period, "currencies": currencies}
 
 
-def _humanise_category(category: str) -> str:
-    """Render a slash-delimited taxonomy key as ``TopGroup → Sub``."""
+def _family_sub_label(category: str) -> str:
+    """Family-view line label: just the sub-category, since the group
+    header right above already names the top-level. Falls back to the
+    full name when the category has no sub (e.g. ``Готівка``,
+    ``Зв'язок``)."""
     parts = category.split("/", 1)
     if len(parts) == 1:
         return parts[0]
-    return f"{parts[0]} → {parts[1]}"
+    return parts[1]
 
 
 def export_variance_rows(

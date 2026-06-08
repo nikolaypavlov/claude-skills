@@ -155,13 +155,26 @@ def test_family_view_groups_categories(empty_db: Path) -> None:
     assert cats == {"Їжа/Ресторани", "Їжа/Продукти"}
 
 
-def test_family_view_humanises_categories(empty_db: Path) -> None:
-    _seed(empty_db, "2026-07", ("Їжа/Ресторани", 980, "baseline", -900000))
+def test_family_view_line_labels_are_sub_only(empty_db: Path) -> None:
+    """Line labels render as just the sub-category - the group header
+    already states the top-level. Categories without a sub fall back
+    to the full name."""
+    _seed(
+        empty_db,
+        "2026-07",
+        ("Їжа/Ресторани", 980, "baseline", -900000),
+        ("Готівка", 980, "baseline", -250000),  # no sub
+    )
     conn = open_db(empty_db)
     data = bud.family_view_rows(conn, period="2026-07")
     conn.close()
-    line = data["currencies"][0]["groups"][0]["lines"][0]
-    assert line["category_display"] == "Їжа → Ресторани"
+    labels = {
+        line["category"]: line["category_display"]
+        for grp in data["currencies"][0]["groups"]
+        for line in grp["lines"]
+    }
+    assert labels["Їжа/Ресторани"] == "Ресторани"
+    assert labels["Готівка"] == "Готівка"
 
 
 def test_family_export_writes_xlsx_with_two_sheets(
