@@ -1,6 +1,6 @@
 [project]
 name = "pf-skill"
-version = "0.6.3"
+version = "0.6.4"
 description = "Personal finance umbrella skill - query / report / categorize / budget over the shared ~/finances/data.db"
 authors = [
     { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },

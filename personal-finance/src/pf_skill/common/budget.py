@@ -1679,7 +1679,7 @@ def scan_history_for_signals(
 # but groups in this order). Categories not in this list fall to
 # "Інше" at the bottom.
 _FAMILY_GROUP_ORDER: tuple[tuple[str, str, list[str]], ...] = (
-    ("housing", "Житло", ["Житло"]),
+    ("housing", "Житло", ["Житло", "Зв'язок"]),
     ("food", "Харчування", ["Їжа"]),
     ("transport", "Транспорт", ["Транспорт"]),
     ("subs", "Підписки", ["Підписки"]),
@@ -1691,7 +1691,6 @@ _FAMILY_GROUP_ORDER: tuple[tuple[str, str, list[str]], ...] = (
     ("taxes", "Податки і збори", ["Податки"]),
     ("donations", "Донати", ["Донати"]),
     ("transfers", "Перекази", ["Перекази"]),
-    ("connectivity", "Зв'язок", ["Зв'язок"]),
     ("cash", "Готівка", ["Готівка"]),
     ("invest", "Інвестиції", ["Інвестиції"]),
     ("income", "Дохід", ["Дохід"]),
