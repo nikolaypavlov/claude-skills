@@ -22,13 +22,15 @@ import sqlite3
 from importlib import resources
 from pathlib import Path
 
-EXPECTED_PF_SCHEMA_VERSION = 3
+EXPECTED_PF_SCHEMA_VERSION = 5
 
 # Apply in order. Each entry: (version, filename inside pf_skill.schema).
 _MIGRATION_FILES: list[tuple[int, str]] = [
     (1, "pf_001_initial.sql"),
     (2, "pf_002_budget.sql"),
     (3, "pf_003_budget_triggers.sql"),
+    (4, "pf_004_budget_draft_edit.sql"),
+    (5, "pf_005_budget_unique_per_status.sql"),
 ]
 
 

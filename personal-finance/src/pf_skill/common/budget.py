@@ -444,6 +444,598 @@ def materialise_budget(
     return result
 
 
+def find_budget(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    currency_code: int,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Single (period, currency_code, status) lookup."""
+    where = ["period = ?", "currency_code = ?"]
+    params: list[Any] = [period, currency_code]
+    if status is not None:
+        where.append("status = ?")
+        params.append(status)
+    row = conn.execute(
+        "SELECT id, period, currency_code, status, created_at, imported_from "
+        f"FROM budget WHERE {' AND '.join(where)}",
+        params,
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "budget_id": int(row[0]),
+        "period": row[1],
+        "currency_code": int(row[2]),
+        "status": row[3],
+        "created_at": int(row[4]),
+        "imported_from": row[5],
+    }
+
+
+def _latest_active_period_before(conn: sqlite3.Connection, period: str) -> str | None:
+    row = conn.execute(
+        "SELECT DISTINCT period FROM budget "
+        "WHERE status = 'active' AND period < ? "
+        "ORDER BY period DESC LIMIT 1",
+        (period,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def start_draft(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    copy_from: str | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Create draft budget rows for ``period``, optionally copying
+    baseline lines from a prior period's active budget.
+
+    Returns ``existing_draft=True`` (without re-creating) when a draft
+    is already in place for ``period`` - the caller asks the user to
+    continue / cancel / merge.
+
+    ``copy_from``:
+      - ``None``: use the most recent active period before ``period``
+      - explicit ``YYYY-MM``: copy from that period
+      - explicit empty ``""``: start blank (no copy)
+    """
+    _validate_period(period, "period")
+    ts = now_ts if now_ts is not None else int(time.time())
+
+    existing_drafts = conn.execute(
+        "SELECT id, currency_code, created_at FROM budget "
+        "WHERE period = ? AND status = 'draft' ORDER BY currency_code",
+        (period,),
+    ).fetchall()
+    if existing_drafts:
+        return {
+            "ok": True,
+            "existing_draft": True,
+            "period": period,
+            "drafts": [
+                {
+                    "budget_id": int(r[0]),
+                    "currency_code": int(r[1]),
+                    "created_at": int(r[2]),
+                    "line_count": conn.execute(
+                        "SELECT COUNT(*) FROM budget_line WHERE budget_id = ?",
+                        (r[0],),
+                    ).fetchone()[0],
+                }
+                for r in existing_drafts
+            ],
+        }
+
+    if copy_from is None:
+        copy_from = _latest_active_period_before(conn, period) or ""
+    elif copy_from:
+        _validate_period(copy_from, "copy_from")
+
+    drafts_created: list[dict[str, Any]] = []
+
+    if not copy_from:
+        return {
+            "ok": True,
+            "existing_draft": False,
+            "period": period,
+            "copied_from": None,
+            "drafts": drafts_created,
+        }
+
+    source_budgets = conn.execute(
+        "SELECT id, currency_code FROM budget "
+        "WHERE period = ? AND status = 'active' ORDER BY currency_code",
+        (copy_from,),
+    ).fetchall()
+
+    conn.execute("BEGIN")
+    try:
+        for src_budget_id, cur_code in source_budgets:
+            conn.execute(
+                "INSERT INTO budget "
+                "(period, currency_code, status, created_at, imported_from) "
+                "VALUES (?, ?, 'draft', ?, ?)",
+                (period, cur_code, ts, f"copy:{copy_from}"),
+            )
+            new_id = conn.execute(
+                "SELECT id FROM budget WHERE period = ? AND currency_code = ? AND status = 'draft'",
+                (period, cur_code),
+            ).fetchone()[0]
+            copied = conn.execute(
+                "INSERT INTO budget_line "
+                "(budget_id, category, amount_minor, kind, note) "
+                "SELECT ?, category, amount_minor, kind, note FROM budget_line "
+                "WHERE budget_id = ? AND kind = 'baseline'",
+                (new_id, src_budget_id),
+            ).rowcount
+            drafts_created.append(
+                {
+                    "budget_id": int(new_id),
+                    "currency_code": int(cur_code),
+                    "lines_copied": int(copied),
+                }
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    return {
+        "ok": True,
+        "existing_draft": False,
+        "period": period,
+        "copied_from": copy_from,
+        "drafts": drafts_created,
+    }
+
+
+def _ensure_draft_budget(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    currency_code: int,
+    now_ts: int,
+) -> int:
+    """Return draft budget_id for (period, currency_code), creating
+    an empty one if absent. Used by add_line so the conversation can
+    introduce a new currency mid-planning."""
+    row = conn.execute(
+        "SELECT id FROM budget WHERE period = ? AND currency_code = ? AND status = 'draft'",
+        (period, currency_code),
+    ).fetchone()
+    if row is not None:
+        return int(row[0])
+    conn.execute(
+        "INSERT INTO budget "
+        "(period, currency_code, status, created_at, imported_from) "
+        "VALUES (?, ?, 'draft', ?, NULL)",
+        (period, currency_code, now_ts),
+    )
+    new_id = conn.execute(
+        "SELECT id FROM budget WHERE period = ? AND currency_code = ? AND status = 'draft'",
+        (period, currency_code),
+    ).fetchone()[0]
+    return int(new_id)
+
+
+def _row_to_payload(row: tuple) -> dict[str, Any]:
+    line_id, category, currency_code, kind, amount_minor, note = row
+    return {
+        "line_id": int(line_id),
+        "category": category,
+        "currency_code": int(currency_code),
+        "kind": kind,
+        "amount_minor": int(amount_minor),
+        "note": note,
+    }
+
+
+def _read_line(conn: sqlite3.Connection, *, line_id: int) -> tuple | None:
+    return conn.execute(
+        "SELECT bl.id, bl.category, b.currency_code, bl.kind, bl.amount_minor, bl.note "
+        "FROM budget_line bl JOIN budget b ON b.id = bl.budget_id "
+        "WHERE bl.id = ?",
+        (line_id,),
+    ).fetchone()
+
+
+def _find_lines_by_composite(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    currency_code: int,
+    category: str,
+    kind: str,
+) -> list[tuple]:
+    return conn.execute(
+        "SELECT bl.id, bl.category, b.currency_code, bl.kind, bl.amount_minor, bl.note "
+        "FROM budget_line bl JOIN budget b ON b.id = bl.budget_id "
+        "WHERE b.period = ? AND b.status = 'draft' "
+        "AND b.currency_code = ? AND bl.category = ? AND bl.kind = ?",
+        (period, currency_code, category, kind),
+    ).fetchall()
+
+
+def add_line(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    category: str,
+    currency_code: int,
+    kind: str,
+    amount_minor: int,
+    note: str | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Insert one new line into the draft for ``period``."""
+    _validate_period(period, "period")
+    if kind not in ALLOWED_KINDS:
+        raise BudgetParseError(
+            f"kind={kind!r} must be one of {list(ALLOWED_KINDS)}",
+            kind="BadKind",
+        )
+    ts = now_ts if now_ts is not None else int(time.time())
+    conn.execute("BEGIN")
+    try:
+        budget_id = _ensure_draft_budget(
+            conn, period=period, currency_code=currency_code, now_ts=ts
+        )
+        conn.execute(
+            "INSERT INTO budget_line (budget_id, category, amount_minor, kind, note) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (budget_id, category, amount_minor, kind, note),
+        )
+        new_line_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        payload_after = {
+            "line_id": int(new_line_id),
+            "category": category,
+            "currency_code": currency_code,
+            "kind": kind,
+            "amount_minor": amount_minor,
+            "note": note,
+        }
+        conn.execute(
+            "INSERT INTO budget_draft_edit "
+            "(budget_id, op, payload_before, payload_after, applied_at) "
+            "VALUES (?, ?, NULL, ?, ?)",
+            (budget_id, "add", json.dumps(payload_after, ensure_ascii=False), ts),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {"ok": True, "op": "add", "line": payload_after, "budget_id": int(budget_id)}
+
+
+def update_line(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    line_id: int | None = None,
+    category: str | None = None,
+    currency_code: int | None = None,
+    kind: str | None = None,
+    amount_minor: int | None = None,
+    note: str | None = None,
+    note_unset: bool = False,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Modify a draft line. Either ``line_id`` OR composite key
+    (``category`` + ``currency_code`` + ``kind``) - composite must
+    match exactly one row.
+
+    To clear the note, pass ``note_unset=True``.
+    """
+    _validate_period(period, "period")
+    ts = now_ts if now_ts is not None else int(time.time())
+
+    if line_id is None:
+        if category is None or currency_code is None or kind is None:
+            raise BudgetParseError(
+                "update_line needs line_id or (category + currency_code + kind)",
+                kind="BadArgument",
+            )
+        matches = _find_lines_by_composite(
+            conn,
+            period=period,
+            currency_code=currency_code,
+            category=category,
+            kind=kind,
+        )
+        if not matches:
+            raise BudgetParseError(
+                f"no matching line in draft for {period}",
+                kind="NotFound",
+            )
+        if len(matches) > 1:
+            raise BudgetParseError(
+                f"{len(matches)} lines match composite key; specify --line-id",
+                kind="Ambiguous",
+                details={"candidate_line_ids": [int(m[0]) for m in matches]},
+            )
+        before = matches[0]
+    else:
+        before = _read_line(conn, line_id=line_id)
+        if before is None:
+            raise BudgetParseError(f"line_id={line_id} not found", kind="NotFound")
+
+    line_id_resolved = int(before[0])
+    new_amount = before[4] if amount_minor is None else amount_minor
+    if note_unset:
+        new_note = None
+    elif note is not None:
+        new_note = note
+    else:
+        new_note = before[5]
+
+    if new_amount == before[4] and new_note == before[5]:
+        return {"ok": True, "op": "noop", "line": _row_to_payload(before)}
+
+    conn.execute("BEGIN")
+    try:
+        conn.execute(
+            "UPDATE budget_line SET amount_minor = ?, note = ? WHERE id = ?",
+            (new_amount, new_note, line_id_resolved),
+        )
+        after_row = _read_line(conn, line_id=line_id_resolved)
+        payload_before = _row_to_payload(before)
+        payload_after = _row_to_payload(after_row) if after_row else None
+        budget_id = int(
+            conn.execute(
+                "SELECT budget_id FROM budget_line WHERE id = ?",
+                (line_id_resolved,),
+            ).fetchone()[0]
+        )
+        conn.execute(
+            "INSERT INTO budget_draft_edit "
+            "(budget_id, op, payload_before, payload_after, applied_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                budget_id,
+                "update",
+                json.dumps(payload_before, ensure_ascii=False),
+                json.dumps(payload_after, ensure_ascii=False) if payload_after else None,
+                ts,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {
+        "ok": True,
+        "op": "update",
+        "before": payload_before,
+        "after": payload_after,
+        "budget_id": budget_id,
+    }
+
+
+def remove_line(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+    line_id: int | None = None,
+    category: str | None = None,
+    currency_code: int | None = None,
+    kind: str | None = None,
+    now_ts: int | None = None,
+) -> dict[str, Any]:
+    """Delete a draft line. Same addressing rules as ``update_line``."""
+    _validate_period(period, "period")
+    ts = now_ts if now_ts is not None else int(time.time())
+
+    if line_id is None:
+        if category is None or currency_code is None or kind is None:
+            raise BudgetParseError(
+                "remove_line needs line_id or (category + currency_code + kind)",
+                kind="BadArgument",
+            )
+        matches = _find_lines_by_composite(
+            conn,
+            period=period,
+            currency_code=currency_code,
+            category=category,
+            kind=kind,
+        )
+        if not matches:
+            raise BudgetParseError(
+                f"no matching line in draft for {period}",
+                kind="NotFound",
+            )
+        if len(matches) > 1:
+            raise BudgetParseError(
+                f"{len(matches)} lines match; specify --line-id",
+                kind="Ambiguous",
+                details={"candidate_line_ids": [int(m[0]) for m in matches]},
+            )
+        before = matches[0]
+    else:
+        before = _read_line(conn, line_id=line_id)
+        if before is None:
+            raise BudgetParseError(f"line_id={line_id} not found", kind="NotFound")
+
+    line_id_resolved = int(before[0])
+    payload_before = _row_to_payload(before)
+    budget_id = int(
+        conn.execute(
+            "SELECT budget_id FROM budget_line WHERE id = ?",
+            (line_id_resolved,),
+        ).fetchone()[0]
+    )
+
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DELETE FROM budget_line WHERE id = ?", (line_id_resolved,))
+        conn.execute(
+            "INSERT INTO budget_draft_edit "
+            "(budget_id, op, payload_before, payload_after, applied_at) "
+            "VALUES (?, ?, ?, NULL, ?)",
+            (budget_id, "remove", json.dumps(payload_before, ensure_ascii=False), ts),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {
+        "ok": True,
+        "op": "remove",
+        "line": payload_before,
+        "budget_id": budget_id,
+    }
+
+
+def undo_last(conn: sqlite3.Connection, *, period: str) -> dict[str, Any]:
+    """Reverse the most recent edit on any draft for ``period``."""
+    row = conn.execute(
+        "SELECT bde.id, bde.budget_id, bde.op, bde.payload_before, bde.payload_after "
+        "FROM budget_draft_edit bde "
+        "JOIN budget b ON b.id = bde.budget_id "
+        "WHERE b.period = ? AND b.status = 'draft' "
+        "ORDER BY bde.id DESC LIMIT 1",
+        (period,),
+    ).fetchone()
+    if row is None:
+        return {"ok": True, "undone": None}
+
+    edit_id, budget_id, op, payload_before_s, payload_after_s = row
+    before = json.loads(payload_before_s) if payload_before_s else None
+    after = json.loads(payload_after_s) if payload_after_s else None
+
+    conn.execute("BEGIN")
+    try:
+        if op == "add":
+            assert after is not None
+            conn.execute("DELETE FROM budget_line WHERE id = ?", (after["line_id"],))
+            reverted_op = "remove"
+        elif op == "remove":
+            assert before is not None
+            conn.execute(
+                "INSERT INTO budget_line "
+                "(budget_id, category, amount_minor, kind, note) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    budget_id,
+                    before["category"],
+                    before["amount_minor"],
+                    before["kind"],
+                    before["note"],
+                ),
+            )
+            reverted_op = "add"
+        else:  # update
+            assert before is not None and after is not None
+            conn.execute(
+                "UPDATE budget_line SET amount_minor = ?, note = ? WHERE id = ?",
+                (before["amount_minor"], before["note"], after["line_id"]),
+            )
+            reverted_op = "update"
+        conn.execute("DELETE FROM budget_draft_edit WHERE id = ?", (edit_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {
+        "ok": True,
+        "undone": {
+            "edit_id": int(edit_id),
+            "op": op,
+            "reverted_as": reverted_op,
+            "before": before,
+            "after": after,
+        },
+    }
+
+
+def commit_draft(conn: sqlite3.Connection, *, period: str) -> dict[str, Any]:
+    """Flip every draft budget for ``period`` to ``active``, replacing
+    any pre-existing active budget for the same (period, currency)
+    atomically. Clears the draft edit log on success."""
+    drafts = conn.execute(
+        "SELECT id, currency_code FROM budget "
+        "WHERE period = ? AND status = 'draft' ORDER BY currency_code",
+        (period,),
+    ).fetchall()
+    if not drafts:
+        raise BudgetParseError(f"no draft to commit for {period}", kind="NotFound")
+
+    result: list[dict[str, Any]] = []
+    conn.execute("BEGIN")
+    try:
+        for draft_id, cur_code in drafts:
+            replaced_active_id: int | None = None
+            existing_active = conn.execute(
+                "SELECT id FROM budget "
+                "WHERE period = ? AND currency_code = ? AND status = 'active'",
+                (period, cur_code),
+            ).fetchone()
+            if existing_active is not None:
+                replaced_active_id = int(existing_active[0])
+                conn.execute("DELETE FROM budget WHERE id = ?", (replaced_active_id,))
+            conn.execute(
+                "UPDATE budget SET status = 'active' WHERE id = ?",
+                (draft_id,),
+            )
+            conn.execute(
+                "DELETE FROM budget_draft_edit WHERE budget_id = ?",
+                (draft_id,),
+            )
+            line_count = conn.execute(
+                "SELECT COUNT(*) FROM budget_line WHERE budget_id = ?",
+                (draft_id,),
+            ).fetchone()[0]
+            result.append(
+                {
+                    "budget_id": int(draft_id),
+                    "currency_code": int(cur_code),
+                    "line_count": int(line_count),
+                    "replaced_active_id": replaced_active_id,
+                }
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {"ok": True, "period": period, "committed": result}
+
+
+def cancel_draft(conn: sqlite3.Connection, *, period: str) -> dict[str, Any]:
+    """Delete every draft budget for ``period`` (cascade). Category-
+    registry entries created during the draft are intentionally NOT
+    touched."""
+    drafts = conn.execute(
+        "SELECT id, currency_code FROM budget WHERE period = ? AND status = 'draft'",
+        (period,),
+    ).fetchall()
+    if not drafts:
+        raise BudgetParseError(f"no draft to cancel for {period}", kind="NotFound")
+    removed: list[dict[str, Any]] = []
+    conn.execute("BEGIN")
+    try:
+        for draft_id, cur_code in drafts:
+            line_count = conn.execute(
+                "SELECT COUNT(*) FROM budget_line WHERE budget_id = ?",
+                (draft_id,),
+            ).fetchone()[0]
+            conn.execute("DELETE FROM budget WHERE id = ?", (draft_id,))
+            removed.append(
+                {
+                    "budget_id": int(draft_id),
+                    "currency_code": int(cur_code),
+                    "line_count": int(line_count),
+                }
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {"ok": True, "period": period, "cancelled": removed}
+
+
 def fetch_budget(
     conn: sqlite3.Connection, *, period: str, currency_code: int | None = None
 ) -> list[dict[str, Any]]:
@@ -873,6 +1465,341 @@ def list_budgets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def scan_history_for_signals(
+    conn: sqlite3.Connection,
+    *,
+    target_period: str,
+    lookback_months: int = 6,
+) -> list[dict[str, Any]]:
+    """Inspect the previous ``lookback_months`` active budgets and
+    return planning hints for ``target_period``.
+
+    Each signal is a dict the CLI emits as JSON for Claude to phrase
+    back to the user. Shape::
+
+        {"type": "seasonal_gap",
+         "category": "Освіта/Школа",
+         "currency_code": 980,
+         "evidence": {...},
+         "suggestion": "consider zeroing for the summer"}
+
+    Signal types:
+      - ``one_time_excluded``: line of kind=one_time in most recent
+        active budget; will be excluded from the copy
+      - ``seasonal_gap``: category present in some months and absent
+        in others (school-shaped)
+      - ``monotonic_trend``: amount monotonically growing or shrinking
+        over 3+ months
+      - ``quarterly_cadence``: same category reappears at regular
+        ~3-month intervals (taxes, insurance premiums)
+      - ``one_off_deviation``: most recent month deviated > 30% from
+        prior monthly median (vacation-half-month-charging shaped)
+    """
+    _validate_period(target_period, "target_period")
+    # Walk back from target_period to assemble lookback periods.
+    year, month = (int(x) for x in target_period.split("-"))
+    periods: list[str] = []
+    for _ in range(lookback_months):
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+        periods.append(f"{year:04d}-{month:02d}")
+    periods.reverse()  # oldest first
+
+    if not periods:
+        return []
+
+    placeholders = ",".join(["?"] * len(periods))
+    rows = conn.execute(
+        f"SELECT b.period, b.currency_code, bl.category, bl.kind, "
+        f"       bl.amount_minor "
+        f"FROM budget_line bl JOIN budget b ON b.id = bl.budget_id "
+        f"WHERE b.status IN ('active', 'closed') "
+        f"AND b.period IN ({placeholders}) "
+        f"ORDER BY b.period",
+        periods,
+    ).fetchall()
+    if not rows:
+        return []
+
+    most_recent = periods[-1]
+    signals: list[dict[str, Any]] = []
+    seen_signatures: set[tuple] = set()
+
+    # Index by (category, currency_code) → period → (kind, amount)
+    history: dict[tuple[str, int], dict[str, list[tuple[str, int]]]] = {}
+    for period, cur, cat, kind, amt in rows:
+        history.setdefault((cat, cur), {}).setdefault(period, []).append((kind, int(amt)))
+
+    def add(sig: dict[str, Any]) -> None:
+        # Dedup on (type, category, currency_code) so two flavours of
+        # the same insight don't both fire.
+        key = (sig["type"], sig.get("category"), sig.get("currency_code"))
+        if key in seen_signatures:
+            return
+        seen_signatures.add(key)
+        signals.append(sig)
+
+    for (cat, cur), per_period in history.items():
+        # ---- one_time_excluded
+        recent_kinds = per_period.get(most_recent, [])
+        for kind, amt in recent_kinds:
+            if kind == "one_time":
+                add(
+                    {
+                        "type": "one_time_excluded",
+                        "category": cat,
+                        "currency_code": cur,
+                        "evidence": {"recent_period": most_recent, "amount_minor": amt},
+                        "suggestion": (
+                            f"line was one_time in {most_recent}; excluded from "
+                            "the template - re-add if needed this month"
+                        ),
+                    }
+                )
+                break
+
+        # ---- seasonal_gap
+        active_months = set(per_period.keys())
+        if 0 < len(active_months) < len(periods):
+            missing = [p for p in periods if p not in active_months]
+            present = sorted(active_months)
+            if len(missing) >= 1 and len(present) >= 2:
+                add(
+                    {
+                        "type": "seasonal_gap",
+                        "category": cat,
+                        "currency_code": cur,
+                        "evidence": {
+                            "present_in": present,
+                            "missing_in": missing,
+                        },
+                        "suggestion": (
+                            f"present in {len(present)} of {len(periods)} months - "
+                            "ask whether it applies this month"
+                        ),
+                    }
+                )
+
+        # ---- monotonic_trend (baseline-only)
+        amounts_by_period_baseline: list[tuple[str, int]] = []
+        for period in sorted(per_period.keys()):
+            for kind, amt in per_period[period]:
+                if kind == "baseline":
+                    amounts_by_period_baseline.append((period, amt))
+                    break
+        if len(amounts_by_period_baseline) >= 3:
+            amounts = [a for _, a in amounts_by_period_baseline]
+            if all(amounts[i] < amounts[i + 1] for i in range(len(amounts) - 1)):
+                direction = "growing"
+            elif all(amounts[i] > amounts[i + 1] for i in range(len(amounts) - 1)):
+                direction = "shrinking"
+            else:
+                direction = None
+            if direction is not None:
+                # Only flag when the change is at least 5% over the span
+                first, last = amounts[0], amounts[-1]
+                if first != 0 and abs(last - first) / abs(first) >= 0.05:
+                    add(
+                        {
+                            "type": "monotonic_trend",
+                            "category": cat,
+                            "currency_code": cur,
+                            "evidence": {
+                                "direction": direction,
+                                "series": amounts_by_period_baseline,
+                            },
+                            "suggestion": (
+                                f"baseline {direction} over {len(amounts)} months - "
+                                "continue the trend or pin?"
+                            ),
+                        }
+                    )
+
+        # ---- quarterly_cadence
+        sorted_periods = sorted(active_months)
+        if len(sorted_periods) >= 2:
+            gaps = []
+            prev_idx = None
+            for p in sorted_periods:
+                idx = periods.index(p)
+                if prev_idx is not None:
+                    gaps.append(idx - prev_idx)
+                prev_idx = idx
+            if gaps and all(g in (2, 3, 4) for g in gaps) and max(gaps) - min(gaps) <= 1:
+                # Project the next quarterly hit
+                next_idx = periods.index(sorted_periods[-1]) + gaps[-1]
+                target_idx = len(periods)  # target_period sits one beyond the lookback
+                if next_idx == target_idx:
+                    add(
+                        {
+                            "type": "quarterly_cadence",
+                            "category": cat,
+                            "currency_code": cur,
+                            "evidence": {"prior_hits": sorted_periods, "gap": gaps[-1]},
+                            "suggestion": (
+                                "appears on a quarterly cadence; next instance "
+                                f"projects to {target_period}"
+                            ),
+                        }
+                    )
+
+        # ---- one_off_deviation
+        baseline_amounts = [a for _, a in amounts_by_period_baseline]
+        if len(baseline_amounts) >= 3:
+            recent = baseline_amounts[-1]
+            prior = sorted(baseline_amounts[:-1])
+            median = prior[len(prior) // 2]
+            if median != 0 and abs(recent - median) / abs(median) >= 0.3:
+                add(
+                    {
+                        "type": "one_off_deviation",
+                        "category": cat,
+                        "currency_code": cur,
+                        "evidence": {
+                            "recent_amount": recent,
+                            "prior_median": median,
+                            "delta_pct": round((recent - median) / median * 100, 1),
+                        },
+                        "suggestion": (
+                            f"{most_recent} deviated >30% from prior median; "
+                            "ask whether to revert or hold the new value"
+                        ),
+                    }
+                )
+
+    return signals
+
+
+# Top-level grouping for the Family export view. Order shapes how
+# groups appear in the spreadsheet (largest first within each group,
+# but groups in this order). Categories not in this list fall to
+# "Інше" at the bottom.
+_FAMILY_GROUP_ORDER: tuple[tuple[str, str, list[str]], ...] = (
+    ("housing", "Житло", ["Житло", "Перекази/Дружина"]),
+    ("food", "Харчування", ["Їжа"]),
+    ("transport", "Транспорт", ["Транспорт"]),
+    ("subs", "Підписки", ["Підписки"]),
+    ("shopping", "Покупки", ["Покупки", "Подарунки"]),
+    ("health_beauty", "Здоров'я і краса", ["Здоров'я", "Краса"]),
+    ("education", "Освіта", ["Освіта"]),
+    ("travel", "Подорожі", ["Подорожі"]),
+    ("entertainment", "Розваги", ["Розваги"]),
+    ("taxes", "Податки і збори", ["Податки"]),
+    ("donations", "Донати", ["Донати"]),
+    ("transfers", "Перекази", ["Перекази"]),
+    ("connectivity", "Зв'язок", ["Зв'язок"]),
+    ("cash", "Готівка", ["Готівка"]),
+    ("invest", "Інвестиції", ["Інвестиції"]),
+    ("income", "Дохід", ["Дохід"]),
+)
+
+
+def _classify_family_group(category: str) -> tuple[str, str]:
+    """Return (group_key, group_title) for the given category. Falls
+    back to ('other', 'Інше') for categories outside the known map."""
+    for key, title, prefixes in _FAMILY_GROUP_ORDER:
+        for prefix in prefixes:
+            if category == prefix or category.startswith(prefix + "/"):
+                return key, title
+    return "other", "Інше"
+
+
+def family_view_rows(
+    conn: sqlite3.Connection,
+    *,
+    period: str,
+) -> dict[str, Any]:
+    """Build the rendered Family-view structure for ``period``.
+
+    Returns a dict the export writer can walk to produce the styled
+    XLSX. Shape::
+
+        {"period": str,
+         "currencies": [
+            {"currency_code": int, "alpha": str, "total_major": float,
+             "groups": [{"key": str, "title": str, "subtotal_major": float,
+                         "lines": [{"category_display": str,
+                                    "amount_major": float,
+                                    "note": str|None,
+                                    "kind": str}, ...]}, ...]}, ...]}
+    """
+    blocks = fetch_budget(conn, period=period)
+    from .currencies import alpha_for
+
+    currencies: list[dict[str, Any]] = []
+    for b in blocks:
+        if b["status"] != "active":
+            continue  # Family view is only for committed plans
+        from collections import defaultdict
+
+        # Aggregate by full category (so one_time + baseline on the
+        # same category combine for the user's eyes).
+        per_cat: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {"amount_minor": 0, "notes": [], "kinds": set()}
+        )
+        for line in b["lines"]:
+            slot = per_cat[line["category"]]
+            slot["amount_minor"] += line["amount_minor"]
+            if line["note"]:
+                slot["notes"].append(line["note"])
+            slot["kinds"].add(line["kind"])
+
+        # Now bucket categories into groups
+        groups_map: dict[str, dict[str, Any]] = {}
+        for cat, agg in per_cat.items():
+            group_key, group_title = _classify_family_group(cat)
+            if group_key not in groups_map:
+                groups_map[group_key] = {
+                    "key": group_key,
+                    "title": group_title,
+                    "subtotal_major": 0.0,
+                    "lines": [],
+                }
+            groups_map[group_key]["subtotal_major"] += agg["amount_minor"] / 100.0
+            groups_map[group_key]["lines"].append(
+                {
+                    "category": cat,
+                    "category_display": _humanise_category(cat),
+                    "amount_major": agg["amount_minor"] / 100.0,
+                    "note": "; ".join(agg["notes"]) if agg["notes"] else None,
+                    "kinds": sorted(agg["kinds"]),
+                }
+            )
+
+        # Sort lines within group: most-negative first (= biggest spend)
+        for grp in groups_map.values():
+            grp["lines"].sort(key=lambda r: r["amount_major"])
+
+        # Order groups per _FAMILY_GROUP_ORDER, then "other" last
+        ordered_groups: list[dict[str, Any]] = []
+        for key, _title, _prefixes in _FAMILY_GROUP_ORDER:
+            if key in groups_map:
+                ordered_groups.append(groups_map[key])
+        if "other" in groups_map:
+            ordered_groups.append(groups_map["other"])
+
+        currencies.append(
+            {
+                "currency_code": b["currency_code"],
+                "alpha": alpha_for(b["currency_code"]) or str(b["currency_code"]),
+                "total_major": sum(g["subtotal_major"] for g in ordered_groups),
+                "groups": ordered_groups,
+            }
+        )
+
+    return {"period": period, "currencies": currencies}
+
+
+def _humanise_category(category: str) -> str:
+    """Render a slash-delimited taxonomy key as ``TopGroup → Sub``."""
+    parts = category.split("/", 1)
+    if len(parts) == 1:
+        return parts[0]
+    return f"{parts[0]} → {parts[1]}"
 
 
 def export_variance_rows(

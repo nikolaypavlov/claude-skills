@@ -1,15 +1,14 @@
 [project]
 name = "pf-skill"
-version = "0.5.0"
+version = "0.6.0"
 description = "Personal finance umbrella skill - query / report / categorize / budget over the shared ~/finances/data.db"
 authors = [
     { name = "Mykola Pavlov", email = "me@nikolaypavlov.com" },
 ]
 requires-python = ">=3.13"
-# PR#3 read path was stdlib only. PR#4 adds pyyaml for loading
-# description.yaml / *.local.yaml rule files. tzdata stays optional
-# (only matters when a future narrative path converts unix seconds back
-# to Europe/Kyiv for display).
+# pyyaml: loads description.yaml + *.local.yaml rule files (categorizer
+# + manual overrides). openpyxl is optional under the [sheets] extra
+# for XLSX-shaped import/export paths only - CSV paths are stdlib.
 dependencies = [
     "pyyaml>=6",
 ]
