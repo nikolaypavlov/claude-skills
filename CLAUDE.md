@@ -261,7 +261,7 @@ This repository is a Claude Code plugin. When creating or modifying skills, comm
 
 ## Release Workflow
 
-- Always bump plugin version in `.claude-plugin/marketplace.json` before pushing changes that affect a plugin (hooks, skills, etc.)
+- Plugin version lives in two places: the plugin-internal file (`Cargo.toml` / `pyproject.toml`) AND the matching entry in `.claude-plugin/marketplace.json`. Bump both in the SAME commit. The marketplace JSON is what `/plugin` reports as "latest"; if it lags, `/plugin update` shows stale versions and re-runs of the cached install don't pick up new code.
 
 ## Conventions
 
