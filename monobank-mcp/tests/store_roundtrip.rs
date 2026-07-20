@@ -14,6 +14,7 @@ fn synth_account() -> MonoAccount {
         currency_code: common::FIXTURE_CCY_UAH,
         masked_pan: Some(vec!["537541******1234".into()]),
         balance: Some(1_234_567),
+        credit_limit: None,
         label: None,
     }
 }

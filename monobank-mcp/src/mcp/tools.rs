@@ -176,6 +176,7 @@ impl MonobankServer {
         let body = json!({
             "synced": !outcome.partial(),
             "partial": outcome.partial(),
+            "caught_up": outcome.caught_up,
             "skipped": outcome.skipped_all,
             "rows_added": outcome.rows_added,
             "remaining_chunks": outcome.remaining_chunks,

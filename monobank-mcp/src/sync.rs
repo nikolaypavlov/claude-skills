@@ -39,6 +39,12 @@ pub struct AccountSyncOutcome {
     pub rows_skipped: u64,
     pub last_completed_ts: i64,
     pub remaining_chunks: u32,
+    /// Seconds the cursor trails "now" (`now - last_completed_ts`, clamped at
+    /// 0). Small even when `remaining_chunks > 0`, which is the whole point:
+    /// a cursor a few minutes behind still has to close its trailing chunk,
+    /// but the data is effectively current. Read this, not `remaining_chunks`,
+    /// to answer "is this account up to date?".
+    pub gap_seconds: i64,
     /// If a chunk failed we record it here and skip the remaining chunks of
     /// that account; the caller decides whether to fail the whole run.
     pub error: Option<String>,
@@ -51,7 +57,19 @@ pub struct SyncOutcome {
     pub remaining_chunks: u32,
     /// True only when there was nothing to do for any account.
     pub skipped_all: bool,
+    /// Every account's cursor is within `CAUGHT_UP_GAP_SECONDS` of now and no
+    /// account errored. Distinguishes "cursor trails the present by a chunk
+    /// boundary but the DB is current" (`caught_up: true`, `partial` may still
+    /// be true) from a genuine multi-day backlog. Prefer this over
+    /// `!partial()` when deciding whether a follow-up sync is worthwhile.
+    pub caught_up: bool,
 }
+
+/// A cursor within this many seconds of "now" counts as caught up: only the
+/// current live statement window can still be pending, which the next sync
+/// closes. One day comfortably covers "trails by minutes/hours" (cursor lag)
+/// while still flagging real multi-day backlogs as not caught up.
+pub const CAUGHT_UP_GAP_SECONDS: i64 = 24 * 60 * 60;
 
 impl SyncOutcome {
     pub fn partial(&self) -> bool {
@@ -203,6 +221,7 @@ impl SyncEngine {
                         rows_skipped: 0,
                         last_completed_ts: now,
                         remaining_chunks: 0,
+                        gap_seconds: 0,
                         error: None,
                     });
                     continue;
@@ -236,6 +255,7 @@ impl SyncEngine {
                         rows_skipped: 0,
                         last_completed_ts,
                         remaining_chunks: 0,
+                        gap_seconds: (now - last_completed_ts).max(0),
                         error: None,
                     });
                     continue;
@@ -250,6 +270,7 @@ impl SyncEngine {
                     rows_skipped: 0,
                     last_completed_ts,
                     remaining_chunks: 0,
+                    gap_seconds: (now - last_completed_ts).max(0),
                     error: None,
                 });
                 continue;
@@ -299,9 +320,19 @@ impl SyncEngine {
                 rows_skipped: acc_skipped,
                 last_completed_ts: last_done_ts,
                 remaining_chunks: remaining,
+                gap_seconds: (now - last_done_ts).max(0),
                 error,
             });
         }
+        // Caught up when no account errored and every cursor is within the
+        // live window. Deliberately independent of `remaining_chunks`: a
+        // cursor trailing by minutes still reports one pending chunk, yet the
+        // DB is current - this is exactly the "partial but already up to date"
+        // case that otherwise reads as a backlog.
+        out.caught_up = out
+            .per_account
+            .iter()
+            .all(|a| a.error.is_none() && a.gap_seconds < CAUGHT_UP_GAP_SECONDS);
         Ok(out)
     }
 

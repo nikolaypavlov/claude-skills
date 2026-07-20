@@ -20,8 +20,14 @@ pub struct MonoAccount {
     pub currency_code: i64,
     #[serde(default, rename = "maskedPan")]
     pub masked_pan: Option<Vec<String>>,
+    /// Current balance in minor units. INCLUDES the credit line (see
+    /// `credit_limit`). Present on card/fop accounts.
     #[serde(default)]
     pub balance: Option<i64>,
+    /// Credit line in minor units, baked into `balance`. Real own funds =
+    /// `balance - credit_limit`. Absent/zero for accounts with no overdraft.
+    #[serde(default, rename = "creditLimit")]
+    pub credit_limit: Option<i64>,
     /// Optional human label - not in the API; we keep it for the local row.
     #[serde(default)]
     pub label: Option<String>,

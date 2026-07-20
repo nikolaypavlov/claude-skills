@@ -243,6 +243,43 @@ def test_diff_surfaces_actuals_with_no_budget_line(
     assert patreon["actual_minor"] == -21232
 
 
+def test_diff_totals_split_spend_and_income(
+    mono_only_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Totals must keep real spend and income separate. The legacy
+    ``actual_minor`` nets income into the spend number (the exact trap
+    that confused reconciliation); the split fields are the fix."""
+    conn = open_db(mono_only_db)
+    # mono_t1 -25000 (spend), mono_t2 -150000 (spend), mono_t3 +500000 (income)
+    conn.execute(
+        "INSERT INTO tx_category (tx_id, category, set_at, set_by) VALUES "
+        "('mono_t1', 'Їжа/Кава', 1700000050, 'manual'), "
+        "('mono_t2', 'Їжа/Продукти', 1700001050, 'manual'), "
+        "('mono_t3', 'Дохід/Зарплата', 1700002050, 'manual')"
+    )
+    bud.materialise_budget(
+        conn,
+        period="2023-11",
+        rows=[
+            bud.PlanRow("2023-11", "Їжа/Кава", 980, "baseline", -30000),
+            bud.PlanRow("2023-11", "Їжа/Продукти", 980, "baseline", -200000),
+        ],
+        source="seed",
+    )
+    conn.close()
+    rc, out, err = _run(["diff", "--period", "2023-11", "--db", str(mono_only_db)], capsys)
+    assert rc == 0, err
+    uah = next(b for b in out["blocks"] if b["currency_code"] == 980)
+    t = uah["totals"]
+    assert t["real_spend_minor"] == -175000  # spend rows only, income excluded
+    assert t["income_minor"] == 500000  # salary
+    # remaining = spend_target(-230000) - real_spend(-175000)
+    assert t["remaining_minor"] == -55000
+    # legacy net still present and equals spend+income - which is exactly
+    # why it is misleading on its own.
+    assert t["actual_minor"] == 325000
+
+
 # --- rename-category --------------------------------------------------------
 
 

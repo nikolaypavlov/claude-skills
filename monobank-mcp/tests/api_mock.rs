@@ -94,6 +94,7 @@ async fn sync_engine_retries_rate_limited_three_times_then_gives_up() {
             currency_code: 980,
             masked_pan: None,
             balance: None,
+            credit_limit: None,
             label: None,
         })
         .await

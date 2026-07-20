@@ -1214,17 +1214,12 @@ def diff_budget_vs_actual(
                 }
             )
         rows.sort(key=lambda r: r["target_minor"])  # most-negative first
-        totals = {
-            "target_minor": sum(r["target_minor"] for r in rows),
-            "actual_minor": sum(r["actual_minor"] for r in rows),
-            "delta_minor": sum(r["delta_minor"] for r in rows),
-        }
         out.append(
             {
                 "currency_code": cur,
                 "status": b["status"],
                 "lines": rows,
-                "totals": totals,
+                "totals": _diff_totals(rows),
             }
         )
     # Surface actuals for currencies that have no budget at all.
@@ -1248,11 +1243,7 @@ def diff_budget_vs_actual(
                 "currency_code": cur,
                 "status": None,  # no budget
                 "lines": rows,
-                "totals": {
-                    "target_minor": 0,
-                    "actual_minor": sum(r["actual_minor"] for r in rows),
-                    "delta_minor": -sum(r["actual_minor"] for r in rows),
-                },
+                "totals": _diff_totals(rows),
             }
         )
     return out
@@ -1266,6 +1257,46 @@ def _pct_used(actual: int, target: int) -> float | None:
     if target == 0:
         return None
     return round(actual / target * 100.0, 1)
+
+
+# Top-level category group that denotes real income (Дохід/Зарплата,
+# Дохід/ВПО, ...). Internal transfers (Перекази/СвоїКартки) are already
+# dropped upstream by ``actuals_for_period``, so within a diff block the
+# only non-spend rows are income.
+_INCOME_CATEGORY_PREFIX = "Дохід"
+
+
+def _is_income_category(category: str) -> bool:
+    return category == _INCOME_CATEGORY_PREFIX or category.startswith(_INCOME_CATEGORY_PREFIX + "/")
+
+
+def _diff_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Totals for a diff block that keep spend and income SEPARATE.
+
+    ``actual_minor`` is the legacy net-of-income figure (kept so existing
+    consumers don't break), but it is misleading on its own: income lands
+    on ``Дохід/*`` rows as positive amounts and silently shrinks it. The
+    explicit fields are the ones to report:
+
+      - ``real_spend_minor``  - sum of actual on non-income rows (refunds
+        net in as positive offsets). Transfers are already excluded
+        upstream.
+      - ``income_minor``      - sum of actual on ``Дохід/*`` rows.
+      - ``remaining_minor``   - planned outflow left = spend target minus
+        real spend (signed like the targets: negative = budget still to
+        spend, positive = overspent).
+    """
+    spend_rows = [r for r in rows if not _is_income_category(r["category"])]
+    real_spend = sum(r["actual_minor"] for r in spend_rows)
+    spend_target = sum(r["target_minor"] for r in spend_rows)
+    return {
+        "target_minor": sum(r["target_minor"] for r in rows),
+        "actual_minor": sum(r["actual_minor"] for r in rows),
+        "delta_minor": sum(r["delta_minor"] for r in rows),
+        "real_spend_minor": real_spend,
+        "income_minor": sum(r["actual_minor"] for r in rows if _is_income_category(r["category"])),
+        "remaining_minor": spend_target - real_spend,
+    }
 
 
 @dataclass

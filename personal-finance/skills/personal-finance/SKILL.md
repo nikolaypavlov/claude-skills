@@ -48,6 +48,22 @@ pf-query accounts
 
 Returns `{ok, detected_banks, accounts: [{bank, account_id, label, currency_code, ...}]}`. If no ingest plugin has populated tables, you'll see `warning: "no transaction sources detected..."` - tell the user which plugins to install.
 
+### Current balances and real funds
+
+```bash
+pf-query balances
+# optional cross-currency coverage view (opt-in, explicit rate):
+pf-query balances --convert-to UAH --rate USD=44.5 [--rate EUR=48.0]
+```
+
+Returns `{ok, detected_banks, by_currency: {UAH: {accounts:[...], balance_minor_total, real_funds_minor_total, unknown_accounts}, ...}}`. Per account you get `balance_minor`, `credit_limit_minor`, `real_funds_minor` (= balance - credit line), `name`, `balance_synced_at`, and `balance_source`:
+
+- `account` - authoritative balance stored on `<bank>_accounts` (monobank-mcp >= 0.3, refreshed by `monobank-mcp accounts` / backfill). Preferred; sidesteps the same-timestamp transfer-pair ambiguity.
+- `transaction` - fallback to the newest transaction's running balance (privat, or a pre-0.3 mono row).
+- `none` - no balance resolvable (dormant account, no synced tx); listed but excluded from totals and counted in `unknown_accounts`.
+
+A credit line is baked into `balance_minor`, so `real_funds_minor` is the user's own money; a balance below the credit limit means debt. Totals are summed **within** each currency only. `--convert-to` is the single opt-in exception that crosses currencies - it needs an explicit `--rate` per held currency (use the user's own recent FOP transfer-pair rate, not a market quote); any currency without a rate is flagged in `converted.unconverted`, never silently dropped.
+
 ### Filtered transaction list
 
 ```bash
@@ -214,6 +230,14 @@ pf-budget diff --period 2026-06 [--currency UAH]
 ```
 
 Joins budget lines with actuals via the same category-resolution path as `pf-query`. Categories that exist only in actuals (no budget line) surface as `in_budget=false`. Excludes `Перекази/СвоїКартки` by default to match the "real spending" convention.
+
+Per-block `totals` keeps spend and income **separate** - report these three, not the raw net:
+
+- `real_spend_minor` - sum of actual on non-income rows (spend; refunds net in).
+- `income_minor` - sum of actual on `Дохід/*` rows.
+- `remaining_minor` - planned outflow left (`spend_target - real_spend`; signed like targets: negative = budget still to spend, positive = overspent).
+
+`actual_minor` is retained for back-compat but is a net-of-income figure: income lands on `Дохід/*` rows as positive amounts and silently shrinks it. Never present it as "spent" on its own.
 
 ### Snapshot / reopen / delete
 

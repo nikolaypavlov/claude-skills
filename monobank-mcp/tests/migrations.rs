@@ -61,8 +61,30 @@ fn rerun_does_not_duplicate_version_row() {
     ensure_mono_schema(&mut conn).unwrap();
     ensure_mono_schema(&mut conn).unwrap();
     ensure_mono_schema(&mut conn).unwrap();
+    // One row per applied migration; reruns must not re-insert any.
     let n: i64 = conn
         .query_row("SELECT COUNT(*) FROM mono_schema_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(n, 1);
+    assert_eq!(n, EXPECTED_MONO_SCHEMA_VERSION);
+}
+
+#[test]
+fn v2_adds_account_balance_columns() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("data.db");
+    let mut conn = open(&db);
+    ensure_mono_schema(&mut conn).unwrap();
+    let cols: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('mono_accounts') ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for expected in ["balance_minor", "credit_limit_minor", "balance_synced_at"] {
+        assert!(
+            cols.iter().any(|c| c == expected),
+            "mono_accounts missing column {expected}; has {cols:?}"
+        );
+    }
 }

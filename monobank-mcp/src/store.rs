@@ -68,6 +68,14 @@ impl Store {
         })
     }
 
+    /// Upsert an account from client-info. `balance`/`credit_limit` are only
+    /// present on the client-info path (`accounts`, backfill); the sync path
+    /// never calls this, so a stored balance is "as of the last accounts/
+    /// backfill run" - `balance_synced_at` records when. On conflict the
+    /// balance fields are COALESCE'd so a caller that somehow upserts without
+    /// a balance (e.g. a future partial refresh) does not wipe a good value.
+    /// `balance_synced_at` is stamped only when a fresh balance is supplied,
+    /// so it always dates the value it sits next to.
     pub async fn upsert_account(&self, acc: &MonoAccount) -> Result<()> {
         let conn = self.conn.lock().await;
         let masked = acc
@@ -75,27 +83,35 @@ impl Store {
             .as_ref()
             .map(|v| v.join(","))
             .unwrap_or_default();
+        let masked_opt = if masked.is_empty() {
+            None
+        } else {
+            Some(masked)
+        };
         conn.execute(
             "INSERT INTO mono_accounts \
-                 (account_id, iban, type, currency_code, masked_pan, label, opened_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL) \
+                 (account_id, iban, type, currency_code, masked_pan, label, opened_at, \
+                  balance_minor, credit_limit_minor, balance_synced_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, \
+                     CASE WHEN ?7 IS NULL THEN NULL ELSE strftime('%s','now') END) \
              ON CONFLICT(account_id) DO UPDATE SET \
                  iban = excluded.iban, \
                  type = excluded.type, \
                  currency_code = excluded.currency_code, \
                  masked_pan = excluded.masked_pan, \
-                 label = COALESCE(excluded.label, mono_accounts.label)",
+                 label = COALESCE(excluded.label, mono_accounts.label), \
+                 balance_minor = COALESCE(excluded.balance_minor, mono_accounts.balance_minor), \
+                 credit_limit_minor = COALESCE(excluded.credit_limit_minor, mono_accounts.credit_limit_minor), \
+                 balance_synced_at = COALESCE(excluded.balance_synced_at, mono_accounts.balance_synced_at)",
             params![
                 acc.id,
                 acc.iban,
                 acc.r#type,
                 acc.currency_code,
-                if masked.is_empty() {
-                    None
-                } else {
-                    Some(masked)
-                },
+                masked_opt,
                 acc.label,
+                acc.balance,
+                acc.credit_limit,
             ],
         )?;
         Ok(())
@@ -104,7 +120,8 @@ impl Store {
     pub async fn list_accounts(&self) -> Result<Vec<AccountRow>> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
-            "SELECT account_id, iban, type, currency_code, masked_pan, label, opened_at \
+            "SELECT account_id, iban, type, currency_code, masked_pan, label, opened_at, \
+                    balance_minor, credit_limit_minor, balance_synced_at \
              FROM mono_accounts ORDER BY account_id",
         )?;
         let rows = stmt
@@ -117,6 +134,9 @@ impl Store {
                     masked_pan: row.get(4)?,
                     label: row.get(5)?,
                     opened_at: row.get(6)?,
+                    balance_minor: row.get(7)?,
+                    credit_limit_minor: row.get(8)?,
+                    balance_synced_at: row.get(9)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -324,6 +344,13 @@ pub struct AccountRow {
     pub masked_pan: Option<String>,
     pub label: Option<String>,
     pub opened_at: Option<i64>,
+    /// Current balance in minor units (includes the credit line). NULL until
+    /// a client-info refresh (`accounts`/backfill) has run.
+    pub balance_minor: Option<i64>,
+    /// Credit line baked into `balance_minor`. Real funds = balance - limit.
+    pub credit_limit_minor: Option<i64>,
+    /// Unix seconds when `balance_minor` was last refreshed. NULL if never.
+    pub balance_synced_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -368,6 +395,7 @@ mod tests {
             currency_code: 980,
             masked_pan: None,
             balance: None,
+            credit_limit: None,
             label: None,
         })
         .await
@@ -401,6 +429,7 @@ mod tests {
             currency_code: 980,
             masked_pan: None,
             balance: None,
+            credit_limit: None,
             label: None,
         })
         .await
@@ -417,6 +446,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upsert_persists_balance_and_credit_limit() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_account(&MonoAccount {
+            id: "acc1".into(),
+            iban: None,
+            r#type: Some("black".into()),
+            currency_code: 980,
+            masked_pan: None,
+            balance: Some(20_199_575),
+            credit_limit: Some(20_000_000),
+            label: None,
+        })
+        .await
+        .unwrap();
+        let row = s
+            .list_accounts()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.account_id == "acc1")
+            .unwrap();
+        assert_eq!(row.balance_minor, Some(20_199_575));
+        assert_eq!(row.credit_limit_minor, Some(20_000_000));
+        assert!(row.balance_synced_at.is_some(), "synced_at stamped");
+    }
+
+    #[tokio::test]
+    async fn upsert_without_balance_keeps_prior_value() {
+        // A refresh that carries no balance (e.g. balance omitted) must not
+        // wipe a previously-stored one - COALESCE guards the columns.
+        let s = Store::open_in_memory().unwrap();
+        let mut acc = MonoAccount {
+            id: "acc1".into(),
+            iban: None,
+            r#type: Some("black".into()),
+            currency_code: 980,
+            masked_pan: None,
+            balance: Some(500_000),
+            credit_limit: Some(200_000),
+            label: None,
+        };
+        s.upsert_account(&acc).await.unwrap();
+        acc.balance = None;
+        acc.credit_limit = None;
+        s.upsert_account(&acc).await.unwrap();
+        let row = s
+            .list_accounts()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.account_id == "acc1")
+            .unwrap();
+        assert_eq!(row.balance_minor, Some(500_000));
+        assert_eq!(row.credit_limit_minor, Some(200_000));
+    }
+
+    #[tokio::test]
     async fn op_amount_and_op_currency_are_jointly_null_for_domestic() {
         let s = Store::open_in_memory().unwrap();
         s.upsert_account(&MonoAccount {
@@ -426,6 +512,7 @@ mod tests {
             currency_code: 980,
             masked_pan: None,
             balance: None,
+            credit_limit: None,
             label: None,
         })
         .await

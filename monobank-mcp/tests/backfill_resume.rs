@@ -97,6 +97,7 @@ async fn backfill_rewalks_when_from_is_earlier_than_existing_cursor() {
             currency_code: common::FIXTURE_CCY_UAH,
             masked_pan: None,
             balance: None,
+            credit_limit: None,
             label: None,
         })
         .await
@@ -138,6 +139,7 @@ async fn rewind_sync_state_keeps_lower_existing_cursor() {
             currency_code: common::FIXTURE_CCY_UAH,
             masked_pan: None,
             balance: None,
+            credit_limit: None,
             label: None,
         })
         .await

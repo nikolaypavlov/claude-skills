@@ -71,6 +71,15 @@ constraint (різні parent tables). Validation - на app level у personal-f
 | label         | TEXT    | YES  | human label                                   |
 | opened_at     | INTEGER | YES  | account creation, unix s                      |
 
+Optional balance columns (monobank-mcp >= 0.3; other ingests may omit
+them - the personal-finance reader falls back to the latest tx balance):
+
+| Column             | Type    | Null | Опис                                          |
+|--------------------|---------|------|-----------------------------------------------|
+| balance_minor      | INTEGER | YES  | current balance, INCLUDES any credit line     |
+| credit_limit_minor | INTEGER | YES  | credit line baked into balance (real = bal - limit) |
+| balance_synced_at  | INTEGER | YES  | unix s when balance last refreshed            |
+
 ## 6. Per-plugin schema_version
 
 ```sql

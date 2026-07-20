@@ -19,9 +19,12 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// Schema files in apply order. New migrations go at the end.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../schema/mono_001_initial.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../schema/mono_001_initial.sql")),
+    (2, include_str!("../schema/mono_002_account_balance.sql")),
+];
 
-pub const EXPECTED_MONO_SCHEMA_VERSION: i64 = 1;
+pub const EXPECTED_MONO_SCHEMA_VERSION: i64 = 2;
 
 pub fn ensure_mono_schema(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(
@@ -90,9 +93,11 @@ mod tests {
         let mut conn = in_memory();
         ensure_mono_schema(&mut conn).unwrap();
         ensure_mono_schema(&mut conn).unwrap();
+        // One version row per applied migration; a rerun must not re-apply
+        // any, so the count equals the highest expected version.
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM mono_schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 1);
+        assert_eq!(rows, EXPECTED_MONO_SCHEMA_VERSION);
     }
 }

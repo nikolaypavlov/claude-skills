@@ -159,6 +159,140 @@ def list_accounts(
     ]
 
 
+# Friendly display names for Monobank's account `type` values. The
+# ingest stores the raw API type ('black', 'fop', 'diia', 'eAid',
+# 'madeInUkraine') and never a label, so the presentation layer maps
+# them. Types that exist in several currencies get a currency suffix
+# (Black-UAH, FOP-USD); single-currency products stay bare (Diia, eAid)
+# to match how the user names them. Unknown types fall back to a
+# title-cased form so a new Mono product still renders sensibly.
+_MONO_TYPE_NAMES: dict[str, str] = {
+    "black": "Black",
+    "fop": "FOP",
+    "diia": "Diia",
+    "eaid": "eAid",
+    "madeinukraine": "madeInUkraine",
+}
+_MULTI_CURRENCY_TYPES: frozenset[str] = frozenset({"black", "fop"})
+
+
+def account_display_name(
+    *, type_: str | None, currency_alpha: str | None, label: str | None
+) -> str | None:
+    """Human name for an account. A stored ``label`` always wins; else
+    derive from the Mono ``type`` (+ currency suffix for multi-currency
+    products). Returns ``None`` only when there is nothing to go on."""
+    if label:
+        return label
+    if not type_:
+        return None
+    key = type_.lower()
+    base = _MONO_TYPE_NAMES.get(key, type_.capitalize())
+    if key in _MULTI_CURRENCY_TYPES and currency_alpha:
+        return f"{base}-{currency_alpha}"
+    return base
+
+
+def _account_balance_for(
+    conn: sqlite3.Connection, *, bank: str, account_id: str
+) -> tuple[int | None, int | None, int | None, str]:
+    """Resolve (balance_minor, credit_limit_minor, balance_synced_at,
+    source) for one account.
+
+    Prefers the authoritative per-account balance stored on
+    ``<bank>_accounts`` (monobank-mcp >= 0.3 persists ``balance_minor`` /
+    ``credit_limit_minor`` from client-info). This sidesteps the
+    same-timestamp transfer-pair ambiguity that makes the transaction
+    tail an unreliable balance source for pass-through accounts.
+
+    Falls back to the latest transaction's ``balance_minor`` for banks
+    whose account table carries no balance column (e.g. privat, imported
+    from XLSX). ``source`` is ``"account"``, ``"transaction"``, or
+    ``"none"`` so the caller can flag stale / missing data.
+
+    ``bank`` is a regex-validated prefix from ``discover_sources`` and is
+    safe to interpolate into the table identifier.
+    """
+    acc_cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{bank}_accounts")')}
+    if "balance_minor" in acc_cols:
+        credit_expr = "credit_limit_minor" if "credit_limit_minor" in acc_cols else "NULL"
+        synced_expr = "balance_synced_at" if "balance_synced_at" in acc_cols else "NULL"
+        row = conn.execute(
+            f"SELECT balance_minor, {credit_expr}, {synced_expr} "
+            f'FROM "{bank}_accounts" WHERE account_id = ?',
+            (account_id,),
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            return (int(row[0]), _opt_int(row[1]), _opt_int(row[2]), "account")
+
+    # Fallback: newest transaction that carries a running balance.
+    tx_cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{bank}_transactions")')}
+    if "balance_minor" in tx_cols:
+        row = conn.execute(
+            f'SELECT balance_minor FROM "{bank}_transactions" '
+            f"WHERE account_id = ? AND balance_minor IS NOT NULL "
+            f"ORDER BY ts DESC, id DESC LIMIT 1",
+            (account_id,),
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            return (int(row[0]), None, None, "transaction")
+    return (None, None, None, "none")
+
+
+def _opt_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
+
+
+def account_balances(
+    conn: sqlite3.Connection,
+    *,
+    sources: DiscoveredSources | None = None,
+) -> list[dict[str, Any]]:
+    """Current balance and real funds for every discovered account.
+
+    ``real_funds_minor = balance_minor - credit_limit_minor`` (a credit
+    line is baked into the reported balance, so only the excess is the
+    user's own money; a balance below the limit means debt). Accounts
+    with no resolvable balance report ``balance_minor = None`` and
+    ``balance_source = "none"`` so the caller can surface them rather
+    than silently dropping them from a coverage total.
+
+    One dict per account, ordered by currency then name. Currency is
+    kept per-account; callers sum WITHIN a currency, never across.
+    """
+    from .currencies import alpha_for
+
+    if sources is None:
+        sources = discover_sources(conn)
+    accounts = list_accounts(conn, sources=sources)
+    out: list[dict[str, Any]] = []
+    for acc in accounts:
+        balance, credit, synced_at, source = _account_balance_for(
+            conn, bank=acc["bank"], account_id=acc["account_id"]
+        )
+        real = balance - (credit or 0) if balance is not None else None
+        alpha = alpha_for(acc["currency_code"])
+        out.append(
+            {
+                "account_id": acc["account_id"],
+                "bank": acc["bank"],
+                "type": acc["type"],
+                "name": account_display_name(
+                    type_=acc["type"], currency_alpha=alpha, label=acc["label"]
+                ),
+                "currency_code": acc["currency_code"],
+                "currency": alpha or str(acc["currency_code"]),
+                "balance_minor": balance,
+                "credit_limit_minor": credit,
+                "real_funds_minor": real,
+                "balance_synced_at": synced_at,
+                "balance_source": source,
+            }
+        )
+    out.sort(key=lambda r: (r["currency"], r["name"] or r["account_id"]))
+    return out
+
+
 def get_transactions(
     conn: sqlite3.Connection,
     *,
@@ -395,10 +529,7 @@ def list_categories(
         "ORDER BY tx_count DESC, category ASC"
     )
     in_use_rows = list(conn.execute(sql))
-    results = [
-        {"category": r[0], "tx_count": int(r[1]), "declared": False}
-        for r in in_use_rows
-    ]
+    results = [{"category": r[0], "tx_count": int(r[1]), "declared": False} for r in in_use_rows]
     if not include_declared:
         return results
     in_use_names = {r["category"] for r in results}

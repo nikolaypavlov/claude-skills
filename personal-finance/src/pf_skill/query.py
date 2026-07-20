@@ -3,6 +3,7 @@
 Subcommands::
 
     pf-query accounts
+    pf-query balances
     pf-query categories
     pf-query list --from <ts> --to <ts> [filters]
     pf-query summarize --from <ts> --to <ts> --group-by <key> [filters]
@@ -61,6 +62,119 @@ def cmd_accounts(args: argparse.Namespace) -> dict[str, Any]:
         "detected_banks": list(sources.account_banks),
         "accounts": accounts,
     }
+    if not sources.has_any_tx():
+        payload["warning"] = (
+            "no transaction sources detected - install at least one ingest "
+            "plugin (monobank-mcp or privat24-skill)"
+        )
+    return payload
+
+
+def _parse_rate_args(specs: list[str] | None) -> dict[int, float]:
+    """Parse repeatable ``--rate CUR=VALUE`` specs into
+    ``{numeric_code: rate}`` where rate is target-per-source major units.
+    Raises ``CliError`` on a malformed spec or unknown currency."""
+    rates: dict[int, float] = {}
+    for spec in specs or []:
+        if "=" not in spec:
+            raise CliError(f"--rate must be CUR=VALUE, got {spec!r}")
+        cur, _, val = spec.partition("=")
+        code = _parse_currency_or_cli_error(cur.strip())
+        assert code is not None  # cur is non-empty here
+        try:
+            rate = float(val.strip())
+        except ValueError as exc:
+            raise CliError(f"--rate {spec!r}: {val!r} is not a number") from exc
+        if rate <= 0:
+            raise CliError(f"--rate {spec!r}: rate must be positive")
+        rates[code] = rate
+    return rates
+
+
+def _convert_block(
+    by_currency: dict[str, dict[str, Any]],
+    *,
+    target_code: int,
+    rates: dict[int, float],
+) -> dict[str, Any]:
+    """Express each currency's real funds in the target currency using
+    caller-supplied rates (target-per-source major units). The target
+    currency converts at 1.0; any currency without a rate is left out of
+    the total and flagged in ``unconverted`` so a coverage figure never
+    silently drops money it could not convert.
+
+    This is the ONLY place personal-finance crosses currencies, and only
+    on explicit request with an explicit rate - the default reporting
+    path keeps currencies strictly separate.
+    """
+    from .common.currencies import alpha_for
+
+    target_alpha = alpha_for(target_code) or str(target_code)
+    per_currency: list[dict[str, Any]] = []
+    unconverted: list[str] = []
+    total = 0
+    for alpha, block in by_currency.items():
+        real = block["real_funds_minor_total"]
+        # Resolve this block's numeric code from any account in it.
+        code = block["accounts"][0]["currency_code"] if block["accounts"] else None
+        rate = 1.0 if code == target_code else rates.get(code) if code else None
+        if rate is None:
+            unconverted.append(alpha)
+            continue
+        converted = round(real * rate)
+        total += converted
+        per_currency.append(
+            {
+                "currency": alpha,
+                "real_funds_minor": real,
+                "rate": rate,
+                "converted_minor": converted,
+            }
+        )
+    return {
+        "target_currency": target_alpha,
+        "per_currency": per_currency,
+        "total_minor": total,
+        "unconverted": unconverted,
+    }
+
+
+def cmd_balances(args: argparse.Namespace) -> dict[str, Any]:
+    db_path = resolve_db_path(args.db)
+    target_code = _parse_currency_or_cli_error(getattr(args, "convert_to", None))
+    rates = _parse_rate_args(getattr(args, "rate", None))
+    with closing(open_db(db_path)) as conn:
+        sources = discover_sources(conn)
+        rows = q.account_balances(conn, sources=sources)
+    # Group per currency and total real funds WITHIN each currency - never
+    # across (mixing currencies into one sum is a hard project rule).
+    # Accounts whose balance could not be resolved are still listed but
+    # excluded from the totals and counted under ``unknown_accounts`` so a
+    # coverage figure never silently understates by dropping them.
+    by_currency: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        block = by_currency.setdefault(
+            r["currency"],
+            {
+                "accounts": [],
+                "balance_minor_total": 0,
+                "real_funds_minor_total": 0,
+                "unknown_accounts": 0,
+            },
+        )
+        block["accounts"].append(r)
+        if r["balance_minor"] is None:
+            block["unknown_accounts"] += 1
+            continue
+        block["balance_minor_total"] += r["balance_minor"]
+        block["real_funds_minor_total"] += r["real_funds_minor"]
+    payload: dict[str, Any] = {
+        "ok": True,
+        "detected_banks": list(sources.account_banks),
+        "by_currency": by_currency,
+    }
+    if target_code is not None:
+        payload["converted"] = _convert_block(by_currency, target_code=target_code, rates=rates)
     if not sources.has_any_tx():
         payload["warning"] = (
             "no transaction sources detected - install at least one ingest "
@@ -213,6 +327,34 @@ def _build_parser() -> argparse.ArgumentParser:
     p_acc = sub.add_parser("accounts", help="List accounts across detected banks")
     p_acc.add_argument("--db", default=None)
     p_acc.set_defaults(func=cmd_accounts)
+
+    p_bal = sub.add_parser(
+        "balances",
+        help="Current balance and real funds per account, grouped by currency",
+    )
+    p_bal.add_argument(
+        "--convert-to",
+        dest="convert_to",
+        default=None,
+        help=(
+            "Also express real funds in this currency (alpha-3 or numeric). "
+            "Opt-in only; needs --rate for every other currency held. The "
+            "default view keeps currencies separate."
+        ),
+    )
+    p_bal.add_argument(
+        "--rate",
+        action="append",
+        default=None,
+        metavar="CUR=VALUE",
+        help=(
+            "Conversion rate as target-per-source major units, e.g. "
+            "--rate USD=44.5. Repeatable. Use your own recent FOP "
+            "transfer-pair rate, not a market quote."
+        ),
+    )
+    p_bal.add_argument("--db", default=None)
+    p_bal.set_defaults(func=cmd_balances)
 
     p_cats = sub.add_parser(
         "categories",

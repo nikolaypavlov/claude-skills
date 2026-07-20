@@ -27,6 +27,7 @@ async fn deadline_produces_partial_then_resumes() {
             currency_code: 980,
             masked_pan: None,
             balance: None,
+            credit_limit: None,
             label: None,
         })
         .await
@@ -105,6 +106,7 @@ async fn sync_auto_seeds_missing_state_to_now() {
             currency_code: 980,
             masked_pan: None,
             balance: None,
+            credit_limit: None,
             label: None,
         })
         .await

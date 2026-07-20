@@ -69,6 +69,10 @@ For full Monobank API documentation see
 | `get_sync_status`   | Cursor + gap (seconds to now) per account.                           |
 | `list_mono_accounts`| Diagnostic listing; not the cross-bank account listing.              |
 
+`ensure_synced` returns `caught_up` (0.3.0+): every account's cursor is within a day of now and none errored. It is deliberately independent of `remaining_chunks` - a cursor trailing by minutes still reports a pending chunk, so `partial: true` with `caught_up: true` means "already up to date, don't bother with a follow-up sync". Each `per_account` entry also carries `gap_seconds` (cursor lag to now).
+
+`list_mono_accounts` includes `balance_minor`, `credit_limit_minor`, and `balance_synced_at` (0.3.0+). These come from `/personal/client-info` and are refreshed by `monobank-mcp accounts` / backfill, NOT by sync - `balance_synced_at` dates the value. Monobank's balance INCLUDES the credit line, so real funds = `balance_minor - credit_limit_minor`.
+
 ## Key invariants
 
 - **Per-chunk atomicity**: INSERT OR IGNORE on `mono_transactions` and the UPSERT on `mono_sync_state` share one SQLite transaction. A kill mid-chunk never leaves the cursor ahead of the data.
