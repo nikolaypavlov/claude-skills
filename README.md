@@ -152,6 +152,17 @@ Python umbrella skill in the personal-finance family. Queries, reports, categori
 
 **Requirements:** `uv` and Python >= 3.13. At least one ingest plugin (`monobank-mcp` and/or `privat24-skill`) installed and populated. The `sheets` optional extra (`uv pip install pf-skill[sheets]`) pulls `openpyxl` for XLSX import/export paths; CSV paths are stdlib.
 
+### STE Writing
+
+Prose rewriting into a controlled plain technical style for English and Ukrainian. Removes "AI slop" from docs, READMEs, PR descriptions, error messages, and release notes - never code.
+
+**Features:**
+- English ruleset based on ASD-STE100 Simplified Technical English
+- Ukrainian ruleset: adapted STE rules + DSTU 3966:2009 style guidance (calques, active participles, -ся passives, -но/-то forms)
+- Two symmetric modes: strict (procedures, safety text, error messages) and STE-flavored (general prose)
+- Rewrites in the language of the source text; explicit user instruction overrides
+- Self-lint checklists per language; no dependencies, documentation-only skill
+
 ## Installation
 
 ### Add Marketplace
@@ -195,6 +206,9 @@ Python umbrella skill in the personal-finance family. Queries, reports, categori
 
 # Install Personal Finance umbrella (Python; needs `uv` and >=1 ingest plugin)
 /plugin install personal-finance@ai-engineering-skills
+
+# Install STE Writing (prose rewriting, English + Ukrainian)
+/plugin install ste-writing@ai-engineering-skills
 ```
 
 ## Usage
@@ -316,6 +330,10 @@ claude-skills/
 │                                 # reports / rules / categorizer /
 │                                 # budget import / planning / export +
 │                                 # end-to-end CLI)
+├── ste-writing/                  # STE Writing plugin
+│   ├── SKILL.md                  # Core: scope, language selection, modes, self-lint
+│   └── references/               # english.md (ASD-STE100),
+│                                 # ukrainian.md (adapted STE + DSTU 3966:2009)
 ├── docs/
 │   ├── transactions-schema.md   # Cross-plugin row-shape contract
 │   └── pre-publish-checklist.md

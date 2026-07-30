@@ -15,6 +15,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **Monobank MCP** (`monobank-mcp/`) -- Local Rust MCP server + CLI for the Monobank Personal API. Ingest plugin in the personal-finance design: owns `mono_*` tables in the shared `~/finances/data.db` SQLite store. Tool surface, CLI, and configuration are documented in the "Monobank MCP Development" section below.
 - **Privat24 Skill** (`privat24-skill/`) -- `uv`-managed Python skill that imports Privat24 web-cabinet XLSX statement exports into the shared `~/finances/data.db`. Owns `privat_*` tables. Standalone (works without monobank-mcp or the personal-finance umbrella). Package layout and conventions are in the "Privat24 Skill Development" section below.
 - **Personal Finance** (`personal-finance/`) -- `uv`-managed Python umbrella skill for query / report / categorize / budget over the shared `~/finances/data.db`. Owns the `pf_*` family of tables (categorization rules + overrides, budgets + drafts, category registry, import audit). Reads `<bank>_transactions` via runtime UNION ALL discovery so it works with any subset of ingest plugins installed. Budget planning is conversation-driven - DB is source of truth, Google Sheets is an on-demand rendered view. Five CLI entry points (`pf-query`, `pf-report`, `pf-categorize`, `pf-rules`, `pf-budget`) follow the same JSON-output contract as the ingest plugins. Layout and rule-loading conventions are in the "Personal Finance Umbrella Development" section below.
+- **STE Writing** (`ste-writing/`) -- Prose rewriting into a controlled plain technical style for English (ASD-STE100) and Ukrainian (adapted STE + DSTU 3966:2009), with symmetric strict and STE-flavored modes. Documentation-only skill with per-language rule references.
 
 **Cross-plugin contract**: `docs/transactions-schema.md` (v1.0) is the row-shape contract that monobank-mcp and privat24-skill follow for their `<bank>_transactions` tables; personal-finance reads through it.
 
@@ -271,7 +272,7 @@ This repository is a Claude Code plugin. When creating or modifying skills, comm
 - Each plugin owns its own test suite where the language supports it:
   - Rust plugins: `cargo test` (icloud-mcp, monobank-mcp)
   - Python `uv` plugins: `uv run pytest -q` (privat24-skill, personal-finance; jira-manager has a `tests/` dir but most of its testing is manual via example scripts)
-  - Documentation-only skills (nemo-builder, acli-manager, pdf-design-system) have no test suite
+  - Documentation-only skills (nemo-builder, acli-manager, pdf-design-system, ste-writing) have no test suite
 
 ### Developer gotchas
 

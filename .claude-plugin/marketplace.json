@@ -202,6 +202,24 @@
       "commands": [
         "./commands"
       ]
+    },
+    {
+      "name": "ste-writing",
+      "source": "./",
+      "description": "Rewrite prose (docs, READMEs, PR descriptions, error messages, release notes) into a controlled plain technical style to remove AI slop. English follows ASD-STE100 Simplified Technical English; Ukrainian follows adapted STE rules plus DSTU 3966:2009 style guidance. Two modes: strict and STE-flavored.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["writing", "ste", "simplified-technical-english", "documentation", "style", "plain-language", "ukrainian", "ai-slop"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./ste-writing"
+      ]
     }
   ]
 }
