@@ -70,6 +70,7 @@ def test_start_draft_copies_baseline_from_prior_active(empty_db: Path) -> None:
 
     assert result["existing_draft"] is False
     assert result["copied_from"] == "2026-06"
+    assert result["in_place"] is False
     # 2 currencies → 2 draft budgets
     assert len(result["drafts"]) == 2
     by_cur = {d["currency_code"]: d for d in result["drafts"]}
@@ -105,6 +106,87 @@ def test_start_draft_with_explicit_copy_from(empty_db: Path) -> None:
     result = bud.start_draft(conn, period="2026-07", copy_from="2026-04")
     conn.close()
     assert result["copied_from"] == "2026-04"
+    assert result["in_place"] is False
+
+
+def test_start_draft_defaults_to_own_active_period(empty_db: Path) -> None:
+    """Editing a month that is already active must copy THAT month, not the
+    previous one - otherwise the draft silently re-derives from stale
+    numbers and commit overwrites the live budget with them."""
+    _seed_active(empty_db, "2026-06", ("Stale", 980, "baseline", -100))
+    _seed_active(
+        empty_db,
+        "2026-07",
+        ("Їжа/Ресторани", 980, "baseline", -900000),
+        ("Подорожі/Готелі", 980, "one_time", -1260000),
+    )
+    conn = open_db(empty_db)
+    result = bud.start_draft(conn, period="2026-07")
+    categories = {
+        r[0]
+        for r in conn.execute(
+            "SELECT category FROM budget_line bl JOIN budget b ON b.id = bl.budget_id "
+            "WHERE b.period = '2026-07' AND b.status = 'draft'"
+        )
+    }
+    conn.close()
+
+    assert result["copied_from"] == "2026-07"
+    assert result["in_place"] is True
+    # Both kinds ride along; "Stale" from June must not appear.
+    assert result["drafts"][0]["lines_copied"] == 2
+    assert categories == {"Їжа/Ресторани", "Подорожі/Готелі"}
+
+
+def test_start_draft_in_place_keeps_one_time_through_commit(empty_db: Path) -> None:
+    """Full round-trip of the in-place edit: commit REPLACES the active
+    budget, so a one_time line dropped at draft time is gone for good."""
+    _seed_active(
+        empty_db,
+        "2026-07",
+        ("Їжа/Ресторани", 980, "baseline", -900000),
+        ("Подорожі/Готелі", 980, "one_time", -1260000, "Відпустка"),
+    )
+    conn = open_db(empty_db)
+    bud.start_draft(conn, period="2026-07")
+    bud.update_line(
+        conn,
+        period="2026-07",
+        category="Їжа/Ресторани",
+        currency_code=980,
+        kind="baseline",
+        amount_minor=-800000,
+    )
+    bud.commit_draft(conn, period="2026-07")
+    rows = dict(
+        conn.execute(
+            "SELECT category, amount_minor FROM budget_line bl "
+            "JOIN budget b ON b.id = bl.budget_id "
+            "WHERE b.period = '2026-07' AND b.status = 'active'"
+        ).fetchall()
+    )
+    note = conn.execute(
+        "SELECT note FROM budget_line bl JOIN budget b ON b.id = bl.budget_id "
+        "WHERE b.period = '2026-07' AND b.status = 'active' AND bl.kind = 'one_time'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert rows == {"Їжа/Ресторани": -800000, "Подорожі/Готелі": -1260000}
+    assert note == "Відпустка"
+
+
+def test_start_draft_explicit_copy_from_same_period_is_in_place(empty_db: Path) -> None:
+    _seed_active(
+        empty_db,
+        "2026-07",
+        ("A", 980, "baseline", -100),
+        ("B", 980, "one_time", -200),
+    )
+    conn = open_db(empty_db)
+    result = bud.start_draft(conn, period="2026-07", copy_from="2026-07")
+    conn.close()
+    assert result["in_place"] is True
+    assert result["drafts"][0]["lines_copied"] == 2
 
 
 # --- add_line / update_line / remove_line + undo ----------------------------

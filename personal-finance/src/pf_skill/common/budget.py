@@ -484,6 +484,14 @@ def _latest_active_period_before(conn: sqlite3.Connection, period: str) -> str |
     return row[0] if row else None
 
 
+def _has_active_budget(conn: sqlite3.Connection, period: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM budget WHERE period = ? AND status = 'active' LIMIT 1",
+        (period,),
+    ).fetchone()
+    return row is not None
+
+
 def start_draft(
     conn: sqlite3.Connection,
     *,
@@ -491,17 +499,39 @@ def start_draft(
     copy_from: str | None = None,
     now_ts: int | None = None,
 ) -> dict[str, Any]:
-    """Create draft budget rows for ``period``, optionally copying
-    baseline lines from a prior period's active budget.
+    """Create draft budget rows for ``period``, copying lines from an
+    active budget - either ``period``'s own (editing in place) or a
+    prior period's (planning a new month).
 
     Returns ``existing_draft=True`` (without re-creating) when a draft
     is already in place for ``period`` - the caller asks the user to
     continue / cancel / merge.
 
-    ``copy_from``:
-      - ``None``: use the most recent active period before ``period``
-      - explicit ``YYYY-MM``: copy from that period
-      - explicit empty ``""``: start blank (no copy)
+    ``copy_from`` resolution and what each mode copies::
+
+        copy_from=None -+- active budget exists for `period`?
+                        |     |
+                        |    yes -> copy_from = period          IN-PLACE EDIT
+                        |     |
+                        |     no -> copy_from = latest active   NEW MONTH
+                        |           period < period
+                        |
+        copy_from='YYYY-MM' -> that period (in-place iff == period)
+        copy_from=''        -> start blank, copy nothing
+
+        IN-PLACE EDIT -> copy EVERY line (baseline + one_time + income).
+                         ``commit_draft`` REPLACES the active budget, so a
+                         line left out of the draft is deleted on commit.
+                         Copying only baseline here silently drops one_time
+                         items (vacation, annual insurance) from a month the
+                         user only meant to tweak.
+        NEW MONTH     -> copy only ``kind='baseline'``. one_time lines belong
+                         to the month they were planned for and must not ride
+                         along into the next one.
+
+    The default deliberately prefers ``period``'s own active budget: once a
+    month is active, "start a draft for it" means editing what is there, not
+    re-deriving it from last month's stale numbers.
     """
     _validate_period(period, "period")
     ts = now_ts if now_ts is not None else int(time.time())
@@ -531,10 +561,14 @@ def start_draft(
         }
 
     if copy_from is None:
-        copy_from = _latest_active_period_before(conn, period) or ""
+        if _has_active_budget(conn, period):
+            copy_from = period
+        else:
+            copy_from = _latest_active_period_before(conn, period) or ""
     elif copy_from:
         _validate_period(copy_from, "copy_from")
 
+    in_place = bool(copy_from) and copy_from == period
     drafts_created: list[dict[str, Any]] = []
 
     if not copy_from:
@@ -543,6 +577,7 @@ def start_draft(
             "existing_draft": False,
             "period": period,
             "copied_from": None,
+            "in_place": False,
             "drafts": drafts_created,
         }
 
@@ -565,11 +600,13 @@ def start_draft(
                 "SELECT id FROM budget WHERE period = ? AND currency_code = ? AND status = 'draft'",
                 (period, cur_code),
             ).fetchone()[0]
+            # Literal, not user input - safe to concatenate.
+            kind_filter = "" if in_place else " AND kind = 'baseline'"
             copied = conn.execute(
                 "INSERT INTO budget_line "
                 "(budget_id, category, amount_minor, kind, note) "
                 "SELECT ?, category, amount_minor, kind, note FROM budget_line "
-                "WHERE budget_id = ? AND kind = 'baseline'",
+                "WHERE budget_id = ?" + kind_filter,
                 (new_id, src_budget_id),
             ).rowcount
             drafts_created.append(
@@ -589,6 +626,7 @@ def start_draft(
         "existing_draft": False,
         "period": period,
         "copied_from": copy_from,
+        "in_place": in_place,
         "drafts": drafts_created,
     }
 

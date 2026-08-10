@@ -158,7 +158,9 @@ Planning a month is a conversation, not a CSV import. The user says "плану�
 
 1. **Start the session.** Call `pf-budget plan start --period YYYY-MM`. Behaviour:
    - If `existing_draft: true`, ask the user: continue / cancel / merge. Do NOT silently continue.
-   - Otherwise the draft is created by copying `kind=baseline` lines from the most recent prior active month. `copied_from` is in the response.
+   - If the period already has an **active** budget, the draft copies that budget in full - every `kind`, including `one_time` - and the response carries `in_place: true`. This is the edit-the-current-month path: `plan commit` replaces the active budget, so a full copy is what keeps untouched lines alive.
+   - Otherwise it is a new month: the draft copies only `kind=baseline` from the most recent prior active month, and `in_place` is `false`. `one_time` lines belong to the month they were planned for and are deliberately left behind.
+   - `copied_from` in the response says which period was used. Pass `--copy-from` to override (e.g. `--copy-from 2026-06` to re-derive the current month from June, or `--copy-from ''` to start blank).
 
 2. **Gather suggestions.** Call `pf-budget plan suggest --period YYYY-MM`. This returns history signals - seasonal gaps, monotonic trends, quarterly cadences, one-off deviations, excluded one_time items. Phrase them back as a small batch. Example:
    > Стартую з червневого baseline. Помітив 3 речі:
@@ -190,7 +192,7 @@ Planning a month is a conversation, not a CSV import. The user says "плану�
 ### Planning subcommand reference
 
 ```bash
-pf-budget plan start    --period 2026-07 [--copy-from 2026-06]
+pf-budget plan start    --period 2026-07 [--copy-from 2026-06]   # default: own active budget if any, else prior month
 pf-budget plan suggest  --period 2026-07 [--lookback 6]
 pf-budget plan add      --period 2026-07 --category X --currency UAH --kind baseline --amount -9000 [--note]
 pf-budget plan update   --period 2026-07 --category X --currency UAH --kind baseline --amount -10000
