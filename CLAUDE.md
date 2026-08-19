@@ -190,6 +190,8 @@ personal-finance/
                                           # Python >= 3.13
   skills/personal-finance/SKILL.md        # trigger phrases + invocation cookbook
   commands/categorize.md                  # /personal-finance:categorize workflow
+  commands/status.md                      # /personal-finance:status workflow
+                                          # (sync -> categorize -> gate -> diff -> report)
   src/pf_skill/
     query.py        report.py             # read-only CLI entry points
     categorize.py   rules_cli.py
@@ -223,6 +225,8 @@ personal-finance/
 - `start_draft` has two modes and picks by whether `period` already has an active budget (0.7.1+). Own active budget -> copy it in full, every `kind`, `in_place: true` (editing the current month; `commit_draft` replaces the active budget, so a partial copy deletes the omitted lines). No active budget -> new month: most recent prior active period, `kind='baseline'` only, `in_place: false` (one_time belongs to the month it was planned for). `--copy-from` overrides the source; `--copy-from ''` starts blank.
 - Currency semantics: `amount_minor` is in the **account** currency. The summary path joins to `<bank>_accounts.currency_code` rather than reading `<bank>_transactions.currency_code` (which is the operation currency). Foreign-merchant rows on a UAH card stay in UAH totals.
 - Output contract is shared across every `pf-*` script: success → JSON stdout exit 0; `CliError` → `{"ok": false, "error": ..., "type": ..., "details": {...}}` stderr exit 1; uncaught → traceback + structured error stderr exit 2. `common/cli.py::run_subcommand` is the gate. `details` carries structured payloads (e.g. unknown-category suggestions on budget import) for callers to render rich error messages.
+- Budget status reporting leads with coverage: can the money cover the plan. That block is the ONE place currencies are combined - converted at the NBU rate fetched per report (`bank.gov.ua/NBUStatService/v1/statdirectory/exchange?json`, matched on `r030`), labelled as converted, with unconvertible currencies named rather than dropped. Every other section stays in its native currency. `pf-budget diff` has no conversion flag; the report layer does it.
+- Planned spend is NOT `totals.target_minor` (that mixes in planned `Дохід/*` rows). Derive it as `real_spend_minor + remaining_minor`.
 - Budget planning is conversation-driven. The CLI emits structured signals (`pf-budget plan suggest`) for Claude to phrase; Claude records each user decision as a single `plan add/update/remove` call. `pf-budget import` exists as a side-door for bulk migration but is NOT the conversation path - the planning loop uses single-line edits exclusively.
 
 ## Jira Manager Development

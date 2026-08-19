@@ -13,7 +13,10 @@ description: |
   - "знайди транзакцію", "find transaction", "пошук по описам"
   - "list accounts", "які в мене рахунки"
   - "плануємо <місяць>", "plan <month>", "як я по бюджету"
-  Reads ~/finances/data.db; needs monobank-mcp (for inline incremental
+  - "перевіримо виконання бюджету", "budget status", "як я по плану"
+  - "чи вистачає грошей", "do I have enough to cover the plan"
+  Reads the shared store (MONOBANK_MCP_DATA_DIR, default
+  ~/finances/data.db); needs monobank-mcp (for inline incremental
   sync before reports) and at least one ingest plugin installed.
 allowed-tools: Bash, Read
 ---
@@ -22,21 +25,37 @@ allowed-tools: Bash, Read
 
 ## Pre-flight before any report, summary, or budget diff
 
-1. Call the MCP tool `mcp__monobank__ensure_synced` with `max_wait_seconds=90` so Mono data is fresh. If the response includes `partial: true`, tell the user up-front ("Mono sync вийшов partial, можу продовжити з тим що є або зачекати - як зручніше?") and let them choose before continuing.
+1. Call the MCP tool `mcp__plugin_monobank-mcp_monobank__ensure_synced` with `max_wait_seconds=90` so Mono data is fresh. If the response includes `partial: true`, tell the user up-front ("Mono sync вийшов partial, можу продовжити з тим що є або зачекати - як зручніше?") and let them choose before continuing.
 2. Privat24 has no API. Do NOT try to sync it - the user uploads XLSX exports manually via privat24-skill. Reports use whatever Privat data is already in the store; if `last_sync_ts.privat` in the report bundle looks stale, mention it but do not auto-import.
-3. **Run the categorizer pass** if new transactions just landed (Mono sync returned `rows_added > 0` on any account, OR Privat XLSX was just imported with `rows_inserted > 0`). Ingest plugins write to `<bank>_transactions` only; `tx_category` rows are populated by `pf-categorize`, and `pf-report` / `pf-budget diff` / `pf-query summarize` resolve category through `tx_category`. Without this pass, freshly-ingested transactions surface as `(uncategorized)` even when existing rules would match them. The call is cheap (~1s for the typical month) and idempotent:
+3. **Run the categorizer pass.** Not conditional - run it after every sync that precedes a reconciliation. Ingest plugins write to `<bank>_transactions` only; `tx_category` rows are populated by `pf-categorize`, and `pf-report` / `pf-budget diff` / `pf-query summarize` resolve category through `tx_category`. Skipping it is the step that silently breaks reconciliation: fresh rows stay uncategorized, fall out of `pf-budget diff`, and spend looks far lower than it is. The call is cheap (~1s for the typical month) and idempotent:
 
    ```bash
-   pf-categorize --scope last-n-days --n 30
+   pf-categorize --scope all              # before any budget reconciliation
+   pf-categorize --scope last-n-days --n 30   # narrow query over a recent window
    ```
 
-   Widen `--n` if the user is asking about an older window. For a backfill or rule overhaul, use `--scope all`.
+   Use `--scope all` whenever the answer is a budget diff or a month-end figure. `last-n-days` is for a one-off lookup where an older mis-categorized row cannot change the answer.
+
+4. **Gate on a clean store before reporting any budget number.**
+
+   ```bash
+   pf-query summarize-uncategorized
+   ```
+
+   If the count is not 0: show the user the buckets, propose categories, and **stop**. Do not report a status, a variance, or a coverage figure off partially-categorized data - the numbers will move once the rest is classified, and a report that has to be retracted is worse than a slower one. Resume from step 3 once rules are added.
 
 The pre-flight does NOT apply to "find a transaction" lookups, "list my accounts", budget planning, or any `pf-budget plan` operation - those are local and we don't want to add 60-90s of latency for a one-line answer.
 
 ## Invocation form
 
 Entry points are exposed as `[project.scripts]` in the plugin's `pyproject.toml`. Invoke them via `uv run --directory <plugin-root> pf-query ...` / `uv run --directory <plugin-root> pf-report ...` / etc. `<plugin-root>` is wherever the plugin was installed (typically under `~/.claude/plugins/cache/<marketplace>/personal-finance/<version>/`). uv handles the project's venv (`uv sync` on first call as needed).
+
+Two things bite in a non-interactive shell, and both look like the plugin is broken when they are not:
+
+- Resolve the plugin root by globbing to the newest installed version rather than hardcoding one, so a version bump does not silently point at an old copy.
+- `uv` is frequently a shell alias or function, which does not resolve in a non-interactive tool call and fails with "No such file or directory". Call the binary by its absolute path when a bare `uv` fails.
+
+The store is `data.db` under `MONOBANK_MCP_DATA_DIR` when that variable is set, and under `~/finances` otherwise - the same resolution the ingest plugins use, so all three agree on one file. If a command appears to run against an empty database, check that variable before anything else: a wrong or unset value writes a second, empty store rather than failing.
 
 ## Read commands
 
@@ -163,18 +182,18 @@ Planning a month is a conversation, not a CSV import. The user says "плану�
    - `copied_from` in the response says which period was used. Pass `--copy-from` to override (e.g. `--copy-from 2026-06` to re-derive the current month from June, or `--copy-from ''` to start blank).
 
 2. **Gather suggestions.** Call `pf-budget plan suggest --period YYYY-MM`. This returns history signals - seasonal gaps, monotonic trends, quarterly cadences, one-off deviations, excluded one_time items. Phrase them back as a small batch. Example:
-   > Стартую з червневого baseline. Помітив 3 речі:
-   > 1. Школа (15 600) - у червні був останній платіж. У липні-серпні зазвичай 0?
-   > 2. Зарядка авто в червні була пів місяця через відпустку - повертаємо до 3 000?
-   > 3. Готелі (27k) - one-time відпустки, виключаю з шаблону.
+   > Стартую з baseline попереднього місяця. Помітив 3 речі:
+   > 1. Освіта/Курси (4 000) - минулого місяця був останній платіж. Далі зазвичай 0?
+   > 2. Транспорт/Паливо було пів місяця через відпустку - повертаємо до 3 000?
+   > 3. Подорожі/Готелі (10 000) - one-time відпустки, виключаю з шаблону.
 
-3. **Walk through the dialogue.** When the user replies with a number (e.g. "Дружина 18000"), translate to `pf-budget plan update`. When they confirm a batch, apply all those changes. When they introduce a new category, call `pf-budget plan add`. When they say "стоп, поверни X" or "передумав", call `pf-budget plan undo`. When they say "забудь все" or "почнемо спочатку", call `pf-budget plan cancel`.
+3. **Walk through the dialogue.** When the user replies with a number (e.g. "Їжа/Продукти 12000"), translate to `pf-budget plan update`. When they confirm a batch, apply all those changes. When they introduce a new category, call `pf-budget plan add`. When they say "стоп, поверни X" or "передумав", call `pf-budget plan undo`. When they say "забудь все" or "почнемо спочатку", call `pf-budget plan cancel`.
 
 4. **Multi-currency in one session.** The user can say "додай $300 на ремонт авто" and you call `pf-budget plan add --currency USD ...` on the same period's draft. The CLI creates the USD draft budget on demand. The user thinks of it as one plan.
 
 5. **Confirm and commit.** When the user signals they're done ("Зафіксувати", "Готово"), summarise what's planned, then call `pf-budget plan commit --period YYYY-MM`. The draft replaces any existing active for the same period atomically.
 
-6. **Optional Family export.** Ask "Експортувати для дружини?" Run `pf-budget export --period YYYY-MM --view family --out <path>.xlsx`. Family view has two tabs: `Огляд` (pretty grouped, with SUM formulas so spouse-side edits live-recompute) and `Деталі` (full flat list). Do NOT auto-export - only on the user's go-ahead.
+6. **Optional Family export.** Ask "Експортувати для сімʼї?" Run `pf-budget export --period YYYY-MM --view family --out <path>.xlsx`. Family view has two tabs: `Огляд` (pretty grouped, with SUM formulas so spouse-side edits live-recompute) and `Деталі` (full flat list). Do NOT auto-export - only on the user's go-ahead.
 
 ### Conversation idioms
 
@@ -182,12 +201,12 @@ Planning a month is a conversation, not a CSV import. The user says "плану�
 |---|---|
 | "плануємо липень" | `plan start --period 2026-07` |
 | "так до всього" | apply every batched suggestion |
-| "Дружина 18000" | `plan update` (composite key) |
+| "Їжа/Продукти 12000" | `plan update` (composite key) |
 | "додай $300 на ремонт авто" | `plan add --currency USD --kind one_time` |
-| "стоп, поверни школу" | `plan undo` |
+| "стоп, поверни курси" | `plan undo` |
 | "забудь все" | `plan cancel` |
 | "Зафіксувати" / "Готово" | `plan commit` |
-| "експорт для дружини" | `export --view family` |
+| "експорт для сімʼї" / "для дружини" | `export --view family` |
 
 ### Planning subcommand reference
 
@@ -224,6 +243,8 @@ These are non-planning operations - inspecting, comparing, closing, renaming. Sa
 pf-budget show --period 2026-06 [--currency UAH]
 pf-budget list                  # all budgets, status, totals
 ```
+
+**Filter the returned blocks by `status`.** While a draft exists for a period, `show` returns the active block AND the draft block side by side, and drafts and actives are designed to coexist during planning. Anything that reads `blocks` without filtering counts every draft line a second time: totals inflate, and a consumer that compares "how many lines are there now" against "how many were there before" flips to a false conclusion. Pick `status == "active"` for reporting actuals, `status == "draft"` for reviewing a plan in progress.
 
 ### Compare budget vs actuals
 
@@ -301,6 +322,91 @@ Unknown-category JSON shape (use to render typo suggestions back to the user):
  ]}}
 ```
 
+## Budget status report (mid-month and month-end)
+
+The question this report exists to answer is "is there enough money to cover what is planned". Everything else is supporting detail, so lead with the answer rather than building up to it.
+
+Run the pre-flight in full (sync, categorize, gate on zero uncategorized), then `pf-budget diff --period <P> --currency <C>` once per currency that has an active budget.
+
+### Deriving the figures
+
+`totals` gives three figures directly and one by arithmetic:
+
+| Figure | Where it comes from |
+|---|---|
+| Spent so far | `real_spend_minor` |
+| Income received | `income_minor` |
+| Planned spend for the month | `real_spend_minor + remaining_minor` |
+| Obligations still ahead | planned spend minus spent so far |
+
+There is no `spend_target` field in `totals`, and `target_minor` is not a substitute - it mixes in planned `Дохід/*` rows. Derive planned spend as above.
+
+`remaining_minor` is signed like the targets: negative means budget still to spend, positive means overspent. State the direction in words; never hand the raw signed number to the user.
+
+Planned income exists only when the user has planned `Дохід/*` lines, and equals `target_minor - (real_spend_minor + remaining_minor)`. When the budget has no income lines, report expected income as unknown. Substituting zero understates coverage and turns a healthy month into a false alarm.
+
+### Converting to one currency
+
+Coverage is the single place where currencies are combined. Every other section stays in its native currency. Fetch the rate at report time from the National Bank of Ukraine - public endpoint, no key, and no data about the user leaves the machine:
+
+```bash
+curl -sS -m 20 "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?json"
+```
+
+Records look like `{"r030": 840, "cc": "USD", "rate": <float>, "exchangedate": "DD.MM.YYYY"}`. Match on `r030` - it is the ISO 4217 numeric code the store already uses - rather than on the `cc` string. Quote the rate and its `exchangedate` in the report header so the arithmetic stays checkable afterwards. Do not persist the rate anywhere.
+
+Balances convert through the CLI, which already reports what it could not convert:
+
+```bash
+pf-query balances --convert-to UAH --rate USD=<rate>
+```
+
+Budget figures have no conversion flag - convert them in the report layer using that same rate, so both halves of the coverage line rest on one number. A currency with no rate is named in the text as unconverted and left out of the total, never silently dropped.
+
+### Structure
+
+Header: period, elapsed days as `<N> of <M> (<P>%)`, confirmation that the store is clean, and the NBU rate with its date.
+
+**1. Coverage - the answer.** Two lines, both in the converted currency:
+
+```
+structural:   income for the month        vs   planned spend
+              can the month's earnings fund the plan at all
+
+operational:  funds on hand                vs   obligations still ahead
+              + income still expected
+              is there enough to reach the end of the month
+```
+
+Verdict on the margin over planned spend: at or above 10% is enough; 0 to 10% is tight, and name what is still ahead that makes it tight; below zero is not enough, and name what would have to give.
+
+Then one sentence of prose. When the two lines disagree - the plan balances but liquidity is short, or the reverse - say which one is binding and why. That gap is usually a timing problem rather than a budget problem, and saying so prevents a needless cut to the plan.
+
+**2. Per currency, in its native currency.** Three separate lines, never a single net figure: real spend against plan with the elapsed-day share alongside, income with its breakdown, and remaining planned budget stated in words as headroom or overspend.
+
+**3. Overspent lines.** Table: category, plan, actual, percent, amount over.
+
+**4. Running hot.** Lines at or above 75% with time still left in the month.
+
+**5. Variable categories against pace.** Same table shape, with the elapsed-day share as the benchmark column.
+
+**6. Fixed items,** split into those that have already fired and those that have not, with the total still ahead. This split is what makes a low spend percentage readable.
+
+**7. Unplanned spend.** The `in_budget=false` rows, named.
+
+**8. Forecast.** Variable run rate per day times days remaining, plus the fixed tail, against the plan.
+
+**9. Verdict.** Two or three sentences: is the plan holding, and what to watch.
+
+### Judging pace
+
+Benchmark against the elapsed share of the month, but only where pace means anything:
+
+- Daily and recurring categories (groceries, fuel, transport) are judged on pace. At 60% of the month, 60% of the line is on track.
+- Lumpy fixed items (rent, tuition, insurance, annual payments) are judged on whether they have fired yet, not on pace. A rent line at 0% mid-month is normal before its due date and worth flagging after it.
+
+Never present a headline "X% of plan spent at Y% of month" without this split. A month whose large fixed items are still ahead reads as a huge underspend and invites exactly the wrong conclusion.
+
 ## Categorization commands
 
 `pf-categorize` runs the rule pass over uncategorized transactions; `pf-rules` manages the rule table directly.
@@ -319,6 +425,26 @@ pf-rules list         [--enabled-only] [--source S]
 ```
 
 Rule priority is lower-wins: seed rules sit at 200-300; user rules need priority `< 100` to override (use 10-20 for clear intent). `pf-rules add --apply` only backfills uncategorized rows - to remap rows already pinned to an old category, use `pf-rules set-category --tx-id <id>`.
+
+### Fixing a category mid-reconciliation
+
+The user reads a status report and corrects a line ("that one belongs in X"). Which command depends on whether the correction should outlive this transaction, and that is a question only the user can answer - ask when it is not stated. A recurring merchant is a rule; a person-to-person transfer or a cash withdrawal almost never is, because the same counterparty means something different next time.
+
+```bash
+# find the row the user is describing
+pf-query find --query "<merchant or amount>" --limit 60
+
+# permanent: this merchant is always this category
+pf-rules add --match-field description --pattern '^<merchant>$' \
+             --category "<Group/Name>" --priority 20 --apply
+
+# one-off: only this transaction, leave the rules alone
+pf-rules set-category --tx-id <tx-id> --category "<Group/Name>"
+```
+
+Anchor rule patterns (`^...$`) unless the user wants a prefix match - an unanchored fragment quietly captures unrelated merchants, and the damage only surfaces in a later month's report.
+
+**Re-run `pf-budget diff` after any correction, before restating totals.** Every number already on screen is stale the moment a category moves, and quoting the pre-correction figure alongside the post-correction one is how a reconciliation stops adding up.
 
 ## Output contract
 
@@ -346,7 +472,9 @@ Never invent numbers. If the bundle is empty or partial, say so.
 
 - Do NOT write raw SQL against `~/finances/data.db`. Always go through the `pf-*` scripts so the cross-bank UNION discovery stays consistent.
 - Do NOT touch `mono_*` or `privat_*` tables directly. They are owned by their ingest plugins.
-- Do NOT mix currencies into a single total in narrative. Report per-currency.
+- Do NOT mix currencies into a single total in narrative. Report per-currency. The one exception is the coverage block of a budget status report, which is explicitly labelled as a converted view, carries the rate and its date, and names any currency it could not convert.
+- Do NOT report a budget figure while `summarize-uncategorized` is non-zero. Show the buckets and stop instead.
+- Do NOT substitute zero for planned income the user never planned. Unknown is a reportable answer; zero is a wrong one that reads as a shortfall.
 - Do NOT auto-commit a budget draft. The user's explicit "Зафіксувати" / "Готово" is the only trigger.
 - Do NOT auto-export. Even after commit, ask before generating the Family XLSX.
 - Do NOT silently register unknown categories - run with default `reject` mode first, show the Levenshtein suggestions, and ask before re-running with `register`. Typos look identical to legitimate new categories in the input - the user is the only one who can tell them apart.
