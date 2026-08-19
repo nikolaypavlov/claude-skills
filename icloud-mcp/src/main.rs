@@ -519,6 +519,16 @@ fn json_result<T: serde::Serialize>(value: &T) -> CallToolResult {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `--version` is answered before anything else - no TLS provider, no
+    // logging, no config. scripts/install-binary.sh runs this on every MCP
+    // spawn to decide whether the binary on disk is the one Cargo.toml asks
+    // for, so it has to be instant and side-effect free. Printing to stdout
+    // is safe here because we exit before the MCP transport is wired up.
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("icloud-mcp {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // rustls 0.23 requires an explicit crypto provider to be installed before any TLS use.
     let _ = rustls::crypto::ring::default_provider().install_default();
 

@@ -73,7 +73,7 @@ The binary lands at `icloud-mcp/target/release/icloud-mcp`. For plugin users it 
 - `src/config.rs` -- env-or-Keychain credential loading
 - `src/error.rs` -- McpError helpers
 - `scripts/launch.sh` -- runs `install-binary.sh` then `exec`s the binary; referenced by `.mcp.json`
-- `scripts/install-binary.sh` -- idempotent: downloads release tarball matching `Cargo.toml` version, verifies SHA256, falls back to `cargo build` if no prebuilt artifact for the platform
+- `scripts/install-binary.sh` -- idempotent: downloads release tarball matching `Cargo.toml` version, verifies SHA256, falls back to `cargo build` if no prebuilt artifact for the platform. It short-circuits ONLY when the binary already on disk answers `--version` with the `Cargo.toml` version; anything else is deleted and re-fetched. Do not weaken that back to a bare `[[ -x ]]` test - see the gotcha below.
 - `hooks/hooks.json` -- `SessionStart` hook that pre-warms the binary so the first MCP tool call is not the one paying the download cost
 - `commands/setup.md` -- `/icloud-mcp:setup` interactive wizard for first-time credential capture
 
@@ -286,6 +286,7 @@ This repository is a Claude Code plugin. When creating or modifying skills, comm
 ### Developer gotchas
 
 - **`.mcp.json` plugin-vs-project duplication**: Claude Code discovers `<rust-plugin>/.mcp.json` twice when a contributor has the repo cloned AND the plugin installed - once as plugin (CLAUDE_PLUGIN_ROOT defined, works) and once as project config (variable unset, fails). The plugin instance is the working one. To silence the noise for each affected plugin, extend `disabledMcpjsonServers` in `.claude/settings.local.json` (e.g. `["icloud", "monobank"]`).
+- **A stale binary can outlive a `/plugin update`**: `/plugin update` copies the plugin directory out of `~/.claude/plugins/marketplaces/<mp>/<plugin>/` including git-ignored files, so a `target/release/<plugin>` left behind by an old `cargo build` fallback rides along into the NEW version directory. `git pull` never removes it. Before 0.4.1 / 0.3.5 `install-binary.sh` exited on a bare `[[ -x "$BIN_PATH" ]]`, so a directory labelled `0.4.0` happily ran 0.2.1 code, and icloud-mcp kept a Linux aarch64 ELF installed on a mac where it could not exec at all. Both scripts now compare `--version` output against `Cargo.toml`. If you ever hit a plugin behaving like an older release, check `<cache>/<version>/target/release/<plugin> --version` first, and clear the copy in the marketplace clone too.
 - **gh CLI auth is ephemeral in dev containers**: pushing to main with workflow file changes requires `workflow` scope on the gh token (`gh auth refresh -h github.com -s workflow`). Plain `gh auth login` only gives `gist, read:org, repo`.
 - **Privat24 timezones require `tzdata`**: `ZoneInfo("Europe/Kyiv")` would raise `ZoneInfoNotFoundError` on Windows / slim Linux containers without the OS tz database, so `privat24-skill/pyproject.toml` pins `tzdata>=2024.1`. If you ever drop the dep, the CLI fails at module import, before any JSON output - the SKILL.md stdout contract relies on this.
 - **Shared SQLite store is single-machine, single-user**: `~/finances/data.db` must not live on shared / cloud storage when more than one process can write. WAL is enabled defensively but cross-machine concurrent writes still corrupt SQLite.
