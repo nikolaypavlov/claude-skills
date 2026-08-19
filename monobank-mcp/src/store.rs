@@ -117,6 +117,76 @@ impl Store {
         Ok(())
     }
 
+    /// Account ids ordered stalest-cursor-first.
+    ///
+    /// The MCP `ensure_synced` budget affords roughly `budget / interval`
+    /// API calls - about two with the shipped defaults (90s / 61s). A fixed
+    /// `ORDER BY account_id` therefore serves the same first two accounts on
+    /// every invocation and the tail is never reached, no matter how often
+    /// the caller re-invokes. Ordering by `last_completed_ts` makes the
+    /// queue self-rotating: an account that gets fetched has its cursor
+    /// pushed to ~now and drops to the back, so repeated budget-limited runs
+    /// walk every account.
+    ///
+    /// Accounts with no `mono_sync_state` row sort first (`COALESCE(..., -1)`).
+    /// They are the cheapest possible work - the engine seeds their cursor
+    /// without an API call - so they never consume budget.
+    pub async fn list_account_ids_by_staleness(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT a.account_id \
+             FROM mono_accounts a \
+             LEFT JOIN mono_sync_state s ON s.account_id = a.account_id \
+             ORDER BY COALESCE(s.last_completed_ts, -1) ASC, a.account_id ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Reconcile each account's client-info balance against the running
+    /// balance carried on its newest stored transaction.
+    ///
+    /// Monobank stamps every statement row with the account balance *after*
+    /// that operation. So when the balance snapshot is at least as fresh as
+    /// the newest stored row, the two must agree - if they do not, rows
+    /// between the newest stored row and the snapshot are provably missing.
+    /// This is the check that caught the 0.3.0 silent-gap incident by hand.
+    ///
+    /// The snapshot is only written by `monobank-mcp accounts` / `backfill`
+    /// (client-info), never by `sync`. A snapshot older than the newest row
+    /// therefore proves nothing and is reported as `SnapshotStale`, never as
+    /// a match - a disagreement there is just ordinary activity since the
+    /// snapshot was taken.
+    pub async fn balance_checks(&self) -> Result<Vec<BalanceCheck>> {
+        let conn = self.conn.lock().await;
+        // Both correlated subqueries use the same ORDER BY, so they read the
+        // same row; idx_mono_tx_account(account_id, ts) serves the ordering.
+        let mut stmt = conn.prepare(
+            "SELECT a.account_id, a.balance_minor, a.balance_synced_at, \
+                    (SELECT t.ts FROM mono_transactions t \
+                      WHERE t.account_id = a.account_id \
+                      ORDER BY t.ts DESC, t.id DESC LIMIT 1), \
+                    (SELECT t.balance_minor FROM mono_transactions t \
+                      WHERE t.account_id = a.account_id \
+                      ORDER BY t.ts DESC, t.id DESC LIMIT 1) \
+             FROM mono_accounts a ORDER BY a.account_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(BalanceCheck::evaluate(
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub async fn list_accounts(&self) -> Result<Vec<AccountRow>> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
@@ -351,6 +421,109 @@ pub struct AccountRow {
     pub credit_limit_minor: Option<i64>,
     /// Unix seconds when `balance_minor` was last refreshed. NULL if never.
     pub balance_synced_at: Option<i64>,
+}
+
+/// Verdict of one account's balance reconciliation. Anything other than
+/// `Match` / `Mismatch` means "not comparable", never "fine".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BalanceCheckVerdict {
+    /// Snapshot and newest stored row agree - no rows missing up to the
+    /// snapshot instant.
+    Match,
+    /// They disagree while the snapshot is the fresher of the two. Rows
+    /// between the newest stored transaction and the snapshot are missing.
+    Mismatch,
+    /// `mono_accounts.balance_minor` / `balance_synced_at` is NULL: no
+    /// client-info refresh has ever run. Run `monobank-mcp accounts`.
+    NoBalanceSnapshot,
+    /// The account has no stored transactions to compare against.
+    NoTransactions,
+    /// The newest stored row carries no running balance (nullable in the
+    /// API payload), so there is nothing to compare.
+    NoTxBalance,
+    /// The snapshot predates the newest stored transaction, so a difference
+    /// is expected activity rather than evidence of a gap. Refresh with
+    /// `monobank-mcp accounts` to make the check conclusive.
+    SnapshotStale,
+}
+
+/// One account's balance reconciliation. See `Store::balance_checks`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BalanceCheck {
+    pub account_id: String,
+    pub verdict: BalanceCheckVerdict,
+    /// `Some(true)` / `Some(false)` only when the comparison was possible;
+    /// `None` means "unknown", which must never be read as "matches".
+    pub balance_matches_last_tx: Option<bool>,
+    /// True only for `Mismatch`. Rows are provably missing for this account
+    /// and a plain `sync` will NOT recover them - the cursor has already
+    /// walked past that window. Use `backfill --from <date> --account <id>`.
+    pub suspected_missing_rows: bool,
+    pub account_balance_minor: Option<i64>,
+    pub balance_synced_at: Option<i64>,
+    pub last_tx_ts: Option<i64>,
+    pub last_tx_balance_minor: Option<i64>,
+    /// `account_balance_minor - last_tx_balance_minor`, present only when
+    /// the two were comparable. The signed size of the hole.
+    pub delta_minor: Option<i64>,
+}
+
+impl BalanceCheck {
+    /// Classify one account. Pure function of the five stored values so the
+    /// decision table is unit-testable without a database.
+    ///
+    /// ```text
+    ///   balance/synced_at NULL ------------------> NoBalanceSnapshot
+    ///   no transactions -------------------------> NoTransactions
+    ///   newest tx balance NULL ------------------> NoTxBalance
+    ///   balance_synced_at < last_tx_ts ----------> SnapshotStale
+    ///   otherwise: balance == last_tx_balance ---> Match | Mismatch
+    /// ```
+    pub fn evaluate(
+        account_id: String,
+        account_balance_minor: Option<i64>,
+        balance_synced_at: Option<i64>,
+        last_tx_ts: Option<i64>,
+        last_tx_balance_minor: Option<i64>,
+    ) -> Self {
+        let mut out = Self {
+            account_id,
+            verdict: BalanceCheckVerdict::NoBalanceSnapshot,
+            balance_matches_last_tx: None,
+            suspected_missing_rows: false,
+            account_balance_minor,
+            balance_synced_at,
+            last_tx_ts,
+            last_tx_balance_minor,
+            delta_minor: None,
+        };
+        let (Some(balance), Some(synced_at)) = (account_balance_minor, balance_synced_at) else {
+            return out;
+        };
+        let Some(tx_ts) = last_tx_ts else {
+            out.verdict = BalanceCheckVerdict::NoTransactions;
+            return out;
+        };
+        let Some(tx_balance) = last_tx_balance_minor else {
+            out.verdict = BalanceCheckVerdict::NoTxBalance;
+            return out;
+        };
+        if synced_at < tx_ts {
+            out.verdict = BalanceCheckVerdict::SnapshotStale;
+            return out;
+        }
+        let matches = balance == tx_balance;
+        out.verdict = if matches {
+            BalanceCheckVerdict::Match
+        } else {
+            BalanceCheckVerdict::Mismatch
+        };
+        out.balance_matches_last_tx = Some(matches);
+        out.suspected_missing_rows = !matches;
+        out.delta_minor = Some(balance - tx_balance);
+        out
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

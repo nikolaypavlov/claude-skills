@@ -2,8 +2,13 @@
 //!
 //! Three tools (per design v2.1 §5.5):
 //!   - `ensure_synced`       - inline incremental sync with wall-clock budget
-//!   - `get_sync_status`     - report cursor + gap per account
+//!   - `get_sync_status`     - cursor + balance reconciliation per account
 //!   - `list_mono_accounts`  - diagnostic listing of accounts visible to mono
+//!
+//! Tool descriptions are the only documentation the model gets at call time,
+//! so they carry the two claims a caller must not get wrong: `rows_added: 0`
+//! is not evidence of anything, and only `caught_up: true` licenses "the DB
+//! is current". Keep them in sync with `sync.rs` doc comments and README.md.
 //!
 //! Tools surface a `URL_ELICITATION_REQUIRED` error pointing at
 //! `/monobank-mcp:setup` when the binary is started without a token. This
@@ -144,7 +149,7 @@ impl MonobankServer {
     }
 
     #[tool(
-        description = "Run an inline incremental sync of Monobank accounts. Bounded by `max_wait_seconds` so the tool returns before Claude's timeout; partial=true and remaining_chunks>0 signal that more chunks are pending and the user should re-invoke or run `monobank-mcp sync` from the CLI."
+        description = "Run an inline incremental sync of Monobank accounts, bounded by `max_wait_seconds` so the tool returns before Claude's timeout. Trust ONLY `caught_up: true` as \"the local DB covers everything up to now\". `rows_added: 0` proves nothing on its own - an account with `remaining_chunks > 0` (status `unattempted` / `partial`) was never fetched, or only partly fetched, and its window is unchecked; re-invoke the tool or run `monobank-mcp sync` from the CLI until `caught_up` is true. Accounts are served stalest-first, so repeated calls reach every account. Separately, `suspected_missing_rows: true` means an account's stored balance disagrees with its newest stored transaction: rows are missing inside an already-synced window and only `monobank-mcp backfill --from <date> --account <id>` recovers them."
     )]
     async fn ensure_synced(
         &self,
@@ -173,6 +178,7 @@ impl MonobankServer {
             .run(&targets)
             .await
             .map_err(|e| McpError::internal_error(format!("ensure_synced: {e}"), None))?;
+        let suspect = outcome.accounts_with_suspected_gaps();
         let body = json!({
             "synced": !outcome.partial(),
             "partial": outcome.partial(),
@@ -180,13 +186,18 @@ impl MonobankServer {
             "skipped": outcome.skipped_all,
             "rows_added": outcome.rows_added,
             "remaining_chunks": outcome.remaining_chunks,
+            // Hoisted out of `balance_checks` so a gap cannot be missed by a
+            // caller that only skims the top level of the response.
+            "suspected_missing_rows": !suspect.is_empty(),
+            "accounts_with_suspected_gaps": suspect,
             "per_account": outcome.per_account,
+            "balance_checks": outcome.balance_checks,
         });
         Ok(json_result(&body))
     }
 
     #[tool(
-        description = "Report the sync cursor and gap (seconds to now) for each known account. Returns an empty array when no backfill has run yet."
+        description = "Report the sync cursor per account plus a balance reconciliation. `gap_seconds` is cursor lag and is diagnostic only - it does not mean the data up to now has been checked. `balance_matches_last_tx` compares the account balance from client-info against the running balance on the newest stored transaction: `false` proves rows are missing; `null` means not comparable (no balance snapshot, or the snapshot predates the newest row - run `monobank-mcp accounts` to refresh it) and must never be read as \"fine\". Returns an empty array when no backfill has run yet."
     )]
     async fn get_sync_status(
         &self,
@@ -208,15 +219,24 @@ impl MonobankServer {
                 .await
                 .map_err(|e| McpError::internal_error(format!("get_sync_status: {e}"), None))?,
         };
+        let checks = s
+            .store
+            .balance_checks()
+            .await
+            .map_err(|e| McpError::internal_error(format!("get_sync_status: {e}"), None))?;
         let body: Vec<_> = rows
             .into_iter()
             .map(|r| {
+                let check = checks.iter().find(|c| c.account_id == r.account_id);
                 json!({
                     "bank": "mono",
                     "account_id": r.account_id,
                     "last_completed_ts": r.last_completed_ts,
                     "last_sync_at": r.last_sync_at,
                     "gap_seconds": (now - r.last_completed_ts).max(0),
+                    "balance_matches_last_tx": check.and_then(|c| c.balance_matches_last_tx),
+                    "suspected_missing_rows": check.is_some_and(|c| c.suspected_missing_rows),
+                    "balance_check": check,
                 })
             })
             .collect();
@@ -255,6 +275,18 @@ impl ServerHandler for MonobankServer {
     }
 }
 
+/// Accounts to sync, stalest cursor first.
+///
+/// The order is the anti-starvation mechanism. `ensure_synced` affords about
+/// `max_wait_seconds / api_min_interval_seconds` API calls - two with the
+/// shipped defaults - so with a fixed `ORDER BY account_id` the same two
+/// accounts were served on every invocation and the tail was unreachable no
+/// matter how many times the caller re-invoked. Fetching an account pushes
+/// its cursor to ~now and sends it to the back of the queue, so successive
+/// budget-limited calls rotate through all of them.
+///
+/// An explicit `account_id` bypasses the ordering entirely - the caller has
+/// already chosen the target.
 async fn pick_accounts(
     store: &Store,
     explicit: Option<&str>,
@@ -262,11 +294,10 @@ async fn pick_accounts(
     if let Some(id) = explicit {
         return Ok(vec![id.to_string()]);
     }
-    let rows = store
-        .list_accounts()
+    store
+        .list_account_ids_by_staleness()
         .await
-        .map_err(|e| crate::error::DomainError::from_err("list_accounts", e))?;
-    Ok(rows.into_iter().map(|r| r.account_id).collect())
+        .map_err(|e| crate::error::DomainError::from_err("list_accounts", e))
 }
 
 pub(crate) fn json_result<T: serde::Serialize>(value: &T) -> CallToolResult {
@@ -278,7 +309,59 @@ pub(crate) fn json_result<T: serde::Serialize>(value: &T) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MonoAccount;
     use rmcp::model::ErrorCode;
+
+    async fn acc(store: &Store, id: &str) {
+        store
+            .upsert_account(&MonoAccount {
+                id: id.into(),
+                iban: None,
+                r#type: Some("black".into()),
+                currency_code: 980,
+                masked_pan: None,
+                balance: None,
+                credit_limit: None,
+                label: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    /// `pick_accounts` is what feeds the budget-limited loop, so the
+    /// anti-starvation ordering has to hold here and not only in the store.
+    /// Under the old `ORDER BY account_id` the busiest card sorted last and
+    /// a 90s budget never reached it.
+    #[tokio::test]
+    async fn pick_accounts_orders_stalest_cursor_first() {
+        let store = Store::open_in_memory().unwrap();
+        for id in ["aaa_first_by_id", "zzz_last_by_id"] {
+            acc(&store, id).await;
+        }
+        store
+            .seed_sync_state("aaa_first_by_id", 9_000)
+            .await
+            .unwrap();
+        store
+            .seed_sync_state("zzz_last_by_id", 1_000)
+            .await
+            .unwrap();
+
+        let picked = pick_accounts(&store, None).await.unwrap();
+        assert_eq!(picked, vec!["zzz_last_by_id", "aaa_first_by_id"]);
+    }
+
+    /// An explicit account id bypasses the ordering entirely.
+    #[tokio::test]
+    async fn pick_accounts_honours_explicit_account() {
+        let store = Store::open_in_memory().unwrap();
+        acc(&store, "aaa_first_by_id").await;
+        acc(&store, "zzz_last_by_id").await;
+        let picked = pick_accounts(&store, Some("aaa_first_by_id"))
+            .await
+            .unwrap();
+        assert_eq!(picked, vec!["aaa_first_by_id"]);
+    }
 
     #[tokio::test]
     async fn unconfigured_ensure_synced_returns_url_elicitation() {

@@ -19,6 +19,14 @@
 //! Rate limit retries: a transient `RateLimited` from the API triggers an
 //! extra 90s sleep (above the normal 61s interval) and one retry of the
 //! same window. After three consecutive failures we surface the error.
+//!
+//! Reporting contract (0.4.0). The response distinguishes three things that
+//! used to look identical from the outside:
+//!   - "walked the window, nothing new"  -> status `synced`, chunks_fetched > 0
+//!   - "never looked at this account"    -> status `unattempted`, chunks_fetched == 0
+//!   - "walked it, but rows are missing" -> balance_checks[..].suspected_missing_rows
+//!
+//! `rows_added: 0` on its own proves none of them.
 
 use std::time::{Duration, Instant};
 
@@ -27,23 +35,63 @@ use tracing::{debug, info, warn};
 
 use crate::api::MonobankApi;
 use crate::error::DomainError;
-use crate::store::Store;
+use crate::store::{BalanceCheck, Store};
 use crate::types::RunSource;
 use crate::util::ratelimit::RateLimiter;
 use crate::util::time::{chunk_31d, now_unix};
 
+/// What actually happened to one account in a run.
+///
+/// This exists because `rows_added: 0` is ambiguous on its own: the engine
+/// emits it both for "queried the window, Monobank returned nothing" and for
+/// "never queried this account at all". Before 0.4.0 nothing in the response
+/// separated the two, and a budget-starved account was read as up to date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountSyncStatus {
+    /// No `mono_sync_state` row existed; the cursor was seeded at `now`
+    /// without an API call. History before that point needs `backfill`.
+    Seeded,
+    /// Cursor and `last_sync_at` both sit inside `sync_freshness_skip_seconds`,
+    /// so the previous run already covered the window. No API call.
+    SkippedFresh,
+    /// The cursor is already at or past `now`; no window to fetch.
+    UpToDate,
+    /// Every chunk this account needed was fetched and stored.
+    Synced,
+    /// Some chunks were fetched, some were not (wall-clock budget).
+    Partial,
+    /// The budget ran out before ANY chunk of this account was fetched. The
+    /// account was not looked at; `rows_added: 0` here means nothing at all.
+    Unattempted,
+    /// A chunk failed; the rest of this account's chunks were skipped.
+    Failed,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AccountSyncOutcome {
     pub account_id: String,
+    /// Read THIS (or `chunks_fetched`) before believing `rows_added: 0`.
+    pub status: AccountSyncStatus,
     pub rows_added: u64,
     pub rows_skipped: u64,
     pub last_completed_ts: i64,
+    /// Chunks the account needed this run: `chunks_fetched + remaining_chunks`.
+    pub chunks_total: u32,
+    /// Chunks actually pulled from the API and committed. Zero with
+    /// `chunks_total > 0` means the account was never contacted.
+    pub chunks_fetched: u32,
+    /// Chunks left unfetched - unattempted (budget) plus, on failure, the
+    /// chunk that errored and everything after it. `> 0` means this account
+    /// holds an unchecked time window; nothing about it is known to be
+    /// current.
     pub remaining_chunks: u32,
     /// Seconds the cursor trails "now" (`now - last_completed_ts`, clamped at
-    /// 0). Small even when `remaining_chunks > 0`, which is the whole point:
-    /// a cursor a few minutes behind still has to close its trailing chunk,
-    /// but the data is effectively current. Read this, not `remaining_chunks`,
-    /// to answer "is this account up to date?".
+    /// 0). Diagnostic only. It measures how far behind the cursor is, NOT
+    /// whether the data is current: a small gap with `remaining_chunks > 0`
+    /// still means an unchecked window, and a day of unchecked window can
+    /// hold an unbounded amount of real activity. Do not gate decisions on
+    /// this field - use `remaining_chunks == 0`.
     pub gap_seconds: i64,
     /// If a chunk failed we record it here and skip the remaining chunks of
     /// that account; the caller decides whether to fail the whole run.
@@ -57,23 +105,43 @@ pub struct SyncOutcome {
     pub remaining_chunks: u32,
     /// True only when there was nothing to do for any account.
     pub skipped_all: bool,
-    /// Every account's cursor is within `CAUGHT_UP_GAP_SECONDS` of now and no
-    /// account errored. Distinguishes "cursor trails the present by a chunk
-    /// boundary but the DB is current" (`caught_up: true`, `partial` may still
-    /// be true) from a genuine multi-day backlog. Prefer this over
-    /// `!partial()` when deciding whether a follow-up sync is worthwhile.
+    /// Every account was fully walked: no account errored and none has a
+    /// remaining chunk.
+    ///
+    /// This is the only field that licenses "the DB is current, skip the
+    /// follow-up sync". It says nothing about rows that went missing INSIDE
+    /// an already-walked window - read `balance_checks` for that.
+    ///
+    /// Design note (0.4.0): `caught_up` used to be independent of
+    /// `remaining_chunks`, true whenever every cursor was within 24h of now.
+    /// That is what made a budget-starved run look up to date while a card
+    /// was missing 22 hours of spending. The cheap-retry case that the
+    /// tolerance was meant to serve - a cursor trailing by seconds after a
+    /// complete sync - is already handled correctly upstream by
+    /// `sync_freshness_skip_seconds`, which skips the API call AND reports
+    /// `remaining_chunks: 0`. So the tolerance bought nothing and cost
+    /// correctness; there is no gap tolerance any more.
     pub caught_up: bool,
+    /// Per-account balance reconciliation for the accounts in this run.
+    /// Independent of `caught_up`: a mismatch here is a hole inside a window
+    /// the cursor has already passed, which more syncing cannot close.
+    pub balance_checks: Vec<BalanceCheck>,
 }
-
-/// A cursor within this many seconds of "now" counts as caught up: only the
-/// current live statement window can still be pending, which the next sync
-/// closes. One day comfortably covers "trails by minutes/hours" (cursor lag)
-/// while still flagging real multi-day backlogs as not caught up.
-pub const CAUGHT_UP_GAP_SECONDS: i64 = 24 * 60 * 60;
 
 impl SyncOutcome {
     pub fn partial(&self) -> bool {
         self.remaining_chunks > 0
+    }
+
+    /// Accounts whose stored balance disagrees with their newest stored
+    /// transaction: rows are provably missing and need an explicit
+    /// `backfill --from <date> --account <id>`.
+    pub fn accounts_with_suspected_gaps(&self) -> Vec<&str> {
+        self.balance_checks
+            .iter()
+            .filter(|c| c.suspected_missing_rows)
+            .map(|c| c.account_id.as_str())
+            .collect()
     }
 }
 
@@ -217,9 +285,12 @@ impl SyncEngine {
                     self.store.seed_sync_state(acc, now).await?;
                     out.per_account.push(AccountSyncOutcome {
                         account_id: acc.clone(),
+                        status: AccountSyncStatus::Seeded,
                         rows_added: 0,
                         rows_skipped: 0,
                         last_completed_ts: now,
+                        chunks_total: 0,
+                        chunks_fetched: 0,
                         remaining_chunks: 0,
                         gap_seconds: 0,
                         error: None,
@@ -251,9 +322,12 @@ impl SyncEngine {
                     debug!(account = acc, age_s = age, "freshness skip");
                     out.per_account.push(AccountSyncOutcome {
                         account_id: acc.clone(),
+                        status: AccountSyncStatus::SkippedFresh,
                         rows_added: 0,
                         rows_skipped: 0,
                         last_completed_ts,
+                        chunks_total: 0,
+                        chunks_fetched: 0,
                         remaining_chunks: 0,
                         gap_seconds: (now - last_completed_ts).max(0),
                         error: None,
@@ -266,9 +340,12 @@ impl SyncEngine {
             if chunks.is_empty() {
                 out.per_account.push(AccountSyncOutcome {
                     account_id: acc.clone(),
+                    status: AccountSyncStatus::UpToDate,
                     rows_added: 0,
                     rows_skipped: 0,
                     last_completed_ts,
+                    chunks_total: 0,
+                    chunks_fetched: 0,
                     remaining_chunks: 0,
                     gap_seconds: (now - last_completed_ts).max(0),
                     error: None,
@@ -281,6 +358,7 @@ impl SyncEngine {
             let mut acc_added: u64 = 0;
             let mut acc_skipped: u64 = 0;
             let mut last_done_ts = last_completed_ts;
+            let mut fetched: u32 = 0;
             let mut remaining: u32 = 0;
             let mut error: Option<String> = None;
 
@@ -289,6 +367,7 @@ impl SyncEngine {
                     remaining = (chunks.len() - i) as u32;
                     info!(
                         account = acc,
+                        fetched = fetched,
                         remaining = remaining,
                         "time budget exhausted; returning partial"
                     );
@@ -298,6 +377,7 @@ impl SyncEngine {
                     Ok((ins, skip)) => {
                         acc_added += ins;
                         acc_skipped += skip;
+                        fetched += 1;
                         last_done_ts = *to;
                     }
                     Err(e) => {
@@ -314,25 +394,49 @@ impl SyncEngine {
                 .await?;
             out.rows_added += acc_added;
             out.remaining_chunks += remaining;
+            // Order matters: a failure is the headline even if earlier chunks
+            // of the same account landed, and `Unattempted` must win over
+            // `Partial` so a never-contacted account cannot hide behind a
+            // zero row count.
+            let status = if error.is_some() {
+                AccountSyncStatus::Failed
+            } else if remaining == 0 {
+                AccountSyncStatus::Synced
+            } else if fetched == 0 {
+                AccountSyncStatus::Unattempted
+            } else {
+                AccountSyncStatus::Partial
+            };
             out.per_account.push(AccountSyncOutcome {
                 account_id: acc.clone(),
+                status,
                 rows_added: acc_added,
                 rows_skipped: acc_skipped,
                 last_completed_ts: last_done_ts,
+                chunks_total: chunks.len() as u32,
+                chunks_fetched: fetched,
                 remaining_chunks: remaining,
                 gap_seconds: (now - last_done_ts).max(0),
                 error,
             });
         }
-        // Caught up when no account errored and every cursor is within the
-        // live window. Deliberately independent of `remaining_chunks`: a
-        // cursor trailing by minutes still reports one pending chunk, yet the
-        // DB is current - this is exactly the "partial but already up to date"
-        // case that otherwise reads as a backlog.
+        // Caught up means every account was walked to the end: no errors and
+        // no unfetched chunk anywhere. An unfetched chunk is an unchecked
+        // window, and an unchecked window can hold any amount of activity -
+        // so there is no gap tolerance here. The "cursor trails by seconds
+        // after a complete sync" case is handled upstream by the freshness
+        // skip, which reports `remaining_chunks: 0` honestly.
         out.caught_up = out
             .per_account
             .iter()
-            .all(|a| a.error.is_none() && a.gap_seconds < CAUGHT_UP_GAP_SECONDS);
+            .all(|a| a.error.is_none() && a.remaining_chunks == 0);
+        // Balance reconciliation is orthogonal to the cursor: it catches rows
+        // missing INSIDE a window the cursor already walked past, which no
+        // amount of further syncing recovers. Kept out of `caught_up` on
+        // purpose - see the field's doc comment.
+        let mut checks = self.store.balance_checks().await?;
+        checks.retain(|c| account_ids.contains(&c.account_id));
+        out.balance_checks = checks;
         Ok(out)
     }
 

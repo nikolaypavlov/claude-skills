@@ -131,6 +131,9 @@ cargo test    # 24 unit + 18 integration tests
 **Behavioural notes worth knowing:**
 - `monobank-mcp sync` against a fresh account (no prior backfill) auto-seeds the cursor at `now` rather than erroring. Run `backfill --from <date>` explicitly for historical rows.
 - `ensure_synced` returns `partial: true` when the wall-clock budget expires; Claude is expected to re-invoke or tell the user to run the CLI.
+- **Only `caught_up: true` means the DB is current** (0.4.0+). `rows_added: 0` is emitted both for "fetched the window, nothing new" and for "never fetched this account"; the per-account `status` (`synced` / `partial` / `unattempted` / `failed` / `skipped_fresh` / `up_to_date` / `seeded`) and `chunks_fetched` are what separate them. Before 0.4.0 `caught_up` used a 24h cursor-lag tolerance and ignored unfetched chunks, which let a budget-starved run report a missing day of spending as up to date.
+- Accounts are synced stalest-cursor-first (`Store::list_account_ids_by_staleness`), not by id. The ~2-API-call `ensure_synced` budget would otherwise serve the same first two accounts forever.
+- `suspected_missing_rows` compares `mono_accounts.balance_minor` against the running balance on the newest stored transaction. A mismatch means rows are missing inside an already-walked window - `sync` cannot fix it, only `backfill --from`. It is deliberately NOT part of `caught_up`. The snapshot is refreshed by `accounts`/backfill only, so a snapshot older than the newest row reports "unknown", never "matches".
 - `--probe` exits non-zero on any failure (auth / config / connectivity) so shell wrappers can detect failure via `$?` without re-parsing JSON.
 
 ## Privat24 Skill Development

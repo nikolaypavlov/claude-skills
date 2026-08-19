@@ -233,15 +233,13 @@ async fn run_backfill(from: Option<&str>, account: Option<String>) -> Result<()>
 
 async fn run_sync(account: Option<String>) -> Result<()> {
     let rt = load_runtime()?;
+    // Stalest cursor first. The CLI has no wall-clock budget so it always
+    // finishes every account, but a Ctrl-C mid-run then leaves the accounts
+    // that were furthest behind already done rather than untouched.
     let targets: Vec<String> = if let Some(id) = account {
         vec![id]
     } else {
-        rt.store
-            .list_accounts()
-            .await?
-            .into_iter()
-            .map(|a| a.account_id)
-            .collect()
+        rt.store.list_account_ids_by_staleness().await?
     };
     let engine = SyncEngine::for_sync(
         rt.api,
