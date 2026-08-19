@@ -43,8 +43,14 @@ fi
 #   2. A tarball built for another platform was extracted - executable by
 #      permission, unable to exec (a Linux ELF sitting on a mac).
 # Asking the binary for its own version catches both: a mismatch, an empty
-# answer, or a failure to exec all mean "replace it". Both binaries answer
+# answer, or a failure to exec all mean "replace it". The binary answers
 # --version before doing any other work, so the check costs milliseconds.
+#
+# icloud-mcp only learned --version in 0.3.5, which is why it landed in the
+# same release as this check: an older binary reports nothing and is always
+# treated as stale. That cannot loop in practice because this script and
+# Cargo.toml ship together - a 0.3.5 script only ever asks for the 0.3.5
+# tarball, whose binary does answer.
 if [[ -x "$BIN_PATH" ]]; then
     installed=$("$BIN_PATH" --version 2>/dev/null | awk 'NR==1 {print $NF}') || true
     if [[ "$installed" == "$version" ]]; then
@@ -98,31 +104,36 @@ if ! curl -fsSL "$url" -o "${tmp_dir}/${archive}"; then
     exit $?
 fi
 
-# ---- verify checksum (best-effort) ----
-if curl -fsSL "$sha_url" -o "${tmp_dir}/SHA256SUMS" 2>/dev/null; then
-    expected=$(grep " ${archive}\$" "${tmp_dir}/SHA256SUMS" | awk '{print $1}' || true)
-    if [[ -n "$expected" ]]; then
-        if command -v shasum >/dev/null 2>&1; then
-            actual=$(shasum -a 256 "${tmp_dir}/${archive}" | awk '{print $1}')
-        elif command -v sha256sum >/dev/null 2>&1; then
-            actual=$(sha256sum "${tmp_dir}/${archive}" | awk '{print $1}')
-        else
-            log "no sha256 tool found; skipping checksum verification"
-            actual="$expected"
-        fi
-        if [[ "$expected" != "$actual" ]]; then
-            err "checksum mismatch for ${archive}"
-            err "expected: $expected"
-            err "actual:   $actual"
-            exit 1
-        fi
-        log "checksum verified"
-    else
-        log "no entry for ${archive} in SHA256SUMS; skipping verification"
-    fi
-else
-    log "SHA256SUMS not available; skipping verification"
+# ---- verify checksum (mandatory) ----
+# The release workflow always publishes SHA256SUMS alongside the tarballs,
+# so a missing or unparseable file points at a CDN problem or tampering -
+# we hard-fail instead of installing an unverified binary.
+if ! curl -fsSL "$sha_url" -o "${tmp_dir}/SHA256SUMS"; then
+    err "could not download SHA256SUMS from $sha_url"
+    err "refusing to install an unverified binary"
+    exit 1
 fi
+expected=$(grep " ${archive}\$" "${tmp_dir}/SHA256SUMS" | awk '{print $1}')
+if [[ -z "$expected" ]]; then
+    err "no entry for ${archive} in SHA256SUMS"
+    err "refusing to install an unverified binary"
+    exit 1
+fi
+if command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 "${tmp_dir}/${archive}" | awk '{print $1}')
+elif command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "${tmp_dir}/${archive}" | awk '{print $1}')
+else
+    err "no sha256 tool found (shasum/sha256sum). Install one or build locally with cargo."
+    exit 1
+fi
+if [[ "$expected" != "$actual" ]]; then
+    err "checksum mismatch for ${archive}"
+    err "expected: $expected"
+    err "actual:   $actual"
+    exit 1
+fi
+log "checksum verified"
 
 # ---- extract ----
 mkdir -p "$BIN_DIR"
