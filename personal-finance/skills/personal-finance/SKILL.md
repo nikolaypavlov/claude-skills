@@ -25,7 +25,9 @@ allowed-tools: Bash, Read
 
 ## Pre-flight before any report, summary, or budget diff
 
-1. Call the MCP tool `mcp__plugin_monobank-mcp_monobank__ensure_synced` with `max_wait_seconds=90` so Mono data is fresh. If the response includes `partial: true`, tell the user up-front ("Mono sync вийшов partial, можу продовжити з тим що є або зачекати - як зручніше?") and let them choose before continuing.
+1. Call the MCP tool `mcp__plugin_monobank-mcp_monobank__ensure_synced` with `max_wait_seconds=90` so Mono data is fresh. **Read `caught_up`, not `rows_added`.** Only `caught_up: true` means the store covers everything up to now.
+   - `caught_up: false` - some account still holds an unfetched window. Re-invoke, or run the `monobank-mcp sync` CLI. Never conclude "nothing new" from `rows_added: 0`: an account with `status: unattempted` was never contacted at all, and reports off that data have already been wrong once. Tell the user up-front ("Mono ще не догнав, можу продовжити з тим що є або дочекатись - як зручніше?") and let them choose before continuing.
+   - `suspected_missing_rows: true` - a separate problem. Rows are missing inside a window the cursor already passed, so more syncing cannot fix it; `monobank-mcp backfill --from <date> --account <id>` is the only remedy. Say so plainly rather than reporting a number you know is short.
 2. Privat24 has no API. Do NOT try to sync it - the user uploads XLSX exports manually via privat24-skill. Reports use whatever Privat data is already in the store; if `last_sync_ts.privat` in the report bundle looks stale, mention it but do not auto-import.
 3. **Run the categorizer pass.** Not conditional - run it after every sync that precedes a reconciliation. Ingest plugins write to `<bank>_transactions` only; `tx_category` rows are populated by `pf-categorize`, and `pf-report` / `pf-budget diff` / `pf-query summarize` resolve category through `tx_category`. Skipping it is the step that silently breaks reconciliation: fresh rows stay uncategorized, fall out of `pf-budget diff`, and spend looks far lower than it is. The call is cheap (~1s for the typical month) and idempotent:
 

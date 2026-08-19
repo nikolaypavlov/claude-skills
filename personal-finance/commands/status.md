@@ -15,7 +15,9 @@ Do the steps in order. Step 3 is the one that silently breaks the reconciliation
 
 Call `mcp__plugin_monobank-mcp_monobank__ensure_synced` with `max_wait_seconds=90`.
 
-- On `partial: true` with chunks remaining, run the `monobank-mcp sync` CLI in the background (the API rate limit is one call per 60 seconds) and wait for it. Tell the user if it stays partial rather than reporting off incomplete data.
+- **`caught_up: true` is the only green light.** It means every account was walked to the end. `rows_added: 0` proves nothing on its own - an account with `status: unattempted` or `remaining_chunks > 0` was never fetched, and its window is unchecked.
+- On `caught_up: false`, run the `monobank-mcp sync` CLI in the background (the API rate limit is one call per 60 seconds) and wait for it. Tell the user if it stays behind rather than reporting off unchecked data.
+- On `suspected_missing_rows: true`, stop and say so: the named accounts are missing rows inside an already-synced window, which `sync` cannot recover. Only `monobank-mcp backfill --from <date> --account <id>` closes that. A budget status off those numbers is wrong by exactly the missing spend.
 - Do not poll for the background sync on a timer or schedule a wake-up for it. The harness re-invokes you when the task exits; a self-firing check re-runs this whole command and loops.
 - If the MCP server is missing or has no token, say so once and continue on the existing store. Stale data with a warning beats no answer.
 

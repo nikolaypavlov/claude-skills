@@ -10,7 +10,7 @@ Run the categorizer pass over `~/finances/data.db`, then walk the user through a
 
 Before reading anything from the store, call `mcp__plugin_monobank-mcp_monobank__ensure_synced` with `max_wait_seconds=90` so the categorizer doesn't miss recent transactions.
 
-- If `partial: true` comes back, tell the user up front (some recent rows may still be missing).
+- If `caught_up` is not `true`, tell the user up front (some recent rows may still be missing). Do not read `rows_added: 0` as "nothing new" - an account with `status: unattempted` was never queried.
 - If the call errors entirely - typically `MCP error -32042: monobank-mcp has no API token loaded`, or the MCP server is not installed - tell the user once that `/monobank-mcp:setup` would refresh the data, then **proceed on the existing DB**. Do not block the categorize flow; older Mono rows and any Privat24 imports are still fair game.
 
 Then run the pass. Pick the scope based on what the user asked:

@@ -186,7 +186,7 @@
       "name": "personal-finance",
       "source": "./personal-finance",
       "description": "Umbrella skill for personal finance queries, reports, categorization, and conversation-driven budgeting over the shared ~/finances/data.db. Auto-discovers <bank>_transactions tables (mono_*, privat_*) and projects them to a common shape. Owns the pf_* family of tables (categorization rules + overrides, budgets + drafts, category registry, import audit). Ships pf-query, pf-report, pf-categorize, pf-rules, and pf-budget (with conversation-driven planning + Family export view).",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "author": {
         "name": "Mykola Pavlov",
         "email": "me@nikolaypavlov.com"
