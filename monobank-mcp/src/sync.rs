@@ -122,6 +122,18 @@ pub struct SyncOutcome {
     /// `remaining_chunks: 0`. So the tolerance bought nothing and cost
     /// correctness; there is no gap tolerance any more.
     pub caught_up: bool,
+    /// Wall-clock seconds a follow-up run needs to walk what this one left
+    /// unfetched: `remaining_chunks` times the API interval. Zero when
+    /// `caught_up` is true.
+    ///
+    /// Monobank allows one statement call per interval (61s in practice), so
+    /// an MCP caller capped at 90s covers one or two accounts per invocation
+    /// no matter how it is written. On a store with eight accounts that is
+    /// several round trips of `ensure_synced` to reach `caught_up`, each one
+    /// re-reporting the same backlog. Read this field and decide once: when
+    /// it exceeds the budget, run the CLI in the background instead of
+    /// re-invoking and hoping.
+    pub estimated_catch_up_seconds: u64,
     /// Per-account balance reconciliation for the accounts in this run.
     /// Independent of `caught_up`: a mismatch here is a hole inside a window
     /// the cursor has already passed, which more syncing cannot close.
@@ -430,6 +442,10 @@ impl SyncEngine {
             .per_account
             .iter()
             .all(|a| a.error.is_none() && a.remaining_chunks == 0);
+        // What a follow-up run will actually cost, so the caller can pick the
+        // CLI over another round trip without having to know the rate limit.
+        out.estimated_catch_up_seconds =
+            u64::from(out.remaining_chunks) * self.interval.as_secs();
         // Balance reconciliation is orthogonal to the cursor: it catches rows
         // missing INSIDE a window the cursor already walked past, which no
         // amount of further syncing recovers. Kept out of `caught_up` on

@@ -149,7 +149,7 @@ impl MonobankServer {
     }
 
     #[tool(
-        description = "Run an inline incremental sync of Monobank accounts, bounded by `max_wait_seconds` so the tool returns before Claude's timeout. Trust ONLY `caught_up: true` as \"the local DB covers everything up to now\". `rows_added: 0` proves nothing on its own - an account with `remaining_chunks > 0` (status `unattempted` / `partial`) was never fetched, or only partly fetched, and its window is unchecked; re-invoke the tool or run `monobank-mcp sync` from the CLI until `caught_up` is true. Accounts are served stalest-first, so repeated calls reach every account. Separately, `suspected_missing_rows: true` means an account's stored balance disagrees with its newest stored transaction: rows are missing inside an already-synced window and only `monobank-mcp backfill --from <date> --account <id>` recovers them."
+        description = "Run an inline incremental sync of Monobank accounts, bounded by `max_wait_seconds` so the tool returns before Claude's timeout. Trust ONLY `caught_up: true` as \"the local DB covers everything up to now\". `rows_added: 0` proves nothing on its own - an account with `remaining_chunks > 0` (status `unattempted` / `partial`) was never fetched, or only partly fetched, and its window is unchecked; re-invoke the tool or run `monobank-mcp sync` from the CLI until `caught_up` is true. Accounts are served stalest-first, so repeated calls reach every account. `estimated_catch_up_seconds` is how long the remaining work needs at the API rate limit - when it exceeds the budget you can afford, run `monobank-mcp sync` in the background instead of re-invoking this tool repeatedly. Separately, `suspected_missing_rows: true` means an account's stored balance disagrees with its newest stored transaction: rows are missing inside an already-synced window and only `monobank-mcp backfill --from <date> --account <id>` recovers them."
     )]
     async fn ensure_synced(
         &self,
@@ -186,6 +186,9 @@ impl MonobankServer {
             "skipped": outcome.skipped_all,
             "rows_added": outcome.rows_added,
             "remaining_chunks": outcome.remaining_chunks,
+            // What a follow-up costs, so a caller weighing "re-invoke or go
+            // to the CLI" does not have to know the rate limit to decide.
+            "estimated_catch_up_seconds": outcome.estimated_catch_up_seconds,
             // Hoisted out of `balance_checks` so a gap cannot be missed by a
             // caller that only skims the top level of the response.
             "suspected_missing_rows": !suspect.is_empty(),

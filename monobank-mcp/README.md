@@ -89,6 +89,8 @@ For full Monobank API documentation see
 
 When `caught_up` is false, re-invoke `ensure_synced` or run `monobank-mcp sync` from the CLI. Accounts are served **stalest cursor first** (0.4.0+), so successive budget-limited calls rotate through all of them instead of re-serving the same first two.
 
+`estimated_catch_up_seconds` (0.4.2+) prices that choice: `remaining_chunks` times the API interval, so a caller does not have to know the rate limit to decide. Monobank allows one statement call per interval (61s in practice), which means a 90-second MCP budget covers one or two accounts per invocation regardless of how the call is written. On a store with eight stale accounts the estimate comes back near 480s - four or five round trips of `ensure_synced` for what one background `monobank-mcp sync` finishes in a single run. When the estimate exceeds the budget you can afford, go to the CLI instead of re-invoking.
+
 ### Balance reconciliation
 
 Monobank stamps every statement row with the account balance after that operation. `ensure_synced` and `get_sync_status` compare that running balance on the newest stored transaction against `mono_accounts.balance_minor` from client-info (0.4.0+):

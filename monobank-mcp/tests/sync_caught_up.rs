@@ -301,3 +301,71 @@ async fn per_account_json_keeps_legacy_fields_and_adds_new_ones() {
     }
     assert_eq!(v["status"], "synced", "status serializes as snake_case");
 }
+
+/// An engine that can finish (no deadline) but still declares a realistic
+/// per-call interval, so a zero estimate proves "nothing left", not "the
+/// interval happened to be zero".
+fn paced_engine(api: MonobankApi, store: Store) -> SyncEngine {
+    SyncEngine::__for_test(
+        api,
+        store,
+        RateLimiter::new(Duration::ZERO),
+        None,
+        Duration::from_secs(60),
+        0,
+        RunSource::Sync,
+        Duration::ZERO,
+    )
+}
+
+/// A caller capped at 90s cannot tell from `remaining_chunks` alone whether
+/// re-invoking is worth it - that takes knowing the rate limit. The estimate
+/// states the cost directly: chunks left times the interval.
+#[tokio::test]
+async fn starved_run_reports_what_catching_up_will_cost() {
+    let server = httpmock::MockServer::start_async().await;
+    let ids = ["acc_a", "acc_b", "acc_c"];
+    for id in ids {
+        common::mount_statement_prefix_empty(&server, id);
+    }
+    let api = MonobankApi::new(server.base_url(), "test-token").unwrap();
+    let store = Store::open_in_memory().unwrap();
+    for id in ids {
+        seed_account(&store, id).await;
+        store.seed_sync_state(id, now_unix() - HOURS_22).await.unwrap();
+    }
+
+    let out = starved_engine(api, store.clone())
+        .run(&ids.map(String::from))
+        .await
+        .unwrap();
+
+    assert!(!out.caught_up);
+    assert_eq!(out.remaining_chunks, 3);
+    // 3 unfetched chunks at one call per 60s.
+    assert_eq!(out.estimated_catch_up_seconds, 180);
+}
+
+/// Nothing left to walk means nothing left to wait for, even though the
+/// engine is pacing at 60s per call.
+#[tokio::test]
+async fn caught_up_run_estimates_zero() {
+    let server = httpmock::MockServer::start_async().await;
+    common::mount_statement_prefix_empty(&server, common::FIXTURE_ACCOUNT_ID);
+    let api = MonobankApi::new(server.base_url(), "test-token").unwrap();
+    let store = Store::open_in_memory().unwrap();
+    seed_account(&store, common::FIXTURE_ACCOUNT_ID).await;
+    store
+        .seed_sync_state(common::FIXTURE_ACCOUNT_ID, now_unix() - HOURS_22)
+        .await
+        .unwrap();
+
+    let out = paced_engine(api, store.clone())
+        .run(&[common::FIXTURE_ACCOUNT_ID.into()])
+        .await
+        .unwrap();
+
+    assert!(out.caught_up);
+    assert_eq!(out.remaining_chunks, 0);
+    assert_eq!(out.estimated_catch_up_seconds, 0);
+}
