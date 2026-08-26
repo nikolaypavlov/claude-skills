@@ -47,7 +47,15 @@ uv run --directory <plugin-root> pf-budget diff --period <YYYY-MM> --currency <C
 
 Read `real_spend_minor`, `income_minor` and `remaining_minor` as three separate figures. `actual_minor` nets income into spend and must never be reported on its own. `remaining_minor` is signed like the targets - negative is headroom, positive is overspend - so say the direction in words.
 
-## Step 5: get the rate and the balances
+**Check `other_inflow_minor` before quoting spend.** It is zero on an ordinary month. When it is not, a positive row outside `Дохід/*` has netted into `real_spend_minor` and understated spend by exactly that amount - a maturing bond, a large refund, a bank rebate. Lead with `gross_outflow_minor` instead and name the inflow on its own line. The two differ enough to flip a verdict: one month read 82% of plan on the netted figure and 96% on the gross one.
+
+## Step 5: refresh balances, then get the rate
+
+`monobank-mcp sync` writes transactions and does NOT refresh account balances, so the stored snapshot is routinely older than the rows just synced. Refresh it first:
+
+```bash
+monobank-mcp accounts
+```
 
 ```bash
 curl -sS -m 20 "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?json"
@@ -55,6 +63,8 @@ uv run --directory <plugin-root> pf-query balances --convert-to UAH --rate USD=<
 ```
 
 Match the NBU record on `r030` (the ISO 4217 numeric code the store uses), and carry its `exchangedate` into the report header.
+
+If the balances payload carries a `stale_balances` block, the refresh did not take. Say so in the report rather than presenting the coverage figure as current - every number in section 1 rests on those balances.
 
 ## Step 6: report
 

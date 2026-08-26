@@ -201,3 +201,85 @@ def test_display_name_helper() -> None:
     assert q.account_display_name(type_="black", currency_alpha="UAH", label="My card") == "My card"
     # unknown single-currency type falls back to a title-cased bare form
     assert q.account_display_name(type_="revolut", currency_alpha="EUR", label=None) == "Revolut"
+
+
+def _stale_snapshot_db(tmp_path: Path) -> Path:
+    """Same v0.3 shape, but the black-UAH snapshot predates the newest
+    transaction on that account - exactly what `monobank-mcp sync` leaves
+    behind, since sync writes transactions and never refreshes balances.
+    black-USD stays current so the flag is proven to be per-account.
+    """
+    db = _mono_with_balance_db(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        INSERT INTO mono_transactions VALUES
+          ('t_uah_new', 'black_uah', 1700009999, -50000, 980,
+           NULL, NULL, 5411, 'Silpo', NULL, 20149575, NULL, '{}', 1, 1),
+          ('t_usd_old', 'black_usd', 1699990000, -1000, 840,
+           NULL, NULL, 5411, 'Amazon', NULL, 206282, NULL, '{}', 1, 1);
+        """
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_balance_flagged_stale_when_snapshot_predates_newest_tx(
+    tmp_path: Path,
+) -> None:
+    conn = open_db(_stale_snapshot_db(tmp_path))
+    rows = {r["account_id"]: r for r in q.account_balances(conn)}
+    conn.close()
+
+    uah = rows["black_uah"]
+    assert uah["balance_stale"] is True
+    assert uah["newest_tx_ts"] == 1700009999
+    assert uah["balance_synced_at"] == 1700000000
+
+    # Snapshot newer than its newest transaction: not stale.
+    usd = rows["black_usd"]
+    assert usd["balance_stale"] is False
+    assert usd["newest_tx_ts"] == 1699990000
+
+
+def test_balance_not_stale_without_transactions(tmp_path: Path) -> None:
+    """A dormant account has no transactions to be behind of."""
+    conn = open_db(_mono_with_balance_db(tmp_path))
+    rows = {r["account_id"]: r for r in q.account_balances(conn)}
+    conn.close()
+    assert rows["black_uah"]["balance_stale"] is False
+    assert rows["dormant"]["balance_stale"] is False
+    assert rows["dormant"]["newest_tx_ts"] is None
+
+
+def test_transaction_sourced_balance_is_never_stale(mono_only_db: Path) -> None:
+    """The fallback reads the newest transaction itself, so it cannot lag
+    behind one."""
+    conn = open_db(mono_only_db)
+    rows = {r["account_id"]: r for r in q.account_balances(conn)}
+    conn.close()
+    acc = rows["mono_acc_1"]
+    assert acc["balance_source"] == "transaction"
+    assert acc["balance_stale"] is False
+
+
+def test_cli_balances_surfaces_stale_snapshot_at_top_level(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = _stale_snapshot_db(tmp_path)
+    rc, out, _ = _run(["balances", "--db", str(db)], capsys)
+    assert rc == 0
+    stale = out["stale_balances"]
+    assert stale["count"] == 1
+    assert [a["account_id"] for a in stale["accounts"]] == ["black_uah"]
+    assert "monobank-mcp accounts" in stale["warning"]
+
+
+def test_cli_balances_omits_stale_block_when_all_current(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = _mono_with_balance_db(tmp_path)
+    rc, out, _ = _run(["balances", "--db", str(db)], capsys)
+    assert rc == 0
+    assert "stale_balances" not in out

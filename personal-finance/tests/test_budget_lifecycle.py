@@ -385,3 +385,74 @@ def test_rename_category_rejects_identical_names(
     )
     assert rc == 1
     assert "identical" in err["error"]
+
+
+def test_diff_totals_separate_gross_outflow_from_non_income_inflow(
+    mono_only_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A positive row OUTSIDE ``Дохід/*`` nets into ``real_spend_minor``
+    and understates spend by exactly its amount.
+
+    Real case: a maturing bond credits ``Інвестиції/Облігації``. It is
+    neither income nor a refund - it converts an asset to cash - but the
+    spend figure absorbs it silently, and a month at 96% of plan reads as
+    82%. ``gross_outflow_minor`` is the honest number; a non-zero
+    ``other_inflow_minor`` is the signal to use it.
+    """
+    conn = open_db(mono_only_db)
+    # mono_t3 is +500000, categorised OUTSIDE Дохід/* this time.
+    conn.execute(
+        "INSERT INTO tx_category (tx_id, category, set_at, set_by) VALUES "
+        "('mono_t1', 'Їжа/Кава', 1700000050, 'manual'), "
+        "('mono_t2', 'Їжа/Продукти', 1700001050, 'manual'), "
+        "('mono_t3', 'Інвестиції/Облігації', 1700002050, 'manual')"
+    )
+    bud.materialise_budget(
+        conn,
+        period="2023-11",
+        rows=[
+            bud.PlanRow("2023-11", "Їжа/Кава", 980, "baseline", -30000),
+            bud.PlanRow("2023-11", "Їжа/Продукти", 980, "baseline", -200000),
+        ],
+        source="seed",
+    )
+    conn.close()
+    rc, out, err = _run(["diff", "--period", "2023-11", "--db", str(mono_only_db)], capsys)
+    assert rc == 0, err
+    t = next(b for b in out["blocks"] if b["currency_code"] == 980)["totals"]
+
+    # Nothing landed on Дохід/*, so the income figure is silent about it.
+    assert t["income_minor"] == 0
+    # The redemption nets in and turns "spend" positive - the bug.
+    assert t["real_spend_minor"] == 325000
+    # The split tells the truth: 175000 left, 500000 arrived.
+    assert t["gross_outflow_minor"] == -175000
+    assert t["other_inflow_minor"] == 500000
+    # Documented reconciliation between the three.
+    assert t["real_spend_minor"] == t["gross_outflow_minor"] + t["other_inflow_minor"]
+
+
+def test_diff_totals_other_inflow_zero_on_an_ordinary_month(
+    mono_only_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With only outflows and ``Дохід/*`` rows, the split adds nothing and
+    ``gross_outflow_minor`` equals ``real_spend_minor``."""
+    conn = open_db(mono_only_db)
+    conn.execute(
+        "INSERT INTO tx_category (tx_id, category, set_at, set_by) VALUES "
+        "('mono_t1', 'Їжа/Кава', 1700000050, 'manual'), "
+        "('mono_t2', 'Їжа/Продукти', 1700001050, 'manual'), "
+        "('mono_t3', 'Дохід/Зарплата', 1700002050, 'manual')"
+    )
+    bud.materialise_budget(
+        conn,
+        period="2023-11",
+        rows=[bud.PlanRow("2023-11", "Їжа/Кава", 980, "baseline", -30000)],
+        source="seed",
+    )
+    conn.close()
+    rc, out, err = _run(["diff", "--period", "2023-11", "--db", str(mono_only_db)], capsys)
+    assert rc == 0, err
+    t = next(b for b in out["blocks"] if b["currency_code"] == 980)["totals"]
+    assert t["other_inflow_minor"] == 0
+    assert t["gross_outflow_minor"] == t["real_spend_minor"] == -175000

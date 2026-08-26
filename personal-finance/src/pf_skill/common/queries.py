@@ -243,6 +243,19 @@ def _opt_int(value: Any) -> int | None:
     return int(value) if value is not None else None
 
 
+def _newest_tx_ts(conn: sqlite3.Connection, *, bank: str, account_id: str) -> int | None:
+    """Timestamp of the newest stored transaction for one account.
+
+    ``bank`` is a regex-validated prefix from ``discover_sources`` and is
+    safe to interpolate into the table identifier.
+    """
+    row = conn.execute(
+        f'SELECT MAX(ts) FROM "{bank}_transactions" WHERE account_id = ?',
+        (account_id,),
+    ).fetchone()
+    return _opt_int(row[0]) if row is not None else None
+
+
 def account_balances(
     conn: sqlite3.Connection,
     *,
@@ -256,6 +269,14 @@ def account_balances(
     with no resolvable balance report ``balance_minor = None`` and
     ``balance_source = "none"`` so the caller can surface them rather
     than silently dropping them from a coverage total.
+
+    ``balance_stale`` is True when the stored balance snapshot predates
+    the newest transaction already in the store. The balance column on
+    ``<bank>_accounts`` is refreshed by ``monobank-mcp accounts``, NOT by
+    ``sync``, so a run that pulls fresh transactions leaves the snapshot
+    behind and every figure derived from it - real funds, coverage - is
+    quietly out of date. Callers must surface this rather than reporting
+    the number as current.
 
     One dict per account, ordered by currency then name. Currency is
     kept per-account; callers sum WITHIN a currency, never across.
@@ -272,6 +293,13 @@ def account_balances(
         )
         real = balance - (credit or 0) if balance is not None else None
         alpha = alpha_for(acc["currency_code"])
+        newest_ts = _newest_tx_ts(conn, bank=acc["bank"], account_id=acc["account_id"])
+        stale = (
+            source == "account"
+            and synced_at is not None
+            and newest_ts is not None
+            and newest_ts > synced_at
+        )
         out.append(
             {
                 "account_id": acc["account_id"],
@@ -287,6 +315,8 @@ def account_balances(
                 "real_funds_minor": real,
                 "balance_synced_at": synced_at,
                 "balance_source": source,
+                "balance_stale": stale,
+                "newest_tx_ts": newest_ts,
             }
         )
     out.sort(key=lambda r: (r["currency"], r["name"] or r["account_id"]))
@@ -510,6 +540,15 @@ def list_categories(
     is more useful when picking a name for a new rule than the full
     seed set (which can be enumerated via ``pf-rules list`` instead).
 
+    A category carrying a budget line IS in use, even with no
+    transaction against it yet, so those are included by default and
+    flagged ``in_budget = True``. Leaving them out is how a planned
+    line gets a second spelling: the caller lists the taxonomy, does
+    not see ``Транспорт/Страхування`` because nothing has landed on it
+    this month, invents ``Транспорт/Страховка``, and the plan then
+    shows an unfired line next to an unplanned charge for the same
+    thing.
+
     ``include_declared``: when True, also surface entries from
     ``category_registry`` that have no matching transactions yet. They
     appear with ``tx_count = 0`` and ``declared = True`` so callers
@@ -529,7 +568,19 @@ def list_categories(
         "ORDER BY tx_count DESC, category ASC"
     )
     in_use_rows = list(conn.execute(sql))
-    results = [{"category": r[0], "tx_count": int(r[1]), "declared": False} for r in in_use_rows]
+    results = [
+        {"category": r[0], "tx_count": int(r[1]), "declared": False, "in_budget": False}
+        for r in in_use_rows
+    ]
+
+    budgeted = _budget_line_categories(conn)
+    for row in results:
+        if row["category"] in budgeted:
+            row["in_budget"] = True
+    in_use_names = {r["category"] for r in results}
+    for name in sorted(budgeted - in_use_names):
+        results.append({"category": name, "tx_count": 0, "declared": False, "in_budget": True})
+
     if not include_declared:
         return results
     in_use_names = {r["category"] for r in results}
@@ -547,8 +598,24 @@ def list_categories(
     for (name,) in declared_rows:
         if name in in_use_names:
             continue
-        results.append({"category": name, "tx_count": 0, "declared": True})
+        results.append({"category": name, "tx_count": 0, "declared": True, "in_budget": False})
     return results
+
+
+def _budget_line_categories(conn: sqlite3.Connection) -> set[str]:
+    """Every category that carries a budget line, in any period.
+
+    Returns an empty set when ``budget_line`` is absent - a store that
+    predates the budget migration simply has no planned categories, and
+    that is not an error for a taxonomy listing.
+    """
+    try:
+        rows = conn.execute("SELECT DISTINCT category FROM budget_line")
+        return {r[0] for r in rows if r[0]}
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).lower():
+            raise
+        return set()
 
 
 def find_transactions(

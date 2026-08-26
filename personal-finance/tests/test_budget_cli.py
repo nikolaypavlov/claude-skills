@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from pf_skill.budget_cli import main
+from pf_skill.common import budget as bud
+from pf_skill.common.store import open_db
 
 
 def _run(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, dict, str]:
@@ -345,3 +347,68 @@ def test_list_categories_does_not_duplicate_when_both_in_use_and_declared(
     assert len(both_entries) == 1
     assert both_entries[0]["tx_count"] == 1
     assert both_entries[0]["declared"] is False
+
+
+def test_list_categories_surfaces_budget_only_category(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A category that exists only as a budget line must be listed.
+
+    This is the ``Транспорт/Страхування`` trap: the plan carries the
+    line, nothing has landed on it yet this period, so a taxonomy
+    listing that reads transactions alone hides it - and the next
+    categorisation invents ``Транспорт/Страховка`` for the same thing,
+    leaving an unfired planned line beside an unplanned charge.
+    """
+    conn = open_db(both_banks_db)
+    try:
+        conn.execute(
+            "INSERT INTO tx_category (tx_id, category, set_at, set_by) "
+            "VALUES ('mono_t1', 'Реальна/Категорія', 1700000000, 'manual')"
+        )
+        bud.materialise_budget(
+            conn,
+            period="2023-11",
+            rows=[
+                bud.PlanRow("2023-11", "Транспорт/Страхування", 980, "baseline", -800000),
+                bud.PlanRow("2023-11", "Реальна/Категорія", 980, "baseline", -50000),
+            ],
+            source="seed",
+        )
+    finally:
+        conn.close()
+
+    rc, payload, err = _run(["list-categories", "--db", str(both_banks_db)], capsys)
+    assert rc == 0, err
+    by = {c["category"]: c for c in payload["categories"]}
+
+    planned = by["Транспорт/Страхування"]
+    assert planned["tx_count"] == 0
+    assert planned["in_budget"] is True
+    # Not a registry declaration - it is a real planned line.
+    assert planned["declared"] is False
+
+    # A category that is both in use and budgeted appears once, flagged.
+    in_use = by["Реальна/Категорія"]
+    assert in_use["tx_count"] == 1
+    assert in_use["in_budget"] is True
+    assert len([c for c in payload["categories"] if c["category"] == "Реальна/Категорія"]) == 1
+
+
+def test_list_categories_marks_unbudgeted_categories(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no budget at all, every row is flagged in_budget False."""
+    conn = open_db(both_banks_db)
+    try:
+        conn.execute(
+            "INSERT INTO tx_category (tx_id, category, set_at, set_by) "
+            "VALUES ('mono_t1', 'Реальна/Категорія', 1700000000, 'manual')"
+        )
+    finally:
+        conn.close()
+    rc, payload, err = _run(["list-categories", "--db", str(both_banks_db)], capsys)
+    assert rc == 0, err
+    assert payload["categories"]
+    for c in payload["categories"]:
+        assert c["in_budget"] is False

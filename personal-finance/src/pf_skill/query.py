@@ -173,6 +173,30 @@ def cmd_balances(args: argparse.Namespace) -> dict[str, Any]:
         "detected_banks": list(sources.account_banks),
         "by_currency": by_currency,
     }
+    # A stale snapshot silently poisons every figure derived from these
+    # balances, so it is surfaced at the top level rather than left as a
+    # per-account flag the caller has to go looking for.
+    stale = [r for r in rows if r.get("balance_stale")]
+    if stale:
+        payload["stale_balances"] = {
+            "count": len(stale),
+            "accounts": [
+                {
+                    "account_id": r["account_id"],
+                    "name": r["name"],
+                    "bank": r["bank"],
+                    "balance_synced_at": r["balance_synced_at"],
+                    "newest_tx_ts": r["newest_tx_ts"],
+                }
+                for r in stale
+            ],
+            "warning": (
+                "stored balance predates the newest transaction on these "
+                "accounts - real funds and any coverage figure derived from "
+                "them are out of date. Refresh with `monobank-mcp accounts` "
+                "(sync does NOT refresh balances), then re-run."
+            ),
+        }
     if target_code is not None:
         payload["converted"] = _convert_block(by_currency, target_code=target_code, rates=rates)
     if not sources.has_any_tx():

@@ -1299,8 +1299,13 @@ def _pct_used(actual: int, target: int) -> float | None:
 
 # Top-level category group that denotes real income (Дохід/Зарплата,
 # Дохід/ВПО, ...). Internal transfers (Перекази/СвоїКартки) are already
-# dropped upstream by ``actuals_for_period``, so within a diff block the
-# only non-spend rows are income.
+# dropped upstream by ``actuals_for_period``.
+#
+# Do NOT assume the remaining non-income rows are all outflows. A row
+# outside ``Дохід/*`` can still be positive: a refunded purchase, a bond
+# maturing into cash (``Інвестиції/Облігації``), a bank rebate. Those net
+# against spend inside ``real_spend_minor``, which is correct for a refund
+# and wrong for an asset conversion - see ``_diff_totals``.
 _INCOME_CATEGORY_PREFIX = "Дохід"
 
 
@@ -1316,13 +1321,27 @@ def _diff_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
     on ``Дохід/*`` rows as positive amounts and silently shrinks it. The
     explicit fields are the ones to report:
 
-      - ``real_spend_minor``  - sum of actual on non-income rows (refunds
-        net in as positive offsets). Transfers are already excluded
-        upstream.
+      - ``real_spend_minor``  - sum of actual on non-income rows, so any
+        positive non-income row nets against it. Correct for a refund,
+        WRONG for an asset conversion. Never report it alone without
+        checking ``other_inflow_minor`` first (see below).
+      - ``gross_outflow_minor`` - sum of the negative non-income rows only.
+        Money that actually left, with nothing netted in.
+      - ``other_inflow_minor``  - sum of the positive non-income rows.
+        Zero on an ordinary month. Non-zero means ``real_spend_minor``
+        understates spend by exactly this much, and the report should lead
+        with ``gross_outflow_minor`` and name the inflow separately.
       - ``income_minor``      - sum of actual on ``Дохід/*`` rows.
       - ``remaining_minor``   - planned outflow left = spend target minus
         real spend (signed like the targets: negative = budget still to
         spend, positive = overspent).
+
+    The three spend figures reconcile as::
+
+        real_spend_minor == gross_outflow_minor + other_inflow_minor
+
+    ``remaining_minor`` stays on ``real_spend_minor`` so a refund keeps
+    restoring budget, which is what a refund should do.
     """
     spend_rows = [r for r in rows if not _is_income_category(r["category"])]
     real_spend = sum(r["actual_minor"] for r in spend_rows)
@@ -1332,6 +1351,8 @@ def _diff_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
         "actual_minor": sum(r["actual_minor"] for r in rows),
         "delta_minor": sum(r["delta_minor"] for r in rows),
         "real_spend_minor": real_spend,
+        "gross_outflow_minor": sum(r["actual_minor"] for r in spend_rows if r["actual_minor"] < 0),
+        "other_inflow_minor": sum(r["actual_minor"] for r in spend_rows if r["actual_minor"] > 0),
         "income_minor": sum(r["actual_minor"] for r in rows if _is_income_category(r["category"])),
         "remaining_minor": spend_target - real_spend,
     }

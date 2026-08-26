@@ -77,11 +77,13 @@ pf-query balances
 pf-query balances --convert-to UAH --rate USD=44.5 [--rate EUR=48.0]
 ```
 
-Returns `{ok, detected_banks, by_currency: {UAH: {accounts:[...], balance_minor_total, real_funds_minor_total, unknown_accounts}, ...}}`. Per account you get `balance_minor`, `credit_limit_minor`, `real_funds_minor` (= balance - credit line), `name`, `balance_synced_at`, and `balance_source`:
+Returns `{ok, detected_banks, by_currency: {UAH: {accounts:[...], balance_minor_total, real_funds_minor_total, unknown_accounts}, ...}}`. Per account you get `balance_minor`, `credit_limit_minor`, `real_funds_minor` (= balance - credit line), `name`, `balance_synced_at`, `newest_tx_ts`, `balance_stale`, and `balance_source`:
 
 - `account` - authoritative balance stored on `<bank>_accounts` (monobank-mcp >= 0.3, refreshed by `monobank-mcp accounts` / backfill). Preferred; sidesteps the same-timestamp transfer-pair ambiguity.
 - `transaction` - fallback to the newest transaction's running balance (privat, or a pre-0.3 mono row).
 - `none` - no balance resolvable (dormant account, no synced tx); listed but excluded from totals and counted in `unknown_accounts`.
+
+**Staleness.** `monobank-mcp sync` writes transactions and does NOT refresh the balance snapshot, so a store that just synced routinely holds a balance older than its own newest row. `balance_stale` is true when `balance_synced_at` predates `newest_tx_ts` on that account, and the payload then carries a top-level `stale_balances` block naming the accounts. Run `monobank-mcp accounts` and re-read before quoting real funds or any coverage figure - all of it is derived from these numbers, and nothing else in the output hints that they lag.
 
 A credit line is baked into `balance_minor`, so `real_funds_minor` is the user's own money; a balance below the credit limit means debt. Totals are summed **within** each currency only. `--convert-to` is the single opt-in exception that crosses currencies - it needs an explicit `--rate` per held currency (use the user's own recent FOP transfer-pair rate, not a market quote); any currency without a rate is flagged in `converted.unconverted`, never silently dropped.
 
@@ -121,7 +123,9 @@ Case-insensitive LIKE over `description` and `counterparty`.
 pf-query categories [--include-declared]
 ```
 
-Returns `{ok, count, categories: [{category, tx_count, declared}]}` sorted by `tx_count` desc. With `--include-declared`, categories from `category_registry` that have no matching transactions yet are surfaced with `tx_count: 0, declared: true`. Use this before proposing a new category name so suggestions stay consistent with the user's existing taxonomy.
+Returns `{ok, count, categories: [{category, tx_count, declared, in_budget}]}` sorted by `tx_count` desc. With `--include-declared`, categories from `category_registry` that have no matching transactions yet are surfaced with `tx_count: 0, declared: true`. Use this before proposing a new category name so suggestions stay consistent with the user's existing taxonomy.
+
+`in_budget: true` marks a category carrying a budget line. Those are included by default even at `tx_count: 0`, because a planned line is real intent whether or not anything has landed on it yet. Read the flag before naming a category: a planned line that has not fired this month is exactly the one you are most likely to duplicate under a second spelling, which leaves the plan showing an unfired line beside an unplanned charge for the same thing.
 
 ### Cluster uncategorized transactions
 
@@ -258,11 +262,17 @@ Joins budget lines with actuals via the same category-resolution path as `pf-que
 
 Per-block `totals` keeps spend and income **separate** - report these three, not the raw net:
 
-- `real_spend_minor` - sum of actual on non-income rows (spend; refunds net in).
+- `real_spend_minor` - sum of actual on non-income rows, so any positive non-income row nets against it.
+- `gross_outflow_minor` - the negative non-income rows only; money that actually left.
+- `other_inflow_minor` - the positive non-income rows; zero on an ordinary month.
 - `income_minor` - sum of actual on `Дохід/*` rows.
 - `remaining_minor` - planned outflow left (`spend_target - real_spend`; signed like targets: negative = budget still to spend, positive = overspent).
 
+They reconcile as `real_spend_minor == gross_outflow_minor + other_inflow_minor`.
+
 `actual_minor` is retained for back-compat but is a net-of-income figure: income lands on `Дохід/*` rows as positive amounts and silently shrinks it. Never present it as "spent" on its own.
+
+**`real_spend_minor` has the same failure one level down.** Not every positive row is income. A refunded purchase, a maturing bond credited to `Інвестиції/Облігації`, a bank rebate - none carry a `Дохід/*` category, so all three net against spend. That is right for a refund and wrong for an asset conversion, and nothing in the category name distinguishes them. Check `other_inflow_minor` first: zero means `real_spend_minor` is safe to quote, non-zero means quote `gross_outflow_minor` and name the inflow separately. On a month where a bond matured mid-period the two figures came to 82% of plan and 96% of plan on identical data - the difference between "comfortably under" and "nearly out".
 
 ### Snapshot / reopen / delete
 
@@ -336,7 +346,8 @@ Run the pre-flight in full (sync, categorize, gate on zero uncategorized), then 
 
 | Figure | Where it comes from |
 |---|---|
-| Spent so far | `real_spend_minor` |
+| Spent so far | `gross_outflow_minor` when `other_inflow_minor` is non-zero, else `real_spend_minor` |
+| Non-income inflow | `other_inflow_minor` - report on its own line, never folded into spend |
 | Income received | `income_minor` |
 | Planned spend for the month | `real_spend_minor + remaining_minor` |
 | Obligations still ahead | planned spend minus spent so far |
