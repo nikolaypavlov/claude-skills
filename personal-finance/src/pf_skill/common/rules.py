@@ -73,12 +73,28 @@ class Rule:
     source: str
     rule_id: int | None = None
     enabled: bool = True
+    # Optional AND-condition on the bank's pre-remap MCC (``originalMcc``
+    # in the Monobank payload). ``None`` = unconstrained. Only DB rules
+    # can set it; see pf_006_rule_original_mcc.sql for why it exists.
+    original_mcc: int | None = None
 
     def matches(
-        self, *, mcc: int | None, description: str | None, counterparty: str | None
+        self,
+        *,
+        mcc: int | None,
+        description: str | None,
+        counterparty: str | None,
+        original_mcc: int | None = None,
     ) -> bool:
-        """Test the rule against the three searchable fields of a tx row."""
+        """Test the rule against the searchable fields of a tx row.
+
+        ``original_mcc`` only matters when the rule carries an
+        ``original_mcc`` constraint; a tx without one (other banks, or
+        a Mono payload that lacks the key) never satisfies it.
+        """
         if not self.enabled:
+            return False
+        if self.original_mcc is not None and original_mcc != self.original_mcc:
             return False
         if self.match_field == "mcc":
             return mcc is not None and str(mcc) == self.pattern
@@ -122,6 +138,7 @@ def first_match(
     mcc: int | None,
     description: str | None,
     counterparty: str | None,
+    original_mcc: int | None = None,
 ) -> Rule | None:
     """Return the first rule whose ``matches`` predicate succeeds.
 
@@ -130,7 +147,12 @@ def first_match(
     uncategorized and surfaces it in the report.
     """
     for rule in rules:
-        if rule.matches(mcc=mcc, description=description, counterparty=counterparty):
+        if rule.matches(
+            mcc=mcc,
+            description=description,
+            counterparty=counterparty,
+            original_mcc=original_mcc,
+        ):
             return rule
     return None
 
@@ -253,7 +275,8 @@ def _load_local_counterparty(data_dir: Path) -> list[Rule]:
 
 def _load_db_rules(conn: sqlite3.Connection) -> list[Rule]:
     rows = conn.execute(
-        "SELECT id, priority, match_field, pattern, category, enabled FROM categorization_rules"
+        "SELECT id, priority, match_field, pattern, category, enabled, original_mcc "
+        "FROM categorization_rules"
     ).fetchall()
     rules: list[Rule] = []
     for r in rows:
@@ -271,6 +294,7 @@ def _load_db_rules(conn: sqlite3.Connection) -> list[Rule]:
                 source="db",
                 rule_id=int(r[0]),
                 enabled=bool(r[5]),
+                original_mcc=int(r[6]) if r[6] is not None else None,
             )
         )
     return rules

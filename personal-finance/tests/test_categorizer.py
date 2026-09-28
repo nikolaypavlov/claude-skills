@@ -200,3 +200,60 @@ def test_apply_rule_by_id_unknown_raises(empty_db: Path) -> None:
     conn = store.open_db(empty_db)
     with pytest.raises(ValueError, match="no rule with id"):
         apply_rule_by_id(conn, rule_id=999, dry_run=False)
+
+
+def _seed_marketplace_pair(conn) -> None:
+    """Two mono rows that look identical except for ``originalMcc`` in
+    the payload: goods (5399) and the marketplace's own subscription
+    (8999). Mirrors how Monobank remaps both to one umbrella MCC."""
+    conn.executemany(
+        "INSERT INTO mono_transactions VALUES "
+        "(?, 'mono_acc_1', ?, ?, 980, NULL, NULL, 5262, 'Marketplace', NULL, 0, 0, ?, 0, 1)",
+        [
+            ("mono_goods", 1_700_003_000, -92200, '{"mcc":5262,"originalMcc":5399}'),
+            ("mono_sub", 1_700_004_000, -5000, '{"mcc":5262,"originalMcc":8999}'),
+        ],
+    )
+
+
+def test_apply_rules_original_mcc_splits_same_description(both_banks_db: Path) -> None:
+    conn = store.open_db(both_banks_db)
+    _seed_marketplace_pair(conn)
+    conn.execute(
+        "INSERT INTO categorization_rules "
+        "(priority, match_field, pattern, category, enabled, created_at, source) "
+        "VALUES (20, 'description', '^Marketplace$', 'Покупки/Електроніка', 1, 0, 'user')"
+    )
+    conn.execute(
+        "INSERT INTO categorization_rules "
+        "(priority, match_field, pattern, category, enabled, created_at, source, original_mcc) "
+        "VALUES (10, 'description', '^Marketplace$', 'Підписки/Інше', 1, 0, 'user', 8999)"
+    )
+    apply_rules(conn, scope="all", data_dir=both_banks_db.parent)
+    cats = _all_categorized(conn)
+    assert cats["mono_sub"] == "Підписки/Інше"
+    assert cats["mono_goods"] == "Покупки/Електроніка"
+
+
+def test_apply_rule_by_id_honours_original_mcc(both_banks_db: Path) -> None:
+    conn = store.open_db(both_banks_db)
+    _seed_marketplace_pair(conn)
+    conn.execute(
+        "INSERT INTO categorization_rules "
+        "(priority, match_field, pattern, category, enabled, created_at, source, original_mcc) "
+        "VALUES (10, 'description', '^Marketplace$', 'Підписки/Інше', 1, 0, 'user', 8999)"
+    )
+    rule_id = conn.execute("SELECT MAX(id) FROM categorization_rules").fetchone()[0]
+    result = apply_rule_by_id(conn, rule_id=int(rule_id), dry_run=False)
+    assert result["applied"] == 1
+    cats = _all_categorized(conn)
+    assert cats == {"mono_sub": "Підписки/Інше"}
+
+
+def test_non_json_payload_does_not_break_rule_pass(both_banks_db: Path) -> None:
+    """A bank whose raw_json is not JSON must yield NULL original_mcc,
+    not abort the whole pass with "malformed JSON"."""
+    conn = store.open_db(both_banks_db)
+    conn.execute("UPDATE privat_transactions SET raw_json = 'not json'")
+    result = apply_rules(conn, scope="all", data_dir=both_banks_db.parent)
+    assert result["categorized_count"] == 2

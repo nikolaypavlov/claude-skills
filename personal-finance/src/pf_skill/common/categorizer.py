@@ -30,9 +30,24 @@ from .rules import (
     load_all_rules,
     load_overrides,
 )
-from .view import build_tx_union_sql, discover_sources
+from .view import DiscoveredSources, build_tx_union_sql, discover_sources
 
 VALID_SCOPES: tuple[str, ...] = ("all", "last-n-days")
+
+# The bank's pre-remap MCC, read from the contract ``raw_json`` column.
+# Monobank ships it as ``originalMcc``; other banks have no such key and
+# yield NULL. ``json_valid`` guards against a non-JSON payload, which
+# would otherwise abort the whole query with "malformed JSON".
+_ORIGINAL_MCC_COLUMN = (
+    "CASE WHEN json_valid(raw_json) "
+    "THEN CAST(json_extract(raw_json, '$.originalMcc') AS INTEGER) END "
+    "AS original_mcc"
+)
+
+
+def _categorizer_union(sources: DiscoveredSources) -> str | None:
+    """UNION view for the rule pass: the common shape plus ``original_mcc``."""
+    return build_tx_union_sql(sources, extra_columns=(_ORIGINAL_MCC_COLUMN,))
 
 
 def apply_rules(
@@ -72,7 +87,7 @@ def apply_rules(
         from_ts = now_ts - int(n_days) * 86_400
 
     sources = discover_sources(conn)
-    union = build_tx_union_sql(sources)
+    union = _categorizer_union(sources)
     rules = load_all_rules(conn, data_dir=data_dir)
     enabled_rules = [r for r in rules if r.enabled]
 
@@ -104,6 +119,7 @@ def apply_rules(
                 mcc=row["mcc"],
                 description=row["description"],
                 counterparty=row["counterparty"],
+                original_mcc=row["original_mcc"],
             )
             if rule is None:
                 no_match += 1
@@ -167,8 +183,9 @@ def _fetch_uncategorized(
 
     Uses ``CATEGORY_EXPR IS NULL`` after the LEFT JOIN so both
     ``tx_category`` matches and ``category_overrides`` pins exclude the
-    row. The ``id`` / ``mcc`` / ``description`` / ``counterparty``
-    columns are all the categorizer needs.
+    row. The ``id`` / ``mcc`` / ``description`` / ``counterparty`` /
+    ``original_mcc`` columns are all the categorizer needs; ``union``
+    must come from ``_categorizer_union`` so ``original_mcc`` exists.
 
     ``accounts_join`` is required because ``TX_COLUMNS_SQL`` projects
     ``acc.currency_code``; passing an empty string would produce a
@@ -180,7 +197,7 @@ def _fetch_uncategorized(
         where.append("tx.ts >= ?")
         params.append(int(from_ts))
     sql = (
-        f"SELECT {TX_COLUMNS_SQL} "
+        f"SELECT {TX_COLUMNS_SQL}, tx.original_mcc "
         f"FROM (\n{union}\n) AS tx "
         f"{accounts_join}"
         f"{CATEGORY_JOIN_SQL} "
@@ -199,6 +216,7 @@ def _fetch_uncategorized(
             "mcc": int(r[8]) if r[8] is not None else None,
             "description": r[9],
             "counterparty": r[10],
+            "original_mcc": int(r[13]) if r[13] is not None else None,
         }
         for r in rows
     ]
@@ -251,7 +269,7 @@ def _matching_uncategorized(conn: sqlite3.Connection, rule: Rule) -> list[dict[s
     one place. Returns ``[]`` on a store with no ingest plugin
     installed."""
     sources = discover_sources(conn)
-    union = build_tx_union_sql(sources)
+    union = _categorizer_union(sources)
     if union is None:
         return []
     rows = _fetch_uncategorized(conn, union, accounts_join=accounts_join_sql(sources), from_ts=None)
@@ -262,6 +280,7 @@ def _matching_uncategorized(conn: sqlite3.Connection, rule: Rule) -> list[dict[s
             mcc=row["mcc"],
             description=row["description"],
             counterparty=row["counterparty"],
+            original_mcc=row["original_mcc"],
         )
     ]
 
@@ -272,6 +291,7 @@ def preview_rule(
     match_field: str,
     pattern: str,
     category: str,
+    original_mcc: int | None = None,
     limit_sample: int = 5,
 ) -> dict[str, Any]:
     """Probe how many uncategorized transactions a candidate rule would
@@ -290,6 +310,7 @@ def preview_rule(
           "match_field": str,
           "pattern": str,
           "category": str,
+          "original_mcc": int | None,
           "would_affect_count": int,
           "sample": list[Transaction],
         }
@@ -300,12 +321,14 @@ def preview_rule(
         pattern=pattern,
         category=category,
         source="preview",
+        original_mcc=original_mcc,
     )
     matched = _matching_uncategorized(conn, candidate)
     return {
         "match_field": match_field,
         "pattern": pattern,
         "category": category,
+        "original_mcc": original_mcc,
         "would_affect_count": len(matched),
         "sample": matched[: max(0, int(limit_sample))],
     }
@@ -328,7 +351,7 @@ def apply_rule_by_id(
     when ``dry_run=False`` (rows actually inserted into ``tx_category``).
     """
     row = conn.execute(
-        "SELECT id, priority, match_field, pattern, category, enabled "
+        "SELECT id, priority, match_field, pattern, category, enabled, original_mcc "
         "FROM categorization_rules WHERE id = ?",
         (int(rule_id),),
     ).fetchone()
@@ -342,6 +365,7 @@ def apply_rule_by_id(
         source="db",
         rule_id=int(row[0]),
         enabled=bool(row[5]),
+        original_mcc=int(row[6]) if row[6] is not None else None,
     )
     matched = _matching_uncategorized(conn, rule)
 

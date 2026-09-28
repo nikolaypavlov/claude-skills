@@ -3,7 +3,7 @@
 Subcommands::
 
     pf-rules add --match-field FIELD --pattern P --category C
-                 [--priority N] [--source S] [--apply]
+                 [--original-mcc N] [--priority N] [--source S] [--apply]
     pf-rules apply --rule-id N [--dry-run]
     pf-rules set-category --tx-id ID --category C
     pf-rules set-override --tx-id ID --category C [--note T]
@@ -55,6 +55,8 @@ def cmd_add(args: argparse.Namespace) -> dict[str, Any]:
         raise CliError("--pattern must be non-empty")
     if not args.category:
         raise CliError("--category must be non-empty")
+    if args.original_mcc is not None and args.original_mcc < 0:
+        raise CliError("--original-mcc must be a non-negative integer")
     # Compile the pattern up front so a typo lands as a clean CliError
     # rather than a silently-non-matching rule that ships to the DB and
     # produces would_affect_count=0 on every preview. ``mcc`` patterns
@@ -80,8 +82,9 @@ def cmd_add(args: argparse.Namespace) -> dict[str, Any]:
         try:
             cur = conn.execute(
                 "INSERT INTO categorization_rules "
-                "(priority, match_field, pattern, category, enabled, created_at, source) "
-                "VALUES (?, ?, ?, ?, 1, ?, ?)",
+                "(priority, match_field, pattern, category, enabled, created_at, source, "
+                "original_mcc) "
+                "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
                 (
                     priority,
                     args.match_field,
@@ -89,6 +92,7 @@ def cmd_add(args: argparse.Namespace) -> dict[str, Any]:
                     args.category,
                     now_ts,
                     args.source,
+                    args.original_mcc,
                 ),
             )
             rule_id = int(cur.lastrowid or 0)
@@ -102,6 +106,7 @@ def cmd_add(args: argparse.Namespace) -> dict[str, Any]:
             match_field=args.match_field,
             pattern=args.pattern,
             category=args.category,
+            original_mcc=args.original_mcc,
             limit_sample=5,
         )
 
@@ -117,6 +122,7 @@ def cmd_add(args: argparse.Namespace) -> dict[str, Any]:
         "match_field": args.match_field,
         "pattern": args.pattern,
         "category": args.category,
+        "original_mcc": args.original_mcc,
         "source": args.source,
         "would_affect_count": preview["would_affect_count"],
         "sample": preview["sample"],
@@ -205,6 +211,7 @@ def cmd_list(args: argparse.Namespace) -> dict[str, Any]:
                 "match_field": r.match_field,
                 "pattern": r.pattern,
                 "category": r.category,
+                "original_mcc": r.original_mcc,
                 "source": r.source,
                 "enabled": r.enabled,
             }
@@ -231,6 +238,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_add.add_argument("--pattern", required=True)
     p_add.add_argument("--category", required=True)
+    p_add.add_argument(
+        "--original-mcc",
+        type=int,
+        default=None,
+        help=(
+            "Also require the bank's pre-remap MCC (Monobank originalMcc) to equal N. "
+            "Splits merchants that share a description, e.g. a marketplace's goods vs "
+            "its paid subscription"
+        ),
+    )
     p_add.add_argument("--priority", type=int, default=None)
     p_add.add_argument("--source", default="user")
     p_add.add_argument(

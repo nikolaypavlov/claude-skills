@@ -380,3 +380,74 @@ def test_list_enabled_only_drops_disabled(
     assert rc == 0 and rc2 == 0
     assert any(r["pattern"] == "XYZ" for r in payload_all["rules"])
     assert not any(r["pattern"] == "XYZ" for r in payload_on["rules"])
+
+
+def test_add_with_original_mcc_constrains_preview_and_list(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conn = sqlite3.connect(both_banks_db)
+    try:
+        conn.executemany(
+            "INSERT INTO mono_transactions VALUES "
+            "(?, 'mono_acc_1', ?, ?, 980, NULL, NULL, 5262, 'Marketplace', NULL, 0, 0, ?, 0, 1)",
+            [
+                ("mono_goods", 1_700_003_000, -92200, '{"originalMcc":5399}'),
+                ("mono_sub", 1_700_004_000, -5000, '{"originalMcc":8999}'),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    rc, payload, err = _run(
+        [
+            "add",
+            "--match-field",
+            "description",
+            "--pattern",
+            "^Marketplace$",
+            "--original-mcc",
+            "8999",
+            "--category",
+            "Підписки/Інше",
+            "--priority",
+            "10",
+            "--apply",
+            "--db",
+            str(both_banks_db),
+        ],
+        capsys,
+    )
+    assert rc == 0, err
+    assert payload["original_mcc"] == 8999
+    assert payload["would_affect_count"] == 1
+    assert payload["applied"] == 1
+    assert [t["id"] for t in payload["sample"]] == ["mono_sub"]
+
+    rc, payload, err = _run(["list", "--source", "db", "--db", str(both_banks_db)], capsys)
+    assert rc == 0, err
+    assert payload["rules"][0]["original_mcc"] == 8999
+
+
+def test_add_negative_original_mcc_rejected(
+    both_banks_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc, _, err = _run(
+        [
+            "add",
+            "--match-field",
+            "description",
+            "--pattern",
+            "x",
+            "--original-mcc",
+            "-1",
+            "--category",
+            "Y",
+            "--db",
+            str(both_banks_db),
+        ],
+        capsys,
+    )
+    assert rc == 1
+    err_payload = json.loads(err)
+    assert err_payload["ok"] is False
+    assert "--original-mcc" in err_payload["error"]

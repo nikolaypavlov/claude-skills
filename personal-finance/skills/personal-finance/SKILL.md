@@ -429,7 +429,7 @@ pf-categorize --scope all|last-n-days [--n 30]
 
 pf-rules add --match-field description|counterparty|mcc \
              --pattern "..." --category "Their/Name" \
-             [--priority N] [--source S] [--apply]
+             [--original-mcc N] [--priority N] [--source S] [--apply]
 
 pf-rules apply        --rule-id N [--dry-run]
 pf-rules set-category --tx-id ID --category C
@@ -438,6 +438,8 @@ pf-rules list         [--enabled-only] [--source S]
 ```
 
 Rule priority is lower-wins: seed rules sit at 200-300; user rules need priority `< 100` to override (use 10-20 for clear intent). `pf-rules add --apply` only backfills uncategorized rows - to remap rows already pinned to an old category, use `pf-rules set-category --tx-id <id>`.
+
+`--original-mcc N` adds a second condition: the bank's pre-remap MCC (Monobank `originalMcc` in `raw_json`) must equal N. Use it when one merchant bills two different things under an identical description - Monobank remaps every Rozetka charge to MCC 5262, but goods keep `originalMcc` 5399/5732 and the paid delivery subscription keeps 8999. Give the constrained rule a lower priority number than the merchant's plain rule so it is checked first. Privat24 has no such field, so a constrained rule never matches Privat rows.
 
 ### Fixing a category mid-reconciliation
 

@@ -144,6 +144,8 @@ If the user wants to skip the two-step preview-then-apply (e.g. they typed a kno
 
 **MCC rules are NOT regex.** With `--match-field mcc` the `--pattern` is compared as an exact integer string - `"5211|5251"` matches nothing (and the underlying `Rule.matches` swallows `re.error`, so the failure is silent). For multiple MCCs, issue one `pf-rules add` per code.
 
+**Same description, different things.** When one merchant's rows share description, counterparty and MCC but mean different categories, check `originalMcc` in `raw_json` (Monobank only). If it separates them, add `--original-mcc <N>` to the rule with a lower priority number than the merchant's plain rule; the two conditions are ANDed.
+
 ## Step 4: one-off pins (set-override)
 
 When a single transaction is genuinely an exception ("this charge looks like McDonald's but it was a birthday card from my mom"), do NOT add a rule. Use `set-override`:

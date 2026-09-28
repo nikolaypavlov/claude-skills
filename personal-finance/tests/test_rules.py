@@ -122,6 +122,37 @@ def test_match_description_case_insensitive() -> None:
     assert rule.matches(mcc=None, description=None, counterparty=None) is False
 
 
+def test_match_original_mcc_constraint_is_anded() -> None:
+    """A rule with ``original_mcc`` needs BOTH the pattern and the
+    pre-remap MCC to agree; a tx with no original MCC never matches."""
+    rule = Rule(
+        priority=10,
+        match_field="description",
+        pattern="^Marketplace$",
+        category="Підписки/Інше",
+        source="db",
+        original_mcc=8999,
+    )
+    assert rule.matches(mcc=5262, description="Marketplace", counterparty=None, original_mcc=8999)
+    assert not rule.matches(
+        mcc=5262, description="Marketplace", counterparty=None, original_mcc=5399
+    )
+    assert not rule.matches(mcc=5262, description="Marketplace", counterparty=None)
+    assert not rule.matches(mcc=5262, description="Other", counterparty=None, original_mcc=8999)
+
+
+def test_match_without_original_mcc_constraint_ignores_it() -> None:
+    rule = Rule(
+        priority=20,
+        match_field="description",
+        pattern="^Marketplace$",
+        category="Покупки/Електроніка",
+        source="db",
+    )
+    assert rule.matches(mcc=5262, description="Marketplace", counterparty=None, original_mcc=8999)
+    assert rule.matches(mcc=5262, description="Marketplace", counterparty=None)
+
+
 def test_match_counterparty_only() -> None:
     rule = Rule(
         priority=200,

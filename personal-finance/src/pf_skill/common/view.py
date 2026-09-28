@@ -95,9 +95,17 @@ def discover_sources(conn: sqlite3.Connection) -> DiscoveredSources:
     return DiscoveredSources(tuple(tx_banks), tuple(account_banks))
 
 
-def build_tx_union_sql(sources: DiscoveredSources) -> str | None:
+def build_tx_union_sql(
+    sources: DiscoveredSources, *, extra_columns: tuple[str, ...] = ()
+) -> str | None:
     """Build a parenthesised UNION ALL SELECT over every detected
     ``<bank>_transactions`` table, projecting to ``COMMON_TX_COLUMNS``.
+
+    ``extra_columns`` are SQL expressions (``<expr> AS <alias>``)
+    appended verbatim to every leg, after the common columns. They must
+    only reference contract columns (e.g. ``raw_json``) so every leg
+    stays valid; the categorizer uses this to surface ``originalMcc``
+    without widening the common shape for every other reader.
 
     Returns ``None`` when no sources are present so the caller can
     short-circuit with a friendly "no data" outcome instead of executing
@@ -109,7 +117,8 @@ def build_tx_union_sql(sources: DiscoveredSources) -> str | None:
     if not sources.tx_banks:
         return None
     legs = [
-        _leg_sql(bank, "transactions", COMMON_TX_COLUMNS) for bank in sources.tx_banks
+        _leg_sql(bank, "transactions", COMMON_TX_COLUMNS, extra_columns)
+        for bank in sources.tx_banks
     ]
     return "\n  UNION ALL\n".join(legs)
 
@@ -125,7 +134,12 @@ def build_accounts_union_sql(sources: DiscoveredSources) -> str | None:
     return "\n  UNION ALL\n".join(legs)
 
 
-def _leg_sql(bank: str, table_suffix: str, columns: tuple[str, ...]) -> str:
+def _leg_sql(
+    bank: str,
+    table_suffix: str,
+    columns: tuple[str, ...],
+    extra_columns: tuple[str, ...] = (),
+) -> str:
     """One UNION ALL leg projecting a bank-specific table to the
     common shape. Column names are inlined; only the discovered ``bank``
     prefix is interpolated, and the regex guarantees it is
@@ -134,6 +148,6 @@ def _leg_sql(bank: str, table_suffix: str, columns: tuple[str, ...]) -> str:
     prefix that happens to be a SQLite reserved word (``group``,
     ``order``, etc.) still produces valid SQL."""
     projected = ", ".join(
-        f"'{bank}' AS bank" if col == "bank" else col for col in columns
+        [f"'{bank}' AS bank" if col == "bank" else col for col in columns] + list(extra_columns)
     )
     return f'  SELECT {projected} FROM "{bank}_{table_suffix}"'
