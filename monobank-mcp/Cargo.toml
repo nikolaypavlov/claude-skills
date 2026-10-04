@@ -1,6 +1,6 @@
 [package]
 name = "monobank-mcp"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 description = "Local MCP server + CLI for Monobank Personal API (slim ingest)"
 license = "MIT"

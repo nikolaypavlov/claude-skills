@@ -444,8 +444,7 @@ impl SyncEngine {
             .all(|a| a.error.is_none() && a.remaining_chunks == 0);
         // What a follow-up run will actually cost, so the caller can pick the
         // CLI over another round trip without having to know the rate limit.
-        out.estimated_catch_up_seconds =
-            u64::from(out.remaining_chunks) * self.interval.as_secs();
+        out.estimated_catch_up_seconds = u64::from(out.remaining_chunks) * self.interval.as_secs();
         // Balance reconciliation is orthogonal to the cursor: it catches rows
         // missing INSIDE a window the cursor already walked past, which no
         // amount of further syncing recovers. Kept out of `caught_up` on

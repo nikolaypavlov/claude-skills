@@ -204,8 +204,13 @@ fn load_runtime() -> Result<CliRuntime> {
 async fn run_accounts() -> Result<()> {
     let rt = load_runtime()?;
     let info = rt.api.client_info().await.map_err(anyhow::Error::from)?;
-    for acc in &info.accounts {
-        rt.store.upsert_account(acc).await?;
+    // Full response in hand, so reconcile rather than upsert one by one:
+    // an account missing from it is closed and must leave the sync queue.
+    for id in rt.store.reconcile_accounts(&info.accounts).await? {
+        tracing::info!(
+            account = id,
+            "no longer listed by client-info; marked closed"
+        );
     }
     let rows = rt.store.list_accounts().await?;
     println!("{}", serde_json::to_string_pretty(&rows)?);

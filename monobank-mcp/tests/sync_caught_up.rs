@@ -332,7 +332,10 @@ async fn starved_run_reports_what_catching_up_will_cost() {
     let store = Store::open_in_memory().unwrap();
     for id in ids {
         seed_account(&store, id).await;
-        store.seed_sync_state(id, now_unix() - HOURS_22).await.unwrap();
+        store
+            .seed_sync_state(id, now_unix() - HOURS_22)
+            .await
+            .unwrap();
     }
 
     let out = starved_engine(api, store.clone())

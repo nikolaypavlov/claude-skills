@@ -15,7 +15,11 @@
 //!   - `insert_statement_chunk` wraps INSERTs into `mono_transactions` and
 //!     the `mono_sync_state.last_completed_ts` UPSERT in one transaction so
 //!     a kill mid-chunk never leaves the cursor ahead of the data.
+//!   - `reconcile_accounts` applies a whole client-info response (upserts
+//!     plus `closed_at` stamps) in one transaction, so a reader never sees
+//!     an account closed before its replacement card has been inserted.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -71,50 +75,74 @@ impl Store {
     /// Upsert an account from client-info. `balance`/`credit_limit` are only
     /// present on the client-info path (`accounts`, backfill); the sync path
     /// never calls this, so a stored balance is "as of the last accounts/
-    /// backfill run" - `balance_synced_at` records when. On conflict the
-    /// balance fields are COALESCE'd so a caller that somehow upserts without
-    /// a balance (e.g. a future partial refresh) does not wipe a good value.
-    /// `balance_synced_at` is stamped only when a fresh balance is supplied,
-    /// so it always dates the value it sits next to.
+    /// backfill run" - `balance_synced_at` records when. See
+    /// [`upsert_account_on`] for the column rules.
+    ///
+    /// Prefer [`Store::reconcile_accounts`] when the caller holds a full
+    /// client-info response: this method cannot tell that some other account
+    /// has disappeared, so it never marks anything closed.
     pub async fn upsert_account(&self, acc: &MonoAccount) -> Result<()> {
         let conn = self.conn.lock().await;
-        let masked = acc
-            .masked_pan
-            .as_ref()
-            .map(|v| v.join(","))
-            .unwrap_or_default();
-        let masked_opt = if masked.is_empty() {
-            None
-        } else {
-            Some(masked)
-        };
-        conn.execute(
-            "INSERT INTO mono_accounts \
-                 (account_id, iban, type, currency_code, masked_pan, label, opened_at, \
-                  balance_minor, credit_limit_minor, balance_synced_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, \
-                     CASE WHEN ?7 IS NULL THEN NULL ELSE strftime('%s','now') END) \
-             ON CONFLICT(account_id) DO UPDATE SET \
-                 iban = excluded.iban, \
-                 type = excluded.type, \
-                 currency_code = excluded.currency_code, \
-                 masked_pan = excluded.masked_pan, \
-                 label = COALESCE(excluded.label, mono_accounts.label), \
-                 balance_minor = COALESCE(excluded.balance_minor, mono_accounts.balance_minor), \
-                 credit_limit_minor = COALESCE(excluded.credit_limit_minor, mono_accounts.credit_limit_minor), \
-                 balance_synced_at = COALESCE(excluded.balance_synced_at, mono_accounts.balance_synced_at)",
-            params![
-                acc.id,
-                acc.iban,
-                acc.r#type,
-                acc.currency_code,
-                masked_opt,
-                acc.label,
-                acc.balance,
-                acc.credit_limit,
-            ],
-        )?;
-        Ok(())
+        upsert_account_on(&conn, acc)
+    }
+
+    /// Apply one complete `/personal/client-info` response.
+    ///
+    /// Every listed account is upserted; every live row the response no
+    /// longer lists gets `closed_at` stamped. Returns the ids closed by THIS
+    /// call (already-closed rows are not repeated), so the caller can report
+    /// them.
+    ///
+    /// ```text
+    ///   in response, row live       -> upsert
+    ///   in response, row closed     -> upsert, closed_at := NULL (reopened)
+    ///   in response, no row         -> insert
+    ///   not in response, row live   -> closed_at := now
+    ///   not in response, row closed -> untouched
+    /// ```
+    ///
+    /// Monobank drops a card from client-info once it is closed in the app,
+    /// while /personal/statement answers HTTP 400 "invalid 'account'" for
+    /// it. Without this, the stale row kept every sync failing and
+    /// `caught_up` false indefinitely.
+    ///
+    /// An empty response closes nothing. A Monobank client always holds at
+    /// least one account, so an empty list is an anomaly (API glitch, wrong
+    /// token scope), and reading it literally would switch off sync for
+    /// every card at once.
+    pub async fn reconcile_accounts(&self, accounts: &[MonoAccount]) -> Result<Vec<String>> {
+        let mut conn = self.conn.lock().await;
+        let tx = conn.transaction()?;
+        for acc in accounts {
+            upsert_account_on(&tx, acc)?;
+        }
+        let mut closed = Vec::new();
+        if !accounts.is_empty() {
+            let listed: HashSet<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+            let live: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "SELECT account_id FROM mono_accounts WHERE closed_at IS NULL \
+                     ORDER BY account_id",
+                )?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            };
+            for id in live {
+                if listed.contains(id.as_str()) {
+                    continue;
+                }
+                tx.execute(
+                    "UPDATE mono_accounts SET closed_at = strftime('%s','now') \
+                     WHERE account_id = ?1",
+                    params![id],
+                )?;
+                closed.push(id);
+            }
+        }
+        tx.commit()?;
+        Ok(closed)
     }
 
     /// Account ids ordered stalest-cursor-first.
@@ -131,12 +159,18 @@ impl Store {
     /// Accounts with no `mono_sync_state` row sort first (`COALESCE(..., -1)`).
     /// They are the cheapest possible work - the engine seeds their cursor
     /// without an API call - so they never consume budget.
+    ///
+    /// Closed accounts (`closed_at` set) are left out: Monobank rejects
+    /// statement calls for them, so including them only adds a guaranteed
+    /// failure to every run. An explicit `--account` / `account_id` still
+    /// reaches them because it bypasses this list.
     pub async fn list_account_ids_by_staleness(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT a.account_id \
              FROM mono_accounts a \
              LEFT JOIN mono_sync_state s ON s.account_id = a.account_id \
+             WHERE a.closed_at IS NULL \
              ORDER BY COALESCE(s.last_completed_ts, -1) ASC, a.account_id ASC",
         )?;
         let rows = stmt
@@ -159,6 +193,10 @@ impl Store {
     /// therefore proves nothing and is reported as `SnapshotStale`, never as
     /// a match - a disagreement there is just ordinary activity since the
     /// snapshot was taken.
+    ///
+    /// Closed accounts are skipped: their snapshot is frozen at the last
+    /// refresh that still listed them, and no backfill can reach them, so a
+    /// verdict would be noise with no remedy.
     pub async fn balance_checks(&self) -> Result<Vec<BalanceCheck>> {
         let conn = self.conn.lock().await;
         // Both correlated subqueries use the same ORDER BY, so they read the
@@ -171,7 +209,7 @@ impl Store {
                     (SELECT t.balance_minor FROM mono_transactions t \
                       WHERE t.account_id = a.account_id \
                       ORDER BY t.ts DESC, t.id DESC LIMIT 1) \
-             FROM mono_accounts a ORDER BY a.account_id",
+             FROM mono_accounts a WHERE a.closed_at IS NULL ORDER BY a.account_id",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -191,7 +229,7 @@ impl Store {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(
             "SELECT account_id, iban, type, currency_code, masked_pan, label, opened_at, \
-                    balance_minor, credit_limit_minor, balance_synced_at \
+                    balance_minor, credit_limit_minor, balance_synced_at, closed_at \
              FROM mono_accounts ORDER BY account_id",
         )?;
         let rows = stmt
@@ -207,6 +245,7 @@ impl Store {
                     balance_minor: row.get(7)?,
                     credit_limit_minor: row.get(8)?,
                     balance_synced_at: row.get(9)?,
+                    closed_at: row.get(10)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -395,6 +434,54 @@ impl Store {
     }
 }
 
+/// Upsert one client-info account on an open connection or transaction.
+///
+/// On conflict the balance fields are COALESCE'd so a caller that somehow
+/// upserts without a balance (e.g. a future partial refresh) does not wipe a
+/// good value. `balance_synced_at` is stamped only when a fresh balance is
+/// supplied, so it always dates the value it sits next to. `closed_at` is
+/// cleared: client-info listing the account is proof it is live again.
+fn upsert_account_on(conn: &Connection, acc: &MonoAccount) -> Result<()> {
+    let masked = acc
+        .masked_pan
+        .as_ref()
+        .map(|v| v.join(","))
+        .unwrap_or_default();
+    let masked_opt = if masked.is_empty() {
+        None
+    } else {
+        Some(masked)
+    };
+    conn.execute(
+        "INSERT INTO mono_accounts \
+             (account_id, iban, type, currency_code, masked_pan, label, opened_at, \
+              balance_minor, credit_limit_minor, balance_synced_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, \
+                 CASE WHEN ?7 IS NULL THEN NULL ELSE strftime('%s','now') END) \
+         ON CONFLICT(account_id) DO UPDATE SET \
+             iban = excluded.iban, \
+             type = excluded.type, \
+             currency_code = excluded.currency_code, \
+             masked_pan = excluded.masked_pan, \
+             label = COALESCE(excluded.label, mono_accounts.label), \
+             balance_minor = COALESCE(excluded.balance_minor, mono_accounts.balance_minor), \
+             credit_limit_minor = COALESCE(excluded.credit_limit_minor, mono_accounts.credit_limit_minor), \
+             balance_synced_at = COALESCE(excluded.balance_synced_at, mono_accounts.balance_synced_at), \
+             closed_at = NULL",
+        params![
+            acc.id,
+            acc.iban,
+            acc.r#type,
+            acc.currency_code,
+            masked_opt,
+            acc.label,
+            acc.balance,
+            acc.credit_limit,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Pick the best human counterparty label from a statement row.
 fn best_counterparty(st: &MonoStatement) -> Option<String> {
     if let Some(n) = st.counter_name.as_ref() {
@@ -421,6 +508,10 @@ pub struct AccountRow {
     pub credit_limit_minor: Option<i64>,
     /// Unix seconds when `balance_minor` was last refreshed. NULL if never.
     pub balance_synced_at: Option<i64>,
+    /// Unix seconds when client-info first stopped listing the account
+    /// (closed in the app). NULL while the account is live. Sync and balance
+    /// reconciliation skip closed accounts.
+    pub closed_at: Option<i64>,
 }
 
 /// Verdict of one account's balance reconciliation. Anything other than

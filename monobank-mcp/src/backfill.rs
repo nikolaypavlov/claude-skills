@@ -46,10 +46,15 @@ impl BackfillEngine {
     /// If `account_ids` is empty, sync the entire `mono_accounts` table.
     pub async fn run(&self, account_ids: Vec<String>, from_ts: Option<i64>) -> Result<SyncOutcome> {
         // 1) Discover accounts via API and persist them locally. Without the
-        // account row backfill cannot seed sync_state.
+        // account row backfill cannot seed sync_state. Reconciling also marks
+        // accounts the response no longer lists as closed, so the next
+        // incremental sync stops asking Monobank for them.
         let info = self.api.client_info().await.map_err(anyhow::Error::from)?;
-        for acc in &info.accounts {
-            self.store.upsert_account(acc).await?;
+        for id in self.store.reconcile_accounts(&info.accounts).await? {
+            info!(
+                account = id,
+                "no longer listed by client-info; marked closed"
+            );
         }
         // 2) Decide which accounts to backfill.
         let targets: Vec<String> = if account_ids.is_empty() {
