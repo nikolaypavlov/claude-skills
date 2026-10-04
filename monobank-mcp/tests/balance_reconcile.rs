@@ -257,3 +257,114 @@ async fn sync_outcome_carries_balance_checks_without_gating_caught_up() {
         "scoped to the accounts in this run, not the whole table"
     );
 }
+
+/// FOP-UAH is a pass-through: funds arrive from the USD account and leave
+/// for the card in the same second. Picking "the newest row" by
+/// `ORDER BY ts DESC, id DESC` landed on the inbound leg whenever its id
+/// sorted higher, and reported a 19,771.09 hole on an account that was
+/// complete. The closing balance must come out right in both id orders.
+///
+/// ```text
+///   ts     amount      balance after
+///   2_000  +1_977_109  1_980_973     same second, stored order arbitrary
+///   2_000  -1_977_109      3_864
+///   1_000  -2_008_575      3_864     anchor: alone in its second
+/// ```
+#[tokio::test]
+async fn same_second_transfer_pair_is_not_a_gap() {
+    for (in_id, out_id) in [("z_in", "a_out"), ("a_in", "z_out")] {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .upsert_account(&account("fop", Some(3_864)))
+            .await
+            .unwrap();
+        let run = store.start_import_run(RunSource::Sync).await.unwrap();
+        store
+            .insert_statement_chunk(
+                run,
+                "fop",
+                &[
+                    tx("anchor", 1_000, -2_008_575, Some(3_864)),
+                    tx(in_id, 2_000, 1_977_109, Some(1_980_973)),
+                    tx(out_id, 2_000, -1_977_109, Some(3_864)),
+                ],
+                3_000,
+                9,
+            )
+            .await
+            .unwrap();
+
+        let c = check_for(&store, "fop").await;
+        assert_eq!(
+            c.verdict,
+            BalanceCheckVerdict::Match,
+            "ids {in_id}/{out_id}"
+        );
+        assert!(!c.suspected_missing_rows);
+        assert_eq!(c.last_tx_balance_minor, Some(3_864));
+        assert_eq!(c.last_tx_ts, Some(2_000));
+    }
+}
+
+/// The derivation must not paper over a real hole: a row missing between
+/// the anchor and the same-second pair still surfaces as a mismatch.
+#[tokio::test]
+async fn same_second_pair_still_reports_a_real_gap() {
+    let store = Store::open_in_memory().unwrap();
+    // Snapshot says 3_864 - 50_000: one 50_000 spend was never stored.
+    store
+        .upsert_account(&account("fop", Some(3_864 - 50_000)))
+        .await
+        .unwrap();
+    let run = store.start_import_run(RunSource::Sync).await.unwrap();
+    store
+        .insert_statement_chunk(
+            run,
+            "fop",
+            &[
+                tx("anchor", 1_000, -2_008_575, Some(3_864)),
+                tx("in", 2_000, 1_977_109, Some(1_980_973 - 50_000)),
+                tx("out", 2_000, -1_977_109, Some(3_864 - 50_000)),
+            ],
+            3_000,
+            9,
+        )
+        .await
+        .unwrap();
+
+    let c = check_for(&store, "fop").await;
+    assert_eq!(c.verdict, BalanceCheckVerdict::Mismatch);
+    assert!(c.suspected_missing_rows);
+    assert_eq!(c.delta_minor, Some(-50_000));
+}
+
+/// With no second holding a single row there is no anchor: the stored rows
+/// cannot say which balance came last, so the answer is "not comparable",
+/// never a false alarm and never a false match.
+#[tokio::test]
+async fn only_same_second_rows_is_ambiguous() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .upsert_account(&account("fop", Some(3_864)))
+        .await
+        .unwrap();
+    let run = store.start_import_run(RunSource::Sync).await.unwrap();
+    store
+        .insert_statement_chunk(
+            run,
+            "fop",
+            &[
+                tx("in", 2_000, 1_977_109, Some(1_980_973)),
+                tx("out", 2_000, -1_977_109, Some(3_864)),
+            ],
+            3_000,
+            9,
+        )
+        .await
+        .unwrap();
+
+    let c = check_for(&store, "fop").await;
+    assert_eq!(c.verdict, BalanceCheckVerdict::AmbiguousOrder);
+    assert_eq!(c.balance_matches_last_tx, None);
+    assert!(!c.suspected_missing_rows);
+}

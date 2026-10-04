@@ -112,7 +112,7 @@ Rust binary plugin. Same shipping pattern as `icloud-mcp` (`.mcp.json` -> `scrip
 ```bash
 cd monobank-mcp && cargo build --release
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
-cargo test    # 30 unit + 41 integration tests
+cargo test    # 33 unit + 44 integration tests
 ```
 
 **Key files:**
@@ -136,6 +136,7 @@ cargo test    # 30 unit + 41 integration tests
 - Accounts are synced stalest-cursor-first (`Store::list_account_ids_by_staleness`), not by id. The ~2-API-call `ensure_synced` budget would otherwise serve the same first two accounts forever.
 - Closed accounts (0.5.0+): `accounts` and backfill apply client-info through `Store::reconcile_accounts`, which stamps `mono_accounts.closed_at` on any live row the response no longer lists and clears it if the account comes back. Sync and balance checks skip closed rows; an explicit `--account` still reaches them. Rows are never deleted - transactions reference them. An empty client-info closes nothing. Before 0.5.0 a card closed in the app stayed in the queue, got HTTP 400 "invalid 'account'" on every sync, and pinned `caught_up` at false.
 - `suspected_missing_rows` compares `mono_accounts.balance_minor` against the running balance on the newest stored transaction. A mismatch means rows are missing inside an already-walked window - `sync` cannot fix it, only `backfill --from`. It is deliberately NOT part of `caught_up`. The snapshot is refreshed by `accounts`/backfill only, so a snapshot older than the newest row reports "unknown", never "matches".
+- The "newest row" balance is derived, not picked (0.5.1+, `store::closing_balance`): rows sharing a second carry no stored order, so it takes the newest row that is alone in its second as the anchor and adds every newer amount. Before 0.5.1 `ORDER BY ts, id` could land on the inbound leg of a same-second transfer pair (FOP-UAH pass-through) and raise `suspected_missing_rows` on a complete account. With no anchor in the tail the verdict is `ambiguous_order` (not comparable).
 - `--probe` exits non-zero on any failure (auth / config / connectivity) so shell wrappers can detect failure via `$?` without re-parsing JSON.
 
 ## Privat24 Skill Development
