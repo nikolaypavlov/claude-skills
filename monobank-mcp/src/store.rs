@@ -197,32 +197,53 @@ impl Store {
     /// Closed accounts are skipped: their snapshot is frozen at the last
     /// refresh that still listed them, and no backfill can reach them, so a
     /// verdict would be noise with no remedy.
+    ///
+    /// "The newest stored transaction" is not always one row. Several rows
+    /// can share the newest second, and their stored order says nothing
+    /// about the order Monobank applied them in - see [`closing_balance`]
+    /// for how the closing balance is derived instead of picked.
     pub async fn balance_checks(&self) -> Result<Vec<BalanceCheck>> {
         let conn = self.conn.lock().await;
-        // Both correlated subqueries use the same ORDER BY, so they read the
-        // same row; idx_mono_tx_account(account_id, ts) serves the ordering.
-        let mut stmt = conn.prepare(
-            "SELECT a.account_id, a.balance_minor, a.balance_synced_at, \
-                    (SELECT t.ts FROM mono_transactions t \
-                      WHERE t.account_id = a.account_id \
-                      ORDER BY t.ts DESC, t.id DESC LIMIT 1), \
-                    (SELECT t.balance_minor FROM mono_transactions t \
-                      WHERE t.account_id = a.account_id \
-                      ORDER BY t.ts DESC, t.id DESC LIMIT 1) \
-             FROM mono_accounts a WHERE a.closed_at IS NULL ORDER BY a.account_id",
+        let mut acc_stmt = conn.prepare(
+            "SELECT account_id, balance_minor, balance_synced_at \
+             FROM mono_accounts WHERE closed_at IS NULL ORDER BY account_id",
         )?;
-        let rows = stmt
+        let accounts = acc_stmt
             .query_map([], |row| {
-                Ok(BalanceCheck::evaluate(
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+        // idx_mono_tx_account(account_id, ts) serves the ordering. `id` only
+        // makes the read deterministic; closing_balance does not depend on it.
+        let mut tail_stmt = conn.prepare(
+            "SELECT ts, amount_minor, balance_minor FROM mono_transactions \
+             WHERE account_id = ?1 ORDER BY ts DESC, id DESC LIMIT ?2",
+        )?;
+        let mut out = Vec::with_capacity(accounts.len());
+        for (account_id, balance, synced_at) in accounts {
+            let tail = tail_stmt
+                .query_map(params![account_id, BALANCE_TAIL_LIMIT], |row| {
+                    Ok(TxTail {
+                        ts: row.get(0)?,
+                        amount_minor: row.get(1)?,
+                        balance_minor: row.get(2)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let last_tx_ts = tail.first().map(|t| t.ts);
+            out.push(BalanceCheck::evaluate(
+                account_id,
+                balance,
+                synced_at,
+                last_tx_ts,
+                closing_balance(&tail),
+            ));
+        }
+        Ok(out)
     }
 
     pub async fn list_accounts(&self) -> Result<Vec<AccountRow>> {
@@ -514,6 +535,77 @@ pub struct AccountRow {
     pub closed_at: Option<i64>,
 }
 
+/// Rows read per account when deriving the closing balance. The walk stops
+/// at the first second holding a single row, which in practice is within
+/// the newest few rows; the cap only bounds a pathological history.
+const BALANCE_TAIL_LIMIT: i64 = 256;
+
+/// The fields of one stored transaction that the balance check needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TxTail {
+    pub ts: i64,
+    pub amount_minor: i64,
+    pub balance_minor: Option<i64>,
+}
+
+/// Account balance after the newest stored transactions, as far as the
+/// stored rows can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosingBalance {
+    /// Derived unambiguously.
+    Known(i64),
+    /// No stored rows.
+    NoTransactions,
+    /// The anchor row carries no running balance (nullable in the API).
+    NoTxBalance,
+    /// No second in the inspected tail holds a single row, so there is no
+    /// anchor to start from.
+    AmbiguousOrder,
+}
+
+/// Derive the balance after the newest stored rows. `tail` is newest first.
+///
+/// Monobank stamps each row with the balance after that operation, but rows
+/// can share a second, and nothing stored records the order Monobank applied
+/// them in. A pass-through account shows it every time: money arrives from
+/// the USD account and leaves for the card in the same second.
+///
+/// ```text
+///   ts   amount      balance after    stored order is arbitrary, so
+///   T2   +19771.09   19809.73    <-   "newest row" may be either one;
+///   T2   -19771.09      38.64    <-   only 38.64 is the real end state
+///   T1   -20085.75      38.64         single row in its second: anchor
+///
+///   closing = anchor balance + sum(amounts newer than anchor)
+///           = 38.64 + (19771.09 - 19771.09) = 38.64
+/// ```
+///
+/// The anchor is the newest second that holds exactly one row: its balance
+/// is unambiguous, and every newer row's amount moves the balance by a known
+/// step whatever their order. A row missing between the anchor and the
+/// snapshot still shows up as a mismatch, which is the point of the check.
+pub fn closing_balance(tail: &[TxTail]) -> ClosingBalance {
+    if tail.is_empty() {
+        return ClosingBalance::NoTransactions;
+    }
+    let mut newer_sum: i64 = 0;
+    let mut i = 0;
+    while i < tail.len() {
+        let ts = tail[i].ts;
+        let len = tail[i..].iter().take_while(|r| r.ts == ts).count();
+        let group = &tail[i..i + len];
+        if let [anchor] = group {
+            return match anchor.balance_minor {
+                Some(b) => ClosingBalance::Known(b + newer_sum),
+                None => ClosingBalance::NoTxBalance,
+            };
+        }
+        newer_sum += group.iter().map(|r| r.amount_minor).sum::<i64>();
+        i += len;
+    }
+    ClosingBalance::AmbiguousOrder
+}
+
 /// Verdict of one account's balance reconciliation. Anything other than
 /// `Match` / `Mismatch` means "not comparable", never "fine".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -530,9 +622,12 @@ pub enum BalanceCheckVerdict {
     NoBalanceSnapshot,
     /// The account has no stored transactions to compare against.
     NoTransactions,
-    /// The newest stored row carries no running balance (nullable in the
-    /// API payload), so there is nothing to compare.
+    /// The anchor row (see [`closing_balance`]) carries no running balance
+    /// (nullable in the API payload), so there is nothing to compare.
     NoTxBalance,
+    /// Every inspected second holds several rows, so the stored rows cannot
+    /// say which balance came last. Not comparable, not a gap.
+    AmbiguousOrder,
     /// The snapshot predates the newest stored transaction, so a difference
     /// is expected activity rather than evidence of a gap. Refresh with
     /// `monobank-mcp accounts` to make the check conclusive.
@@ -554,6 +649,9 @@ pub struct BalanceCheck {
     pub account_balance_minor: Option<i64>,
     pub balance_synced_at: Option<i64>,
     pub last_tx_ts: Option<i64>,
+    /// Balance after the newest stored row(s). When several rows share the
+    /// newest second this is derived, not read off one row - see
+    /// [`closing_balance`].
     pub last_tx_balance_minor: Option<i64>,
     /// `account_balance_minor - last_tx_balance_minor`, present only when
     /// the two were comparable. The signed size of the hole.
@@ -561,23 +659,28 @@ pub struct BalanceCheck {
 }
 
 impl BalanceCheck {
-    /// Classify one account. Pure function of the five stored values so the
+    /// Classify one account. Pure function of the stored values so the
     /// decision table is unit-testable without a database.
     ///
     /// ```text
     ///   balance/synced_at NULL ------------------> NoBalanceSnapshot
     ///   no transactions -------------------------> NoTransactions
-    ///   newest tx balance NULL ------------------> NoTxBalance
+    ///   anchor tx balance NULL ------------------> NoTxBalance
+    ///   no single-row second in the tail --------> AmbiguousOrder
     ///   balance_synced_at < last_tx_ts ----------> SnapshotStale
-    ///   otherwise: balance == last_tx_balance ---> Match | Mismatch
+    ///   otherwise: balance == closing balance ---> Match | Mismatch
     /// ```
     pub fn evaluate(
         account_id: String,
         account_balance_minor: Option<i64>,
         balance_synced_at: Option<i64>,
         last_tx_ts: Option<i64>,
-        last_tx_balance_minor: Option<i64>,
+        closing: ClosingBalance,
     ) -> Self {
+        let last_tx_balance_minor = match closing {
+            ClosingBalance::Known(b) => Some(b),
+            _ => None,
+        };
         let mut out = Self {
             account_id,
             verdict: BalanceCheckVerdict::NoBalanceSnapshot,
@@ -592,12 +695,14 @@ impl BalanceCheck {
         let (Some(balance), Some(synced_at)) = (account_balance_minor, balance_synced_at) else {
             return out;
         };
-        let Some(tx_ts) = last_tx_ts else {
-            out.verdict = BalanceCheckVerdict::NoTransactions;
-            return out;
-        };
-        let Some(tx_balance) = last_tx_balance_minor else {
-            out.verdict = BalanceCheckVerdict::NoTxBalance;
+        let (Some(tx_ts), ClosingBalance::Known(tx_balance)) = (last_tx_ts, closing) else {
+            out.verdict = match closing {
+                ClosingBalance::NoTxBalance => BalanceCheckVerdict::NoTxBalance,
+                ClosingBalance::AmbiguousOrder => BalanceCheckVerdict::AmbiguousOrder,
+                ClosingBalance::NoTransactions | ClosingBalance::Known(_) => {
+                    BalanceCheckVerdict::NoTransactions
+                }
+            };
             return out;
         };
         if synced_at < tx_ts {
@@ -647,6 +752,50 @@ mod tests {
             counter_edrpou: None,
             counter_iban: None,
         }
+    }
+
+    fn tail(rows: &[(i64, i64, Option<i64>)]) -> Vec<TxTail> {
+        rows.iter()
+            .map(|&(ts, amount_minor, balance_minor)| TxTail {
+                ts,
+                amount_minor,
+                balance_minor,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn closing_balance_single_newest_row_is_read_directly() {
+        let t = tail(&[(2, -100, Some(900)), (1, -100, Some(1_000))]);
+        assert_eq!(closing_balance(&t), ClosingBalance::Known(900));
+    }
+
+    #[test]
+    fn closing_balance_sums_same_second_rows_onto_anchor() {
+        // Order inside the same second is deliberately "wrong" (inbound leg
+        // first): the result must not depend on it.
+        let t = tail(&[
+            (3, 500, Some(1_400)),
+            (3, -200, Some(900)),
+            (2, -100, Some(1_100)),
+            (2, 50, Some(1_150)),
+            (1, -100, Some(1_000)),
+        ]);
+        // anchor 1_000, then -100 + 50 at ts 2, then +500 - 200 at ts 3.
+        assert_eq!(closing_balance(&t), ClosingBalance::Known(1_250));
+    }
+
+    #[test]
+    fn closing_balance_reports_unknowns() {
+        assert_eq!(closing_balance(&[]), ClosingBalance::NoTransactions);
+        assert_eq!(
+            closing_balance(&tail(&[(2, 5, Some(5)), (2, -5, Some(0)), (1, -1, None)])),
+            ClosingBalance::NoTxBalance
+        );
+        assert_eq!(
+            closing_balance(&tail(&[(2, 5, Some(5)), (2, -5, Some(0))])),
+            ClosingBalance::AmbiguousOrder
+        );
     }
 
     #[tokio::test]
