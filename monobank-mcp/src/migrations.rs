@@ -22,9 +22,10 @@ use rusqlite::Connection;
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../schema/mono_001_initial.sql")),
     (2, include_str!("../schema/mono_002_account_balance.sql")),
+    (3, include_str!("../schema/mono_003_account_closed.sql")),
 ];
 
-pub const EXPECTED_MONO_SCHEMA_VERSION: i64 = 2;
+pub const EXPECTED_MONO_SCHEMA_VERSION: i64 = 3;
 
 pub fn ensure_mono_schema(conn: &mut Connection) -> Result<()> {
     conn.execute_batch(

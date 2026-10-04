@@ -102,6 +102,14 @@ This is deliberately independent of `caught_up`: the cursor can be perfectly cur
 
 `list_mono_accounts` includes `balance_minor`, `credit_limit_minor`, and `balance_synced_at` (0.3.0+). These come from `/personal/client-info` and are refreshed by `monobank-mcp accounts` / backfill, NOT by sync - `balance_synced_at` dates the value. Monobank's balance INCLUDES the credit line, so real funds = `balance_minor - credit_limit_minor`.
 
+### Closed accounts (0.5.0+)
+
+When a card is closed in the Monobank app it disappears from `/personal/client-info`, and `/personal/statement` answers HTTP 400 `invalid 'account'` for it. Earlier versions kept its row and kept asking, so every sync reported that account as `failed` and `caught_up` stayed false for good.
+
+`monobank-mcp accounts` and `backfill` now reconcile against the full client-info response: a stored account the response no longer lists gets `mono_accounts.closed_at` (unix seconds), and the next refresh that lists it again clears the stamp. Closed accounts drop out of the `sync` / `ensure_synced` queue and out of `balance_checks`; an explicit `--account <id>` / `account_id` still reaches them. Their rows and transactions stay in the store. `list_mono_accounts` shows `closed_at`. An empty client-info response is treated as an anomaly and closes nothing.
+
+After closing a card, run `monobank-mcp accounts` once so the store learns about it.
+
 ### Breaking change in 0.4.0
 
 `caught_up` changed meaning. In 0.3.0 it was true whenever every account's cursor was within 24 hours of now, regardless of whether any chunk had actually been fetched, so a run that ran out of budget before touching an account still reported `caught_up: true`. A monthly report built on that answer was missing 22 hours of spending on the busiest card. From 0.4.0 `caught_up` requires `remaining_chunks == 0` on every account and there is no gap tolerance. The "cursor trails by seconds after a complete sync" case that the tolerance was meant to cover is handled by `sync_freshness_skip_seconds`, which skips the API call and reports `remaining_chunks: 0` honestly.
@@ -116,6 +124,7 @@ Consumers that treated `partial: true` + `rows_added: 0` as "already current" mu
 - **Auto-seed sync** (0.2.0+): `monobank-mcp sync` against a fresh account (no prior backfill) seeds the cursor at `now` and returns a clean outcome instead of erroring. Run `backfill --from <date>` explicitly when historical rows matter.
 - **Freshness skip** (0.2.0+): repeat syncs within `sync_freshness_skip_seconds` (default 300) skip API calls entirely - no surprise 8 × 61s waits on rapid retries. This is the *only* tolerance for a trailing cursor, and it reports `remaining_chunks: 0` truthfully because the window really is covered.
 - **No silent "up to date"** (0.4.0+): `caught_up` is false while any account has an unfetched chunk, and an account that was never contacted reports `status: unattempted` rather than an ambiguous `rows_added: 0`.
+- **Closed accounts leave the queue** (0.5.0+): client-info reconciliation stamps `closed_at` instead of deleting rows, so history survives and sync stops failing on cards closed in the app.
 - **No starvation** (0.4.0+): accounts are synced stalest-cursor-first, so a wall-clock budget that affords two API calls still reaches every account across successive invocations.
 - **Rate-limit retry with bounded backoff**: a 429 / transient error triggers up to 3 retries with a configurable `retry_backoff` (production default 90s; tests pass `Duration::ZERO`).
 - **UTF-8 safe error truncation**: API error bodies (often Ukrainian) survive 256-byte truncation without panicking on mid-codepoint slices.

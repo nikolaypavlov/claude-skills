@@ -112,7 +112,7 @@ Rust binary plugin. Same shipping pattern as `icloud-mcp` (`.mcp.json` -> `scrip
 ```bash
 cd monobank-mcp && cargo build --release
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
-cargo test    # 24 unit + 18 integration tests
+cargo test    # 30 unit + 41 integration tests
 ```
 
 **Key files:**
@@ -121,10 +121,11 @@ cargo test    # 24 unit + 18 integration tests
 - `src/store.rs` -- `rusqlite` store; per-chunk atomic INSERT OR IGNORE + sync-cursor UPSERT
 - `src/sync.rs` -- shared engine for CLI `sync` and MCP `ensure_synced`; deadline-bounded, configurable `retry_backoff`
 - `src/backfill.rs` -- cold-start backfill, resumable on Ctrl-C
-- `src/migrations.rs` -- embeds `schema/mono_001_initial.sql` via `include_str!`; applies inside explicit `BEGIN`/`COMMIT` (NOT `execute_batch` - it auto-commits)
+- `src/migrations.rs` -- embeds the numbered `schema/mono_00N_*.sql` files via `include_str!`; applies inside explicit `BEGIN`/`COMMIT` (NOT `execute_batch` - it auto-commits)
 - `src/mcp/tools.rs` -- 3 `#[tool]` methods + setup-required error wiring
 - `src/util/ratelimit.rs` -- shared 1 req / 60s token bucket via `tokio::sync::Mutex`
 - `schema/mono_001_initial.sql` -- `mono_accounts`, `mono_transactions`, `mono_sync_state`, `mono_import_runs`, `mono_schema_version`. PRAGMAs live in `store.rs::init`, NOT here (journal_mode can't change inside a tx)
+- `schema/mono_002_account_balance.sql` / `mono_003_account_closed.sql` -- balance + credit limit columns; `closed_at` for accounts client-info no longer lists
 
 **Configuration:** `MONOBANK_TOKEN` env var primary, OS keychain fallback (service `monobank-mcp`, account `api-token`) via the `keyring` crate. Optional `~/finances/config.toml` overrides `data_dir`, `api_base`, `api_min_interval_seconds`, `ensure_synced_default_budget`, `sync_freshness_skip_seconds`.
 
@@ -133,6 +134,7 @@ cargo test    # 24 unit + 18 integration tests
 - `ensure_synced` returns `partial: true` when the wall-clock budget expires; Claude is expected to re-invoke or tell the user to run the CLI.
 - **Only `caught_up: true` means the DB is current** (0.4.0+). `rows_added: 0` is emitted both for "fetched the window, nothing new" and for "never fetched this account"; the per-account `status` (`synced` / `partial` / `unattempted` / `failed` / `skipped_fresh` / `up_to_date` / `seeded`) and `chunks_fetched` are what separate them. Before 0.4.0 `caught_up` used a 24h cursor-lag tolerance and ignored unfetched chunks, which let a budget-starved run report a missing day of spending as up to date.
 - Accounts are synced stalest-cursor-first (`Store::list_account_ids_by_staleness`), not by id. The ~2-API-call `ensure_synced` budget would otherwise serve the same first two accounts forever.
+- Closed accounts (0.5.0+): `accounts` and backfill apply client-info through `Store::reconcile_accounts`, which stamps `mono_accounts.closed_at` on any live row the response no longer lists and clears it if the account comes back. Sync and balance checks skip closed rows; an explicit `--account` still reaches them. Rows are never deleted - transactions reference them. An empty client-info closes nothing. Before 0.5.0 a card closed in the app stayed in the queue, got HTTP 400 "invalid 'account'" on every sync, and pinned `caught_up` at false.
 - `suspected_missing_rows` compares `mono_accounts.balance_minor` against the running balance on the newest stored transaction. A mismatch means rows are missing inside an already-walked window - `sync` cannot fix it, only `backfill --from`. It is deliberately NOT part of `caught_up`. The snapshot is refreshed by `accounts`/backfill only, so a snapshot older than the newest row reports "unknown", never "matches".
 - `--probe` exits non-zero on any failure (auth / config / connectivity) so shell wrappers can detect failure via `$?` without re-parsing JSON.
 
