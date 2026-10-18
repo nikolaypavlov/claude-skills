@@ -16,6 +16,7 @@ A curated marketplace of Claude Code plugins for AI/ML engineering workflows. Co
 - **Privat24 Skill** (`privat24-skill/`) -- `uv`-managed Python skill that imports Privat24 web-cabinet XLSX statement exports into the shared `~/finances/data.db`. Owns `privat_*` tables. Standalone (works without monobank-mcp or the personal-finance umbrella). Package layout and conventions are in the "Privat24 Skill Development" section below.
 - **Personal Finance** (`personal-finance/`) -- `uv`-managed Python umbrella skill for query / report / categorize / budget over the shared `~/finances/data.db`. Owns the `pf_*` family of tables (categorization rules + overrides, budgets + drafts, category registry, import audit). Reads `<bank>_transactions` via runtime UNION ALL discovery so it works with any subset of ingest plugins installed. Budget planning is conversation-driven - DB is source of truth, Google Sheets is an on-demand rendered view. Five CLI entry points (`pf-query`, `pf-report`, `pf-categorize`, `pf-rules`, `pf-budget`) follow the same JSON-output contract as the ingest plugins. Layout and rule-loading conventions are in the "Personal Finance Umbrella Development" section below.
 - **STE Writing** (`ste-writing/`) -- Prose rewriting into a controlled plain technical style for English (ASD-STE100) and Ukrainian (adapted STE + DSTU 3966:2009), with symmetric strict and STE-flavored modes. Documentation-only skill with per-language rule references.
+- **PCB Design** (`pcb-design/`) -- Hardware design for boards whose copper is part of the circuit (RF, controlled impedance, antennas). Three skills (`sim-loop`, `pcb-design`, `rf-frontend`) + 4 read-only reviewer agents + `/pcb-design:init` scaffolder + spec templates. Documentation-only; extracted from a Ku-band receive antenna project with every project-specific number left behind in that project's `spec/`. Boundary rule and layout are in the "PCB Design Development" section below.
 
 **Cross-plugin contract**: `docs/transactions-schema.md` (v1.0) is the row-shape contract that monobank-mcp and privat24-skill follow for their `<bank>_transactions` tables; personal-finance reads through it.
 
@@ -35,6 +36,14 @@ Autoresearch uses command + skill + agent:
 - `skills/autoresearch/SKILL.md` -- Lead agent coordination program (worktree creation, researcher spawning, experiment loop)
 - `agents/researcher.md` -- GPU researcher agent that runs experiments in isolated worktrees
 - `skills/autoresearch/scripts/` -- Shell/Python utilities (worktree-setup.sh, harvest.py, cleanup.sh)
+
+PCB Design uses multiple skills + agents + command in one plugin directory:
+- `skills/<name>/SKILL.md` -- three sibling skills, each with its own `references/`
+- `agents/` -- 4 reviewer agents, auto-discovered (not listed in `marketplace.json`)
+- `commands/init.md` -- `/pcb-design:init`
+- `assets/spec/` -- YAML templates the command copies into a target project
+
+**Agents are only discovered under the plugin root.** A plugin whose `source` is `"./"` has the repo root as its plugin root, so `<plugin>/agents/*.md` sits one level too deep. Observed 2026-10-18: `pr-reviewer` is installed at user scope and none of its 7 agents appear as agent types; `autoresearch/agents/researcher.md` has the same layout. Any new plugin shipping agents therefore uses a subdirectory source (`"source": "./pcb-design"`), like the newer plugins do. Worth re-checking against pr-reviewer before relying on it, since that command launches its agents by name.
 
 The marketplace is configured in `.claude-plugin/marketplace.json`.
 
@@ -259,6 +268,45 @@ uv run jira-manager/tools/update_ticket.py
 
 **Configuration:** Environment variables `JIRA_SERVER_URL` and `JIRA_API_KEY` (Personal Access Token).
 
+## PCB Design Development
+
+Documentation-only plugin, three sibling skills plus agents, a command and YAML templates:
+
+```
+pcb-design/
+├── skills/sim-loop/        run contract, validation gates, optimizer, openems
+├── skills/pcb-design/      fab-profiles, kicad-cli, stackup-impedance,
+│                           dfm-order, ua-sourcing
+├── skills/rf-frontend/     noise-budget, freq-plan, antenna-cp, filters
+├── agents/                 rf-engineer, sim-auditor, circuit-reviewer,
+│                           manufacturing-engineer
+├── commands/init.md        /pcb-design:init
+└── assets/spec/            targets / substrates / mesh_rules templates,
+                            fab_profiles (conservative, prototype_cn, ua_local)
+```
+
+**The boundary rule, which is the whole point of the plugin:** the skills hold method, never a project's numbers. No band, no acceptance threshold, no material choice, no decision-log id. Those live in the consuming project's `spec/*.yaml`, which the skills declare authoritative. Any measured figure that stays in a reference is there as provenance for a mechanism ("measured on openEMS v0.37 on one Ku project"), is labelled as such, and must not read as a default.
+
+Conventions specific to this plugin:
+
+- `sim-loop` is solver-agnostic; openEMS specifics live in exactly one reference (`references/openems.md`), so a SPICE or FEM project can use the skill without reading them.
+- Agents are read-only reviewers with a blocking verdict each (FAIL / NOT TRUSTED / NOT READY). They never edit project files and write only to their own agent-memory directory. Keep that contract when editing them - the consuming projects' review gates depend on it.
+- Agents reference the skills by path (`references/<file>.md`), not by inlining their content. When a reference is renamed, grep `agents/` too.
+- Templates in `assets/spec/` ship with placeholders (`0.0`, `null`, `unknown`). A placeholder is honest; a plausible default becomes an unexamined design assumption in every project scaffolded from it.
+
+Structural checks stand in for a test suite:
+
+```bash
+# skill names vs directories, orphan and dangling references, agent and
+# command frontmatter, the agents' read-only contract, template typography
+python3 pcb-design/scripts/check-structure.py
+
+# the YAML leg of the same script needs pyyaml; with it, templates are parsed
+uv run --with pyyaml python pcb-design/scripts/check-structure.py
+```
+
+Exit code 1 lists one line per problem. Run it after editing any SKILL.md, agent or template, and before a release tag.
+
 ## Hooks
 
 Hooks live in `hooks/` with config in `hooks/hooks.json`. The python-dev plugin uses a single PreToolUse hook on Bash that intercepts `git commit` commands:
@@ -284,7 +332,7 @@ This repository is a Claude Code plugin. When creating or modifying skills, comm
 - Each plugin owns its own test suite where the language supports it:
   - Rust plugins: `cargo test` (icloud-mcp, monobank-mcp)
   - Python `uv` plugins: `uv run pytest -q` (privat24-skill, personal-finance; jira-manager has a `tests/` dir but most of its testing is manual via example scripts)
-  - Documentation-only skills (nemo-builder, acli-manager, pdf-design-system, ste-writing) have no test suite
+  - Documentation-only skills (nemo-builder, acli-manager, pdf-design-system, ste-writing, pcb-design) have no test suite; for those, the checks are structural (see `docs/pre-publish-checklist.md`)
 
 ### Developer gotchas
 

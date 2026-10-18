@@ -163,6 +163,17 @@ Prose rewriting into a controlled plain technical style for English and Ukrainia
 - Rewrites in the language of the source text; explicit user instruction overrides
 - Self-lint checklists per language; no dependencies, documentation-only skill
 
+### PCB Design
+
+Hardware design for boards whose copper is part of the circuit: RF and microwave boards, controlled-impedance stackups, antennas. Three skills, four read-only reviewer agents, one scaffolder. Extracted from a Ku-band receive antenna project with every project-specific number left behind in that project's `spec/`.
+
+**Features:**
+- `sim-loop` skill: run contract, validation gates before any optimizer, inner/outer loop split, anti-overfit, tolerance Monte Carlo, measured openEMS/FDTD behaviour
+- `pcb-design` skill: parametric geometry as the source of truth with KiCad as an emitted artifact, round-trip gate, fab profiles and tolerances, stackup, roughness, finishes, mask, pre-order checklist, sourcing from Ukraine
+- `rf-frontend` skill: noise budget and G/T, frequency plan with images and products, phase noise, polarization handedness derivation, array spacing and feasibility bounds, rejection budgets
+- Agents: `rf-engineer` (FAIL), `sim-auditor` (NOT TRUSTED), `circuit-reviewer` (FAIL), `manufacturing-engineer` (NOT READY)
+- `/pcb-design:init` scaffolds `spec/`, `runs/`, `reports/`, `DECISIONS.md`, `VALIDATION.md` and a brief skeleton with placeholders, never guessed numbers
+
 ## Installation
 
 ### Add Marketplace
@@ -209,6 +220,9 @@ Prose rewriting into a controlled plain technical style for English and Ukrainia
 
 # Install STE Writing (prose rewriting, English + Ukrainian)
 /plugin install ste-writing@ai-engineering-skills
+
+# Install PCB Design (RF/PCB design, simulation loop, reviewer agents)
+/plugin install pcb-design@ai-engineering-skills
 ```
 
 ## Usage
@@ -334,6 +348,21 @@ claude-skills/
 │   ├── SKILL.md                  # Core: scope, language selection, modes, self-lint
 │   └── references/               # english.md (ASD-STE100),
 │                                 # ukrainian.md (adapted STE + DSTU 3966:2009)
+├── pcb-design/                   # PCB Design plugin
+│   ├── skills/sim-loop/          # Solver-in-the-loop discipline
+│   │   └── references/           # run-contract, validation-gates,
+│   │                             # optimizer, openems
+│   ├── skills/pcb-design/        # Geometry -> KiCad, fab profiles, stackup
+│   │   └── references/           # fab-profiles, kicad-cli, stackup-impedance,
+│   │                             # dfm-order, ua-sourcing
+│   ├── skills/rf-frontend/       # Noise budget, frequency plan, polarization
+│   │   └── references/           # noise-budget, freq-plan, antenna-cp, filters
+│   ├── agents/                   # rf-engineer, sim-auditor, circuit-reviewer,
+│   │                             # manufacturing-engineer (all read-only)
+│   ├── commands/init.md          # /pcb-design:init project scaffolder
+│   ├── scripts/                  # check-structure.py (stands in for tests)
+│   └── assets/spec/              # targets / substrates / mesh_rules templates
+│                                 # + fab_profiles (conservative, cn, ua_local)
 ├── docs/
 │   ├── transactions-schema.md   # Cross-plugin row-shape contract
 │   └── pre-publish-checklist.md

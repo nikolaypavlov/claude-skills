@@ -1,0 +1,75 @@
+# Discretisation rules. FROZEN by the convergence gate: until that gate passes
+# these are starting values, not frozen ones. Record the realised values next
+# to the required ones, so a deviation is recorded rather than silent.
+schema_version: 1
+
+# Use the anisotropic Courant limit. The cubic form d_min/(c*sqrt(3)) was
+# measured 32 % low on a thin-substrate graded mesh, and its error is
+# row-dependent, so it distorts ratios between mesh variants too.
+courant: anisotropic
+
+common:
+  cells_across_substrate: 5        # the brief's minimum is rarely enough
+  grading_ratio_max: 1.5
+  grading_ratio_achieved_typical: null   # measure it, record it
+  air_margin_wavelengths: 0.5
+  nf2ff_distance_wavelengths: 0.125
+  # Mandatory at every level, not only the finest: an unrefined coarse mesh
+  # biases the optimizer's whole search.
+  thirds_rule_at_metal_edges: true
+  # Floor on the smallest cell anywhere. Set it against the etch tolerance: a
+  # cell finer than the manufacturing tolerance meshes noise.
+  min_cell_mm: 0.15
+  min_cell_mm_rationale: etch_tolerance_sets_the_floor
+
+# Systematic bias measured by the convergence study, carried into the
+# tolerance Monte Carlo as a model-uncertainty term.
+known_bias: {}
+
+rules:
+  coarse:
+    cells_per_wavelength_in_dielectric: 20
+    use_for: optimization_loop
+    min_cell_mm: 0.15
+  fine:
+    cells_per_wavelength_in_dielectric: 30
+    use_for: top_candidate_resimulation
+    min_cell_mm: 0.15
+  # One leg per variable. Lateral density, through-thickness count and edge
+  # refinement are three different convergence questions.
+  extra_fine:
+    cells_per_wavelength_in_dielectric: 45
+    use_for: lateral_convergence_leg
+    min_cell_mm: 0.15
+  fine_vertical:
+    cells_per_wavelength_in_dielectric: 30
+    cells_across_substrate: 7
+    use_for: vertical_convergence_leg
+    min_cell_mm: 0.15
+  fine_edge:
+    cells_per_wavelength_in_dielectric: 30
+    use_for: edge_convergence_leg
+    min_cell_mm: 0.10
+
+verification:
+  port: real_transition_with_via_fence
+  conductor_model: thick_metal
+
+excitation:
+  type: gaussian
+  f0_hz: 0.0
+  fc_hz: 0.0
+  # Set from the convergence of the METRIC the project is graded on, not from
+  # the energy criterion in a brief.
+  end_criteria_db: -60.0
+  end_criteria_db_evidence: null
+  exact_endcriteria: true
+
+solver:
+  boundary_condition: PML_8
+  engine: sse-compressed          # never an alias; record what actually ran
+  num_threads: 1
+  # Parallelism comes from many single-threaded solves. Compute per-run
+  # wall-time limits from the CONTENDED rate, not the solo rate.
+  concurrent_solves: 1
+  contended_rate_measured: false

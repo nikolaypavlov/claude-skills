@@ -1,0 +1,59 @@
+# Authoritative design targets and acceptance criteria.
+#
+# THIS FILE WINS over any prose brief. When a criterion in the brief is found
+# infeasible, amend it here and record the arithmetic that forced the change in
+# DECISIONS.md. Reviewers read the decision log before judging any number.
+#
+# Units in the key name. Hz for frequency, dB / dBi for levels, K for
+# temperature, degrees for angles. No bare numbers.
+
+schema_version: 1
+
+band:
+  f_low_hz:    0.0
+  f_high_hz:   0.0
+  f_center_hz: 0.0
+  fractional_bandwidth_pct: 0.0
+
+# One entry per channel or sub-band the design must meet separately. Delete if
+# the design is graded over one continuous band.
+channels:
+  - name: ch_example
+    center_hz: 0.0
+    width_hz:  0.0
+
+# Frequencies that must be simulated and reported even though they are outside
+# the design band: nearby transmitters, mixer images, harmonics.
+out_of_band_report_hz: {}
+
+# Requirements on a CHAIN rather than on one block. Record how the requirement
+# is apportioned, and leave the split null until the evidence exists.
+rejection: {}
+
+# The sweep the excitation must cover with margin, and the grid it is reported
+# on. A gate graded at 0.2 dB needs a fine angular grid; see the sim-loop
+# skill's references/openems.md for the quadrature bias.
+sweep:
+  f_start_hz: 0.0
+  f_stop_hz:  0.0
+  n_points:   0
+  theta_step_deg: 2.0
+  phi_step_deg:   5.0
+
+# Acceptance criteria. Each entry: the threshold, the condition it applies
+# under, and whether it is a hard gate or a reported figure of merit.
+acceptance:
+  example_metric:
+    threshold: 0.0
+    over: full_channel        # full_channel | center_frequency | worst_case
+    kind: hard_gate           # hard_gate | report_and_maximize
+    rationale: >
+      Why this number, and what it would take to change it.
+
+# Feasibility notes. A criterion must be checked against conservation and
+# against a realizable implementation before it is accepted as a gate; record
+# which checks were run and where they live in code.
+feasibility:
+  checks_implemented_in: src/<pkg>/bounds.py
+  notes: >
+    A power or energy budget is a necessary condition, not a sufficient one.

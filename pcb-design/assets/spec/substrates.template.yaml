@@ -1,0 +1,81 @@
+# Substrate and conductor properties. DESIGN values from datasheets, which for
+# high-frequency laminates differ from the raw process values. Do not change
+# them silently: any change goes through DECISIONS.md.
+schema_version: 1
+
+substrates:
+  RO4003C:
+    preferred: true
+    dk_design: 3.55
+    dk_tolerance: 0.05          # +/- , a Monte Carlo term, not a nominal
+    df: 0.0027                  # loss tangent near 10 GHz
+    thickness_mm_available: [0.203, 0.305, 0.406, 0.508, 0.813, 1.524]
+    thickness_mm_default: 0.508
+
+  RO4350B:
+    preferred: false
+    role: fallback
+    dk_design: 3.66
+    dk_tolerance: 0.05
+    df: 0.0037                  # 37 % more loss than RO4003C
+    thickness_mm_available: [0.168, 0.254, 0.338, 0.508, 0.762, 1.524]
+    thickness_mm_default: 0.508
+    notes: >
+      Report the efficiency penalty of the fallback for the chosen design.
+
+conductors:
+  copper:
+    sigma_s_per_m: 5.8e+7
+    thickness_um_options: [17, 35]
+    thickness_um_default: 35
+    # State the model explicitly and quantify the difference between them on
+    # one candidate instead of assuming it is negligible.
+    model_in_optimization: finite_conductivity_sheet
+    model_in_verification: thick_metal
+    requires_quantified_sheet_vs_thick_delta: true
+    sheet_vs_thick_delta_run_id: null
+    # Roughness follows from the foil type declared in the fab profile. The
+    # substrate-facing face is the one that matters for a microstrip.
+    roughness_rq_um_by_foil:
+      reverse_treated: 0.4
+      standard_ed: 2.0
+      unknown: 2.0
+    roughness_model: hammerstad_jensen
+    # Known limitation, signed: the model saturates at K = 2 and under-predicts
+    # loss above about 10 GHz, i.e. the error is optimistic.
+    roughness_model_valid_below_hz: 1.0e+10
+    roughness_model_error_direction: optimistic_underpredicts_loss
+    roughness_model_alternative: huray_cannonball
+
+# A finish plates only exposed faces, and the substrate-facing face of a trace
+# or patch is never plated, so penalties are smaller than a bare
+# surface-resistance ratio suggests.
+surface_finishes:
+  immersion_silver:
+    allowed: true
+    preferred: true
+    model_as: copper            # 0.1 to 0.3 um against a 0.60 um skin depth
+    sigma_s_per_m: 5.8e+7
+  immersion_tin:
+    allowed: true
+    sigma_s_per_m: 8.7e+6       # about 0.6 skin depths: small, not negligible
+  enig:
+    allowed: false
+    allowed_only_if: nickel_mu_r_measured_for_the_actual_process
+    nickel_sigma_s_per_m: 1.45e+7
+    nickel_mu_r_bounds: [1.0, 600.0]
+    nickel_thickness_um: [3.0, 6.0]
+  hasl:
+    allowed: false
+    forbidden_on: [radiating_copper, feed_copper]
+
+solder_mask:
+  keep_out_over_radiating_copper: true
+  keep_out_over_feed_copper: true
+  if_present_model_as: {dk: 3.3, df: 0.025, thickness_um: 30}
+
+# Needed before any bonded stack can be modelled at all.
+bondply: {}
+
+# Included in final verification only.
+radome: {}
