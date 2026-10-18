@@ -17,7 +17,16 @@ Run every section, in order. Stop on the first failure.
 
 # jira-manager: import smoke (no test suite, but imports must work)
 ( cd jira-manager && uv sync && uv run python -c "from tools import jira_client" )
+
+# pcb-design: documentation-only, so the gate is structural
+uv run --with pyyaml python pcb-design/scripts/check-structure.py
 ```
+
+The structural check covers skill name versus directory, orphan and dangling
+references, agent and command frontmatter, the agents' read-only contract, YAML
+template parsing and typography. The other documentation-only plugins
+(nemo-builder, acli-manager, pdf-design-system, ste-writing) have no equivalent
+script: review their SKILL.md diffs by hand.
 
 ## 2. PII grep
 

@@ -220,6 +220,29 @@
       "skills": [
         "./ste-writing"
       ]
+    },
+    {
+      "name": "pcb-design",
+      "source": "./pcb-design",
+      "description": "Hardware design for boards whose copper is part of the circuit: parametric geometry to KiCad with a round-trip gate, fab profiles and tolerances, stackup/impedance/finish rules, RF chain arithmetic (noise budget, G/T, frequency plan, polarization), and the simulation-loop discipline that makes every reported number trace to a stored run. Ships four read-only reviewer agents and a project scaffolder.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mykola Pavlov",
+        "email": "me@nikolaypavlov.com"
+      },
+      "keywords": ["pcb", "rf", "microwave", "antenna", "kicad", "openems", "fdtd", "simulation", "dfm", "hardware"],
+      "homepage": "https://github.com/nikolaypavlov/claude-skills",
+      "repository": "https://github.com/nikolaypavlov/claude-skills.git",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./skills/sim-loop",
+        "./skills/pcb-design",
+        "./skills/rf-frontend"
+      ],
+      "commands": [
+        "./commands"
+      ]
     }
   ]
 }

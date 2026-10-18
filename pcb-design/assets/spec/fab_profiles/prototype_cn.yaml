@@ -1,0 +1,46 @@
+# Foreign prototype house at its advertised process. Advertised is not
+# confirmed: treat any non-standard stackup as a quote item.
+schema_version: 1
+name: prototype_cn
+description: Prototype house, standard advertised high-frequency process.
+confirmed_by_fab: false
+
+design_rules:
+  min_trace_mm: 0.15
+  min_space_mm: 0.15
+  min_drill_mm: 0.30
+  min_annular_ring_mm: 0.15
+  board_outline_tolerance_mm: 0.10
+  min_copper_to_edge_mm: 0.25
+
+tolerances:
+  etch_mm: 0.04
+  dk_abs: 0.05
+  thickness_pct: 10.0
+  registration_mm: 0.05
+  bow_twist_pct: 0.75
+
+stackup:
+  max_cores: 2
+  bondply_available: true
+  copper_weight_um: [17, 35]
+  laminates: [RO4003C, RO4350B]
+
+constraints:
+  plated_vias_inside_radiating_patches: false
+  blind_buried_vias: false
+
+finishes: [immersion_silver, immersion_tin, enig]
+
+# Set to none when RF parts must not be assembled abroad and the board is
+# ordered bare.
+assembly: none
+
+copper_foil_type: unknown
+copper_foil_note: >
+    Advertised processes rarely state the foil type. Ask before an order; until
+    then roughness uses the standard-ED value.
+
+max_feed_impedance_ohm: 120.0
+max_feed_impedance_note: >
+    0.15 mm minimum trace admits about 120 ohm (0.172 mm) on 0.508 mm RO4003C.

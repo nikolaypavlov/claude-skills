@@ -1,0 +1,49 @@
+# Local fab. Placeholder: NOTHING here is confirmed. Capability fields are
+# marked unknown on purpose, so a run declaring this profile is visibly
+# unverified rather than quietly optimistic. The manufacturing reviewer fills
+# these in from a real quote before any order.
+schema_version: 1
+name: ua_local
+description: Local fab, capability not yet established.
+confirmed_by_fab: false
+status: placeholder_unverified
+
+design_rules:
+  min_trace_mm: 0.20
+  min_space_mm: 0.20
+  min_drill_mm: 0.30
+  min_annular_ring_mm: 0.15
+  board_outline_tolerance_mm: 0.15
+  min_copper_to_edge_mm: 0.30
+
+tolerances:
+  etch_mm: 0.05
+  dk_abs: 0.05
+  thickness_pct: 10.0
+  registration_mm: 0.10
+  bow_twist_pct: 0.75
+
+stackup:
+  max_cores: 1
+  bondply_available: unknown
+  copper_weight_um: [35]
+  laminates: unknown        # can this fab process the chosen laminate at all?
+
+constraints:
+  plated_vias_inside_radiating_patches: false
+  blind_buried_vias: false
+
+finishes: unknown
+
+copper_foil_type: unknown
+
+max_feed_impedance_ohm: 100.0
+max_feed_impedance_note: >
+    Same minimum trace as the conservative profile, so the same ceiling.
+    Unverified like everything else here.
+
+open_questions:
+  - "Can the fab process the chosen laminate, and at what lead time?"
+  - "Is a controlled-impedance finish available, or only the forbidden one?"
+  - "Confirmed minimum trace and space on this laminate, not on FR4?"
+  - "Copper foil type, and can it be specified in the order?"

@@ -1,0 +1,50 @@
+# DEFAULT fab profile. Deliberately pessimistic: assume this until a specific
+# fab confirms better in writing. Every simulation run declares which profile
+# it used, and the tolerance Monte Carlo draws from the declared profile.
+schema_version: 1
+name: conservative
+description: Conservative defaults, assumed manufacturable by any competent prototype house.
+confirmed_by_fab: false
+
+design_rules:
+  min_trace_mm: 0.20
+  min_space_mm: 0.20
+  min_drill_mm: 0.30
+  min_annular_ring_mm: 0.15
+  board_outline_tolerance_mm: 0.10
+  min_copper_to_edge_mm: 0.30
+
+tolerances:              # used by the Monte Carlo (n >= 30) for finalists
+  etch_mm: 0.05          # +/- on every etched dimension
+  dk_abs: 0.05           # +/- on design Dk
+  thickness_pct: 10.0    # +/- on core thickness
+  registration_mm: 0.075 # layer to layer, matters for stacked topologies
+  # Bow and twist as % of the board diagonal. 0.75 % is IPC-6012's default
+  # acceptance for boards with SMT; anything tighter is a quote item.
+  bow_twist_pct: 0.75
+
+stackup:
+  max_cores: 1
+  bondply_available: false
+  copper_weight_um: [35]
+  laminates: [RO4003C, RO4350B]
+
+constraints:
+  # Generalises to "critical copper": radiating elements, resonators, any
+  # copper whose shape is part of the circuit.
+  plated_vias_inside_radiating_patches: false
+  blind_buried_vias: false
+
+finishes: [immersion_silver, immersion_tin]
+
+# Drives the surface-roughness value in substrates.yaml. If no fab has
+# confirmed a foil, the roughness model must use the worst case.
+copper_foil_type: unknown   # reverse_treated | standard_ed | unknown
+
+# Derived from min_trace_mm on the default stackup, enforced in the parameter
+# schema rather than in a comment.
+max_feed_impedance_ohm: 100.0
+max_feed_impedance_note: >
+    At 0.20 mm minimum trace on 0.508 mm RO4003C the narrowest realisable line
+    in a 50 ohm system is about 100 ohm (0.286 mm), so quarter-wave
+    transformers above 100 ohm are not available in this profile.
