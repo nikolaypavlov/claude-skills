@@ -1,12 +1,12 @@
 ---
 name: jira-manager
-description: Generate Jira ticket content for small development teams using Kanban workflow. Use when creating bugs, tasks, stories or epics with proper templates and structure.
+description: Generate Jira ticket content for small development teams using Kanban workflow, and read, search, create or update Confluence Server / Data Center pages. Use when creating bugs, tasks, stories or epics with proper templates and structure, or when working with pages on a self-hosted Confluence (wiki) server.
 allowed-tools: Read, Grep, Glob
 ---
 
 # Jira Manager
 
-Skill for generating structured Jira ticket content for small development teams using Kanban workflow.
+Skill for generating structured Jira ticket content for small development teams using Kanban workflow. It also reads, searches, creates and updates pages on a Confluence Server / Data Center instance (see [Confluence Pages](#confluence-pages)).
 
 ## Process
 
@@ -114,7 +114,7 @@ python tools/create_ticket.py
 
 **Verification**:
 ```bash
-python -c "import jira; print('jira:', jira.__version__)"
+python -c "import jira, atlassian, bs4; print('jira:', jira.__version__)"
 ```
 
 **Note**: Text generation mode (without API integration) requires no dependencies. The `jira` package is only needed if you want to create/update tickets directly in Jira via API.
@@ -433,3 +433,53 @@ for issue_key in issues:
     ])
 ```
 
+## Confluence Pages
+
+`tools/confluence_page.py` works with Confluence Server / Data Center 7.9+ through a Personal Access Token. Run it with `uv run tools/confluence_page.py ...` from the skill directory.
+
+### Configuration
+
+- `CONFLUENCE_SERVER_URL` - URL of the Confluence instance (e.g., https://wiki.example.com)
+- `CONFLUENCE_API_KEY` - Personal Access Token created in Confluence (avatar -> Settings -> Personal Access Tokens)
+
+A Jira token does not work on Confluence: Server / Data Center tokens are issued per product. Run `--test` first. It fails when the token is not accepted, because Confluence silently treats a request with an unknown token as anonymous. See `references/confluence_setup.md`.
+
+### Reading
+
+```bash
+uv run tools/confluence_page.py --test
+uv run tools/confluence_page.py --get 123456                          # plain text, for reading
+uv run tools/confluence_page.py --space DOC --title "Runbook"         # find by exact title
+uv run tools/confluence_page.py --search 'space = DOC AND text ~ "kafka"' --max-results 10
+uv run tools/confluence_page.py --children 123456
+```
+
+`--json` prints the page as JSON (`id`, `title`, `space`, `version`, `parent_id`, `url`, `body`).
+
+### Writing
+
+Page bodies use the Confluence **storage format** (XHTML with `ac:` / `ri:` macro elements). An update replaces the whole body. Follow these rules:
+
+1. Read the page with `--format storage --json` and note `version`.
+2. Edit that storage XHTML. Never build the new body from the `--format text` output: it drops macros, tables and links.
+3. Write the body to a file and pass `--body-file` (or `-` for stdin). Do not pass XHTML as a command-line string. Use an absolute path in a temporary or scratch directory, not a relative one: the commands run from the skill directory.
+4. Pass `--expected-version <version>` so the update is refused if someone else edited the page in the meantime.
+5. Show the user the change and get approval before `--create` or `--update`: both change shared content.
+
+```bash
+uv run tools/confluence_page.py --get 123456 --format storage --json > /tmp/page.json
+# ... write the edited body to /tmp/page.xhtml ...
+uv run tools/confluence_page.py --update 123456 --body-file /tmp/page.xhtml --expected-version 7 --message "Fix typo"
+uv run tools/confluence_page.py --update 123456 --title "New title"     # body is kept
+uv run tools/confluence_page.py --create --space DOC --title "New page" --parent 123456 --body-file /tmp/page.xhtml
+```
+
+An update keeps the current title and page width unless you change them. If the body is identical to the current one, nothing is written.
+
+Storage format basics: `<p>`, `<h1>`-`<h6>`, `<ul><li>`, `<table><tbody><tr><th>/<td>`, `<a href="...">`, code block:
+
+```xml
+<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">bash</ac:parameter><ac:plain-text-body><![CDATA[echo hello]]></ac:plain-text-body></ac:structured-macro>
+```
+
+Escape `&` in text as `&amp;`. Do not escape existing entities or macro markup a second time.

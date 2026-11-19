@@ -1,13 +1,14 @@
 # Jira Manager
 
-Claude Code skill for generating structured Jira tickets and integrating with Jira Server API. Supports templates for bugs, tasks, stories, and epics with simple environment variable configuration.
+Claude Code skill for generating structured Jira tickets and integrating with Jira Server API, plus reading and editing Confluence Server / Data Center pages. Supports templates for bugs, tasks, stories, and epics with simple environment variable configuration.
 
 ## Features
 
 - **Template-Based Ticket Generation**: Structured templates for Bug, Task, Story, and Epic
 - **Jira Wiki Markup**: Properly formatted content ready to copy-paste
 - **Jira Server API Integration**: Direct ticket creation via Personal Access Tokens (PAT)
-- **Simple Configuration**: Two environment variables, no config files
+- **Confluence Server / Data Center**: Read, search (CQL), create and update pages
+- **Simple Configuration**: Environment variables only, no config files
 - **Context-Aware**: Project key extracted from conversation context
 - **Multi-Language Support**: Generate tickets in any language
 
@@ -16,6 +17,7 @@ Claude Code skill for generating structured Jira tickets and integrating with Ji
 - Python >= 3.10
 - Jira Server v9.12+ (for API integration)
 - Personal Access Token (for API integration)
+- Confluence Server / Data Center 7.9+ and a separate Confluence Personal Access Token (for Confluence pages)
 
 ## Installation
 
@@ -86,7 +88,16 @@ source ~/.bash_profile  # or ~/.zshenv
 5. Set expiration (optional)
 6. Copy the generated token
 
-See `reference/jira_server_setup.md` for detailed instructions.
+See `references/jira_server_setup.md` for detailed instructions.
+
+### Confluence
+
+```bash
+export CONFLUENCE_SERVER_URL="https://wiki.example.com"
+export CONFLUENCE_API_KEY="your_confluence_personal_access_token"
+```
+
+Create the token in Confluence, not in Jira: Server / Data Center tokens are issued per product. See `references/confluence_setup.md`.
 
 ### Project Key
 
@@ -129,7 +140,7 @@ automated testing and deployment to staging environment.
 
 ## Template Structure
 
-All tickets follow consistent templates from `reference/ticket_templates.md`:
+All tickets follow consistent templates from `references/ticket_templates.md`:
 
 - **Bug**: Description, Steps to Reproduce, Expected/Actual Behavior, Environment
 - **Task**: Description, Context, Steps, Expected Outcome
@@ -217,6 +228,21 @@ python tools/update_ticket.py --issue PROJ-123 --comment "Investigating. Root ca
 python tools/update_ticket.py --issue PROJ-123 --transition "In Progress"
 ```
 
+## Confluence Pages
+
+```bash
+uv run tools/confluence_page.py --test                                    # check the token
+uv run tools/confluence_page.py --get 123456                              # read as plain text
+uv run tools/confluence_page.py --space DOC --title "Runbook"             # find by title
+uv run tools/confluence_page.py --search 'space = DOC AND text ~ "kafka"' # CQL search
+uv run tools/confluence_page.py --children 123456                         # child pages
+uv run tools/confluence_page.py --get 123456 --format storage --json      # storage XHTML for editing
+uv run tools/confluence_page.py --update 123456 --body-file page.xhtml --expected-version 7
+uv run tools/confluence_page.py --create --space DOC --title "New" --parent 123456 --body-file page.xhtml
+```
+
+Updates replace the whole body in storage format, keep the title and page width unless changed, and with `--expected-version` refuse to overwrite a newer version.
+
 ## Troubleshooting
 
 ### Missing Environment Variables
@@ -295,9 +321,10 @@ jira-manager/
 ├── SKILL.md                           # Skill instructions for Claude
 ├── README.md                          # This file
 ├── pyproject.toml                     # Python dependencies
-├── reference/                         # Reference documentation
+├── references/                        # Reference documentation
 │   ├── ticket_templates.md            # Template definitions
-│   └── jira_server_setup.md           # PAT setup guide
+│   ├── jira_server_setup.md           # PAT setup guide
+│   └── confluence_setup.md            # Confluence PAT setup guide
 ├── examples/                          # Example tickets and code
 │   ├── bug_example.md
 │   ├── story_example.md
@@ -308,7 +335,9 @@ jira-manager/
 └── tools/                             # Python API integration
     ├── jira_client.py                 # Jira API client (CRUD operations)
     ├── create_ticket.py               # CLI for creating tickets
-    └── update_ticket.py               # CLI for search/update/comment
+    ├── update_ticket.py               # CLI for search/update/comment
+    ├── confluence_client.py           # Confluence API client
+    └── confluence_page.py             # CLI for Confluence pages
 ```
 
 ## License

@@ -1,12 +1,14 @@
 [project]
 name = "jira-manager"
-version = "1.0.1"
-description = "Jira ticket generation and API integration tool"
+version = "1.1.0"
+description = "Jira ticket generation and API integration tool, with Confluence page support"
 authors = [
     {name = "Mykola Pavlov", email = "me@nikolaypavlov.com"}
 ]
 requires-python = ">=3.10"
 dependencies = [
+    "atlassian-python-api>=5.0",
+    "beautifulsoup4>=4.12",
     "jira>=3.10.0",
 ]
 license = {text = "MIT"}
