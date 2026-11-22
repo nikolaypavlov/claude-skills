@@ -5,7 +5,7 @@ Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP). Written in 
 Read + create-only by design:
 
 - Calendars: list, list events, get one event, search, create event.
-- Mail: list folders, search, get message. Draft creation goes through IMAP APPEND to the Drafts folder - there is no SMTP transport, so the server cannot send mail. The user reviews each draft and sends it manually in iCloud Mail.
+- Mail: list folders, search, get message, save attachments to a local directory. Draft creation goes through IMAP APPEND to the Drafts folder - there is no SMTP transport, so the server cannot send mail. The user reviews each draft and sends it manually in iCloud Mail.
 
 ## Quick start
 
@@ -135,7 +135,7 @@ When Anthropic ships plugin-marketplace support in Claude Desktop, this whole fl
 ```
                 Claude Code
                     |
-                    | stdio (JSON-RPC, rmcp 0.16)
+                    | stdio (JSON-RPC, rmcp 1.7)
                     v
           +------------------+
           | icloud-mcp (Rust)|
@@ -148,8 +148,10 @@ When Anthropic ships plugin-marketplace support in Claude Desktop, this whole fl
    caldav.icloud.com       imap.mail.me.com:993
    - principal             - list folders
    - calendar-home-set     - search (FROM/SUBJECT/SINCE/...)
-   - REPORT calendar-query - UID FETCH RFC822 (parsed via mail-parser,
-   - PUT VEVENT              HTML -> markdown via html2md)
+   - REPORT calendar-query - UID FETCH BODY.PEEK[] (parsed via
+   - PUT VEVENT              mail-parser, HTML -> markdown via html2md)
+                           - attachments of a message written to a
+                             local directory
                            - APPEND <draft> with \Draft flag
                     ^
                     |
@@ -168,7 +170,8 @@ When Anthropic ships plugin-marketplace support in Claude Desktop, this whole fl
 | `calendar_create_event`    | Create a VEVENT (organizer auto-set to your Apple ID).              |
 | `mail_list_folders`        | IMAP folders with special-use tags (Drafts/Sent/Trash/...).         |
 | `mail_search`              | UID search (FROM/SUBJECT/TEXT/SINCE/BEFORE/UNSEEN), newest first.   |
-| `mail_get_message`         | Full or partial message (capped at `max_bytes`, default 512 KB). Returns `truncated`, `total_size_bytes`, attachment metadata (`name`/`mime`/`size`). HTML bodies are converted to markdown (off-thread for >100 KB). |
+| `mail_get_message`         | Full or partial message (capped at `max_bytes`, default 512 KB). Returns `truncated`, `total_size_bytes`, attachment metadata (`index`/`filename`/`mime`/`size`). When truncated, `attachments_complete` is false and the list covers only the fetched part. HTML bodies are converted to markdown (off-thread for >100 KB). |
+| `mail_save_attachments`    | Download attachments of one message into `dest_dir` (absolute path, created when missing). All of them, or only the listed `indexes`. Always fetches the whole message (limit 64 MB), so it works when `mail_get_message` was truncated. Returns path/mime/size per file, not the contents. Sender-supplied names are reduced to a bare file name; existing files are never overwritten (`name-1.ext` on collision). |
 | `mail_create_draft`        | Append RFC 822 to Drafts with `\Draft` flag. Does NOT send.         |
 | `auth_status`              | Diagnostic. Returns whether credentials are loaded, their source, and last-OK timestamps for IMAP/CalDAV. Use when other tools fail. |
 

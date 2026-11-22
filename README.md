@@ -98,8 +98,8 @@ Skill + command for converting markdown to PDF using a canonical editorial desig
 Local Rust MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP), shipping prebuilt binaries via GitHub Releases.
 
 **Features:**
-- 10 tools: calendar list/list-events/get/search/create, mail list-folders/search/get-message/create-draft, and `auth_status` diagnostic
-- Read + create only by design: events can be created, mail can only be saved as drafts (no SMTP)
+- 11 tools: calendar list/list-events/get/search/create, mail list-folders/search/get-message/save-attachments/create-draft, and `auth_status` diagnostic
+- Read + create only by design: events can be created, mail can only be saved as drafts (no SMTP); attachments can be downloaded to a local directory
 - Connection-pooled IMAP session with NOOP-based health check across tool calls
 - macOS Keychain credential fallback; explicit timeouts on every network call; structured `URL_ELICITATION_REQUIRED` (-32042) error when unconfigured
 - 4-target prebuilt binaries (darwin arm64/x64, linux x64/arm64); no Rust toolchain required for plugin users
