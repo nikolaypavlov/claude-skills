@@ -4,7 +4,9 @@
 //! - Connection pool: one warm `Session` reused across tool calls within
 //!   `IDLE_MAX`. Each `acquire()` does a `NOOP` to confirm the session is
 //!   still alive and reconnects if not.
-//! - Read tools: list_folders, search, get_message.
+//! - Read tools: list_folders, search, get_message, save_attachments (the
+//!   last one writes attachment files to a local directory; nothing changes
+//!   on the server).
 //! - Create tool: create_draft (APPENDs the message to the Drafts folder
 //!   with the `\Draft` flag; never sends).
 //!
@@ -18,6 +20,7 @@
 //!       └── None or expired ───────────────────> login, store
 //! ```
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,7 +30,7 @@ use async_imap::Session;
 use chrono::{DateTime, Utc};
 use futures_util::stream::TryStreamExt;
 use lettre::message::{Mailbox, MultiPart, SinglePart};
-use mail_parser::{MessageParser, MimeHeaders};
+use mail_parser::MessageParser;
 use rustls::ClientConfig;
 use rustls_pki_types::ServerName;
 use tokio::net::TcpStream;
@@ -36,14 +39,20 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
 use uuid::Uuid;
 
+use crate::attachments::{self, SaveResult};
 use crate::config::{Config, IMAP_HOST, IMAP_PORT};
 use crate::error::DomainError;
-use crate::timeout::{with_timeout, IMAP_COMMAND, IMAP_LOGIN, TCP_CONNECT, TLS_HANDSHAKE};
+use crate::timeout::{
+    with_timeout, IMAP_COMMAND, IMAP_FETCH_FULL, IMAP_LOGIN, TCP_CONNECT, TLS_HANDSHAKE,
+};
 
 type ImapSession = Session<TlsStream<TcpStream>>;
 
 const IDLE_MAX: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_BODY_CAP: u32 = 512 * 1024;
+/// Largest message `save_attachments` downloads. The whole message is held
+/// in memory while it is parsed; iCloud itself caps a message at about 20 MB.
+const MAX_ATTACHMENT_MESSAGE_BYTES: u32 = 64 * 1024 * 1024;
 const HTML2MD_OFFTHREAD_THRESHOLD: usize = 100_000;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -65,6 +74,8 @@ pub struct MailSummary {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AttachmentMeta {
+    /// Position in the attachment list; pass it to `save_attachments`.
+    pub index: usize,
     pub filename: Option<String>,
     pub mime: String,
     pub size: u32,
@@ -82,6 +93,10 @@ pub struct MailDetail {
     pub body: String,
     pub body_format: String,
     pub attachments: Vec<AttachmentMeta>,
+    /// False when the message was cut at `max_bytes`: `attachments` then
+    /// lists only the parts that start inside the fetched bytes, and the
+    /// last one may report a size that is too small.
+    pub attachments_complete: bool,
     pub total_size_bytes: u32,
     pub truncated: bool,
 }
@@ -339,23 +354,7 @@ impl ImapClient {
         Self::ensure_folder(p, folder).await?;
 
         // Step 1: fetch metadata (SIZE + flags) so we know whether to truncate.
-        let meta: Vec<Fetch> = with_timeout("IMAP UID FETCH meta", IMAP_COMMAND, async {
-            let stream = p
-                .session
-                .uid_fetch(uid.to_string(), "(UID FLAGS RFC822.SIZE)")
-                .await
-                .map_err(|e| DomainError::transient(format!("UID FETCH meta: {e}")))?;
-            stream
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(|e| DomainError::transient(format!("collect meta: {e}")))
-        })
-        .await?;
-        let head = meta
-            .into_iter()
-            .next()
-            .ok_or_else(|| DomainError::not_found(format!("message uid={uid} in {folder}")))?;
-        let total_size = head.size.unwrap_or(0);
+        let total_size = Self::fetch_size(p, folder, uid).await?;
 
         // Step 2: fetch headers + partial body when oversized; otherwise full RFC822.
         let truncated = total_size > cap;
@@ -385,8 +384,11 @@ impl ImapClient {
                         break;
                     }
                 }
+                // BODY[TEXT] comes back under Fetch::text(). Fetch::body()
+                // matches only BODY[] and returned nothing here, which left
+                // the message with headers and no body at all.
                 for m in &msgs {
-                    if let Some(b) = m.body() {
+                    if let Some(b) = m.text() {
                         out.extend_from_slice(b);
                         break;
                     }
@@ -395,35 +397,7 @@ impl ImapClient {
             })
             .await?
         } else {
-            // BODY.PEEK[] instead of RFC822:
-            //  - PEEK avoids the \Seen side-effect that RFC822 implies.
-            //  - Some servers (iCloud included) only populate the response
-            //    under the BODY[] attribute name; async-imap's Fetch::body()
-            //    matches the BodySection { section: None } branch for that.
-            //    Asking for RFC822 produced empty bodies in the wild for
-            //    multipart/alternative messages from forwarder senders.
-            // Iterate ALL Fetch responses instead of just `.next()`: a server
-            // is allowed to split metadata and body data into separate
-            // untagged FETCH responses, and the first one may not carry the
-            // body.
-            with_timeout("IMAP UID FETCH body", IMAP_COMMAND, async {
-                let stream = p
-                    .session
-                    .uid_fetch(uid.to_string(), "(UID FLAGS BODY.PEEK[])")
-                    .await
-                    .map_err(|e| DomainError::transient(format!("UID FETCH body: {e}")))?;
-                let msgs: Vec<Fetch> = stream
-                    .try_collect()
-                    .await
-                    .map_err(|e| DomainError::transient(format!("collect body: {e}")))?;
-                let body = msgs
-                    .iter()
-                    .find_map(|m| m.body())
-                    .ok_or_else(|| DomainError::permanent("message has no body"))?
-                    .to_vec();
-                Ok::<_, DomainError>(body)
-            })
-            .await?
+            Self::fetch_full(p, uid, IMAP_COMMAND).await?
         };
 
         p.last_used = Instant::now();
@@ -434,6 +408,101 @@ impl ImapClient {
             .parse(body_bytes.as_slice())
             .ok_or_else(|| DomainError::permanent("failed to parse RFC 822"))?;
         detail_from_parsed(&parsed, folder, uid, total_size, truncated).await
+    }
+
+    /// `RFC822.SIZE` of one message. `NotFound` when the UID does not exist.
+    async fn fetch_size(p: &mut PooledSession, folder: &str, uid: u32) -> Result<u32, DomainError> {
+        let meta: Vec<Fetch> = with_timeout("IMAP UID FETCH meta", IMAP_COMMAND, async {
+            let stream = p
+                .session
+                .uid_fetch(uid.to_string(), "(UID FLAGS RFC822.SIZE)")
+                .await
+                .map_err(|e| DomainError::transient(format!("UID FETCH meta: {e}")))?;
+            stream
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|e| DomainError::transient(format!("collect meta: {e}")))
+        })
+        .await?;
+        let head = meta
+            .into_iter()
+            .next()
+            .ok_or_else(|| DomainError::not_found(format!("message uid={uid} in {folder}")))?;
+        Ok(head.size.unwrap_or(0))
+    }
+
+    /// The whole raw RFC 822 message.
+    ///
+    /// BODY.PEEK[] instead of RFC822:
+    ///  - PEEK avoids the \Seen side-effect that RFC822 implies.
+    ///  - Some servers (iCloud included) only populate the response
+    ///    under the BODY[] attribute name; async-imap's Fetch::body()
+    ///    matches the BodySection { section: None } branch for that.
+    ///    Asking for RFC822 produced empty bodies in the wild for
+    ///    multipart/alternative messages from forwarder senders.
+    ///
+    /// Iterates ALL Fetch responses instead of just `.next()`: a server
+    /// is allowed to split metadata and body data into separate
+    /// untagged FETCH responses, and the first one may not carry the
+    /// body.
+    async fn fetch_full(
+        p: &mut PooledSession,
+        uid: u32,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, DomainError> {
+        with_timeout("IMAP UID FETCH body", timeout, async {
+            let stream = p
+                .session
+                .uid_fetch(uid.to_string(), "(UID FLAGS BODY.PEEK[])")
+                .await
+                .map_err(|e| DomainError::transient(format!("UID FETCH body: {e}")))?;
+            let msgs: Vec<Fetch> = stream
+                .try_collect()
+                .await
+                .map_err(|e| DomainError::transient(format!("collect body: {e}")))?;
+            let body = msgs
+                .iter()
+                .find_map(|m| m.body())
+                .ok_or_else(|| DomainError::permanent("message has no body"))?
+                .to_vec();
+            Ok::<_, DomainError>(body)
+        })
+        .await
+    }
+
+    /// Download one message in full and write its attachments into
+    /// `dest_dir` on the local disk. `indexes` empty means all attachments.
+    ///
+    /// Always fetches the whole message, independent of the `max_bytes` cap
+    /// that `get_message` applies - an attachment cut short is useless.
+    pub async fn save_attachments(
+        &self,
+        folder: &str,
+        uid: u32,
+        dest_dir: &Path,
+        indexes: &[usize],
+    ) -> Result<SaveResult, DomainError> {
+        let mut guard = self.acquire().await?;
+        let p = guard.as_mut().expect("session present after acquire");
+        Self::ensure_folder(p, folder).await?;
+
+        let total_size = Self::fetch_size(p, folder, uid).await?;
+        if total_size > MAX_ATTACHMENT_MESSAGE_BYTES {
+            return Err(DomainError::invalid(format!(
+                "message uid={uid} is {total_size} bytes, over the {MAX_ATTACHMENT_MESSAGE_BYTES} byte limit for attachment download"
+            )));
+        }
+        let raw = Self::fetch_full(p, uid, IMAP_FETCH_FULL).await?;
+
+        p.last_used = Instant::now();
+        // Release the lock before parsing and disk writes.
+        drop(guard);
+
+        let dest_dir = dest_dir.to_path_buf();
+        let indexes = indexes.to_vec();
+        tokio::task::spawn_blocking(move || attachments::save_from_raw(&raw, &dest_dir, &indexes))
+            .await
+            .map_err(|e| DomainError::permanent(format!("attachment save task failed: {e}")))?
     }
 
     pub async fn create_draft(&self, p: &DraftParams) -> Result<DraftResult, DomainError> {
@@ -712,21 +781,13 @@ async fn detail_from_parsed(
         (String::new(), "text".to_string())
     };
 
-    let attachments: Vec<AttachmentMeta> = msg
-        .attachments()
+    let attachments: Vec<AttachmentMeta> = attachments::extract(msg)
+        .into_iter()
         .map(|att| AttachmentMeta {
-            filename: att.attachment_name().map(String::from),
-            mime: att
-                .content_type()
-                .map(|ct| {
-                    let main = ct.ctype();
-                    match ct.subtype() {
-                        Some(s) => format!("{main}/{s}"),
-                        None => main.to_string(),
-                    }
-                })
-                .unwrap_or_else(|| "application/octet-stream".to_string()),
-            size: u32::try_from(att.len()).unwrap_or(u32::MAX),
+            index: att.index,
+            filename: att.filename,
+            mime: att.mime,
+            size: u32::try_from(att.bytes.len()).unwrap_or(u32::MAX),
         })
         .collect();
 
@@ -741,6 +802,7 @@ async fn detail_from_parsed(
         body,
         body_format,
         attachments,
+        attachments_complete: !truncated,
         total_size_bytes: total_size,
         truncated,
     })

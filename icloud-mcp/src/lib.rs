@@ -2,6 +2,7 @@
 //! into an MCP server; the library surface is what integration tests in
 //! `tests/` import.
 
+pub mod attachments;
 pub mod caldav;
 pub mod config;
 pub mod error;

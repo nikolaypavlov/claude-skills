@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -102,11 +103,27 @@ pub struct MailGetArgs {
     /// IMAP UID (NOT sequence number) returned by mail_search.
     pub uid: u32,
     /// Cap on body bytes pulled from the server. Default 524288 (512 KB).
-    /// When the message exceeds this, headers + first body part are fetched
-    /// and `truncated: true` is returned along with the full
-    /// `total_size_bytes` and attachment metadata.
+    /// When the message exceeds this, headers + the first `max_bytes` of the
+    /// body are fetched and `truncated: true` is returned along with the full
+    /// `total_size_bytes`. The attachment list then covers only the fetched
+    /// part (`attachments_complete: false`).
     #[serde(default)]
     pub max_bytes: Option<u32>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug)]
+pub struct MailSaveAttachmentsArgs {
+    pub folder: String,
+    /// IMAP UID (NOT sequence number) returned by mail_search.
+    pub uid: u32,
+    /// Absolute path of the local directory to write into, e.g.
+    /// "/Users/me/Downloads/report". Created when missing. `~` is not expanded.
+    pub dest_dir: String,
+    /// Attachment indexes to save (the `index` field of `attachments` in
+    /// mail_get_message). Empty or omitted saves every attachment. Indexes
+    /// from a `truncated: true` result are not valid - omit them then.
+    #[serde(default)]
+    pub indexes: Vec<u32>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Debug)]
@@ -407,7 +424,7 @@ impl IcloudServer {
     }
 
     #[tool(
-        description = "Fetch one message by UID from a folder. Returns parsed headers, body (HTML converted to markdown when no plain-text part exists), attachment metadata, and `truncated` + `total_size_bytes` when the body was capped by `max_bytes`."
+        description = "Fetch one message by UID from a folder. Returns parsed headers, body (HTML converted to markdown when no plain-text part exists), attachment metadata (index, filename, mime, size - pass the index to mail_save_attachments to download the files), and `truncated` + `total_size_bytes` when the body was capped by `max_bytes`. When truncated, `attachments_complete` is false: the list covers only the fetched part, so call mail_save_attachments without `indexes` to get every file."
     )]
     async fn mail_get_message(
         &self,
@@ -421,6 +438,30 @@ impl IcloudServer {
             .map_err(|e| to_mcp("mail_get_message", e))?;
         self.mark_imap_ok().await;
         Ok(json_result(&msg))
+    }
+
+    #[tool(
+        description = "Download attachments of one message to a local directory. Always fetches the whole message, so it also works when mail_get_message returned `truncated: true`. Saves all attachments, or only those listed in `indexes` (take indexes only from a mail_get_message result with `truncated: false`; otherwise save all). File contents are NOT returned - the result lists each saved file's path, mime and size; read the files from disk. Existing files are never overwritten: on a name collision the new file gets a `-N` suffix. Nothing changes on the mail server."
+    )]
+    async fn mail_save_attachments(
+        &self,
+        Parameters(args): Parameters<MailSaveAttachmentsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let s = self.require()?;
+        let dest_dir = PathBuf::from(&args.dest_dir);
+        if !dest_dir.is_absolute() {
+            return Err(invalid_params(
+                "`dest_dir` must be an absolute path (`~` is not expanded)",
+            ));
+        }
+        let indexes: Vec<usize> = args.indexes.iter().map(|i| *i as usize).collect();
+        let res = s
+            .imap
+            .save_attachments(&args.folder, args.uid, &dest_dir, &indexes)
+            .await
+            .map_err(|e| to_mcp("mail_save_attachments", e))?;
+        self.mark_imap_ok().await;
+        Ok(json_result(&res))
     }
 
     #[tool(
@@ -485,6 +526,8 @@ impl ServerHandler for IcloudServer {
             "Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP). \
              Read + create-only: events can be created, mail can only be saved as drafts \
              - there is no SMTP transport, the user reviews and sends manually in iCloud Mail. \
+             Mail attachments can be downloaded to a local directory with \
+             `mail_save_attachments`; that writes local files only. \
              All datetimes are RFC 3339 UTC. \
              Workflow: 1) `calendar_list_calendars` / `mail_list_folders` to discover ids; \
              2) list/search/get with those ids; 3) `calendar_create_event` or \
@@ -695,6 +738,20 @@ mod tests {
             .expect("error data must include url + elicitationId");
         assert_eq!(data["url"], SETUP_URL);
         assert!(data["elicitationId"].is_string());
+    }
+
+    #[tokio::test]
+    async fn unconfigured_save_attachments_returns_url_elicitation() {
+        use rmcp::model::ErrorCode;
+        let s = IcloudServer::unconfigured();
+        let args = MailSaveAttachmentsArgs {
+            folder: "INBOX".into(),
+            uid: 1,
+            dest_dir: "/tmp/never-created".into(),
+            indexes: vec![],
+        };
+        let err = s.mail_save_attachments(Parameters(args)).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::URL_ELICITATION_REQUIRED);
     }
 
     #[tokio::test]

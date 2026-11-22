@@ -13,6 +13,9 @@ pub const TCP_CONNECT: Duration = Duration::from_secs(10);
 pub const TLS_HANDSHAKE: Duration = Duration::from_secs(10);
 pub const IMAP_LOGIN: Duration = Duration::from_secs(15);
 pub const IMAP_COMMAND: Duration = Duration::from_secs(20);
+/// Whole-message download for attachment saving. A message of tens of MB
+/// does not fit in `IMAP_COMMAND`.
+pub const IMAP_FETCH_FULL: Duration = Duration::from_secs(180);
 pub const CALDAV_REQUEST: Duration = Duration::from_secs(20);
 
 pub async fn with_timeout<F, T>(label: &str, dur: Duration, fut: F) -> Result<T, DomainError>
