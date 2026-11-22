@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -13,6 +12,7 @@ use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
+use icloud_mcp::attachments;
 use icloud_mcp::caldav;
 use icloud_mcp::config::Config;
 use icloud_mcp::error::{invalid_params, to_mcp};
@@ -116,9 +116,14 @@ pub struct MailSaveAttachmentsArgs {
     pub folder: String,
     /// IMAP UID (NOT sequence number) returned by mail_search.
     pub uid: u32,
-    /// Absolute path of the local directory to write into, e.g.
-    /// "/Users/me/Downloads/report". Created when missing. `~` is not expanded.
-    pub dest_dir: String,
+    /// Subdirectory of the attachments base directory to write into, e.g.
+    /// "celestrak/2026-11". Relative path only: no leading `/` or `~`, no
+    /// `..`, no component starting with a dot. Created when missing.
+    /// Defaults to "<folder>-<uid>". The base directory itself is fixed by
+    /// the server (`~/Downloads/icloud-mcp` unless the user set
+    /// ICLOUD_MCP_ATTACHMENTS_DIR) and cannot be changed through this tool.
+    #[serde(default)]
+    pub subdir: Option<String>,
     /// Attachment indexes to save (the `index` field of `attachments` in
     /// mail_get_message). Empty or omitted saves every attachment. Indexes
     /// from a `truncated: true` result are not valid - omit them then.
@@ -441,23 +446,22 @@ impl IcloudServer {
     }
 
     #[tool(
-        description = "Download attachments of one message to a local directory. Always fetches the whole message, so it also works when mail_get_message returned `truncated: true`. Saves all attachments, or only those listed in `indexes` (take indexes only from a mail_get_message result with `truncated: false`; otherwise save all). File contents are NOT returned - the result lists each saved file's path, mime and size; read the files from disk. Existing files are never overwritten: on a name collision the new file gets a `-N` suffix. Nothing changes on the mail server."
+        description = "Download attachments of one message into the attachments base directory (`~/Downloads/icloud-mcp` unless the user configured another one), under `subdir`. Files cannot be written anywhere else; to use them elsewhere, copy them afterwards. Always fetches the whole message, so it also works when mail_get_message returned `truncated: true`. Saves all attachments, or only those listed in `indexes` (take indexes only from a mail_get_message result with `truncated: false`; otherwise save all). File contents are NOT returned - the result lists each saved file's absolute path, mime and size; read the files from disk. On macOS the files are marked as quarantined downloads. Existing files are never overwritten: on a name collision the new file gets a `-N` suffix. Nothing changes on the mail server."
     )]
     async fn mail_save_attachments(
         &self,
         Parameters(args): Parameters<MailSaveAttachmentsArgs>,
     ) -> Result<CallToolResult, McpError> {
         let s = self.require()?;
-        let dest_dir = PathBuf::from(&args.dest_dir);
-        if !dest_dir.is_absolute() {
-            return Err(invalid_params(
-                "`dest_dir` must be an absolute path (`~` is not expanded)",
-            ));
-        }
+        let subdir = args
+            .subdir
+            .unwrap_or_else(|| attachments::default_subdir(&args.folder, args.uid));
+        attachments::validate_subdir(&subdir).map_err(|e| to_mcp("mail_save_attachments", e))?;
+        let base = attachments::base_dir().map_err(|e| to_mcp("mail_save_attachments", e))?;
         let indexes: Vec<usize> = args.indexes.iter().map(|i| *i as usize).collect();
         let res = s
             .imap
-            .save_attachments(&args.folder, args.uid, &dest_dir, &indexes)
+            .save_attachments(&args.folder, args.uid, &base, &subdir, &indexes)
             .await
             .map_err(|e| to_mcp("mail_save_attachments", e))?;
         self.mark_imap_ok().await;
@@ -526,8 +530,9 @@ impl ServerHandler for IcloudServer {
             "Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP). \
              Read + create-only: events can be created, mail can only be saved as drafts \
              - there is no SMTP transport, the user reviews and sends manually in iCloud Mail. \
-             Mail attachments can be downloaded to a local directory with \
-             `mail_save_attachments`; that writes local files only. \
+             Mail attachments can be downloaded with `mail_save_attachments`; \
+             that writes local files only, and only inside the attachments \
+             base directory. \
              All datetimes are RFC 3339 UTC. \
              Workflow: 1) `calendar_list_calendars` / `mail_list_folders` to discover ids; \
              2) list/search/get with those ids; 3) `calendar_create_event` or \
@@ -747,7 +752,7 @@ mod tests {
         let args = MailSaveAttachmentsArgs {
             folder: "INBOX".into(),
             uid: 1,
-            dest_dir: "/tmp/never-created".into(),
+            subdir: None,
             indexes: vec![],
         };
         let err = s.mail_save_attachments(Parameters(args)).await.unwrap_err();
