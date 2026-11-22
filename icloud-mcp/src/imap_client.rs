@@ -471,7 +471,8 @@ impl ImapClient {
     }
 
     /// Download one message in full and write its attachments into
-    /// `dest_dir` on the local disk. `indexes` empty means all attachments.
+    /// `<base>/<subdir>` on the local disk. `indexes` empty means all
+    /// attachments.
     ///
     /// Always fetches the whole message, independent of the `max_bytes` cap
     /// that `get_message` applies - an attachment cut short is useless.
@@ -479,7 +480,8 @@ impl ImapClient {
         &self,
         folder: &str,
         uid: u32,
-        dest_dir: &Path,
+        base: &Path,
+        subdir: &str,
         indexes: &[usize],
     ) -> Result<SaveResult, DomainError> {
         let mut guard = self.acquire().await?;
@@ -498,11 +500,14 @@ impl ImapClient {
         // Release the lock before parsing and disk writes.
         drop(guard);
 
-        let dest_dir = dest_dir.to_path_buf();
+        let base = base.to_path_buf();
+        let subdir = subdir.to_string();
         let indexes = indexes.to_vec();
-        tokio::task::spawn_blocking(move || attachments::save_from_raw(&raw, &dest_dir, &indexes))
-            .await
-            .map_err(|e| DomainError::permanent(format!("attachment save task failed: {e}")))?
+        tokio::task::spawn_blocking(move || {
+            attachments::save_from_raw(&raw, &base, &subdir, &indexes)
+        })
+        .await
+        .map_err(|e| DomainError::permanent(format!("attachment save task failed: {e}")))?
     }
 
     pub async fn create_draft(&self, p: &DraftParams) -> Result<DraftResult, DomainError> {

@@ -1,6 +1,6 @@
 [package]
 name = "icloud-mcp"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Local MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP)"
 license = "MIT"
@@ -74,6 +74,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+# com.apple.quarantine on saved mail attachments
+xattr = "1"
 
 [dev-dependencies]
 httpmock = "0.8"

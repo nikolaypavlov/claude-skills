@@ -99,7 +99,7 @@ Local Rust MCP server for Apple iCloud Calendar (CalDAV) and Mail (IMAP), shippi
 
 **Features:**
 - 11 tools: calendar list/list-events/get/search/create, mail list-folders/search/get-message/save-attachments/create-draft, and `auth_status` diagnostic
-- Read + create only by design: events can be created, mail can only be saved as drafts (no SMTP); attachments can be downloaded to a local directory
+- Read + create only by design: events can be created, mail can only be saved as drafts (no SMTP); attachments can be downloaded into one local base directory (`~/Downloads/icloud-mcp` by default)
 - Connection-pooled IMAP session with NOOP-based health check across tool calls
 - macOS Keychain credential fallback; explicit timeouts on every network call; structured `URL_ELICITATION_REQUIRED` (-32042) error when unconfigured
 - 4-target prebuilt binaries (darwin arm64/x64, linux x64/arm64); no Rust toolchain required for plugin users
